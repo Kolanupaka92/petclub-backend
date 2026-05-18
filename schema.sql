@@ -127,6 +127,14 @@ create table if not exists admin_logs (
   created_at timestamptz default now()
 );
 
+-- Website leads (contact form)
+create table if not exists website_leads (
+  id uuid primary key default gen_random_uuid(),
+  name text, phone text, email text, city text,
+  pet_type text, service_interest text, pet_name text, message text,
+  created_at timestamptz default now()
+);
+
 -- Enable Row Level Security (RLS) — service key bypasses these
 alter table users enable row level security;
 alter table pets enable row level security;

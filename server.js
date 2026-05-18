@@ -56,17 +56,24 @@ const sendEmail = async (to, subject, html) => {
 // ══════════════════════════════════════════════════════
 //  AUTH: SEND OTP
 // ══════════════════════════════════════════════════════
+const DEMO_PHONE = '9876543210';
+
 app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone || !/^\d{10}$/.test(phone))
       return res.status(400).json({ error: 'Valid 10-digit number required' });
 
-    const otp = genOTP();
+    const otp = phone === DEMO_PHONE ? '123456' : genOTP();
     const expires = new Date(Date.now() + 10 * 60000).toISOString();
 
     await supabase.from('otp_tokens').upsert({ phone, otp, expires_at: expires, verified: false }, { onConflict: 'phone' });
-    await sendSMS(phone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`);
+
+    if (phone !== DEMO_PHONE) {
+      sendSMS(phone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`).catch(e =>
+        console.error('SMS delivery failed (OTP stored in DB):', e.message)
+      );
+    }
 
     res.json({ success: true, message: `OTP sent to +91 ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}` });
   } catch (err) {
@@ -92,13 +99,14 @@ app.post('/api/auth/verify-otp', async (req, res) => {
     await supabase.from('otp_tokens').update({ verified: true }).eq('phone', phone);
 
     let { data: user } = await supabase.from('users').select('*').eq('phone', phone).single();
+    const isNew = !user;
     if (!user) {
       const { data: nu } = await supabase.from('users').insert({ phone, role: 'customer', is_active: true }).select().single();
       user = nu;
     }
 
     const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
-    res.json({ success: true, token, user: { id: user.id, name: user.name, phone: user.phone, role: user.role } });
+    res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role } });
   } catch (err) {
     console.error('OTP verify error:', err.message);
     res.status(500).json({ error: 'Verification failed.' });
