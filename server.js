@@ -8,7 +8,7 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const twilio = require('twilio');
-const sgMail = require('@sendgrid/mail');
+const { Resend } = require('resend');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -20,8 +20,7 @@ const ANDROID_LINK = 'https://play.google.com/store/apps/details?id=in.petclub';
 // ── Services ───────────────────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-const HAS_SENDGRID = process.env.SENDGRID_API_KEY && !process.env.SENDGRID_API_KEY.includes('PASTE');
-if (HAS_SENDGRID) sgMail.setApiKey(process.env.SENDGRID_API_KEY);
+const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
 // ── Middleware ─────────────────────────────────────────
 app.use(cors({ origin: process.env.FRONTEND_URL || '*' }));
@@ -44,38 +43,46 @@ const adminOnly = (req, res, next) => {
   next();
 };
 
-const sendSMS = async (phone, body) => {
-  return twilioClient.messages.create({ body, from: process.env.TWILIO_PHONE_NUMBER, to: `+91${phone}` });
+const sendSMS = async (fullPhone, body) => {
+  return twilioClient.messages.create({ body, from: process.env.TWILIO_PHONE_NUMBER, to: fullPhone });
 };
 
 const sendEmail = async (to, subject, html) => {
-  if (!HAS_SENDGRID) { console.log(`[Email skipped — no SendGrid] to=${to} subject=${subject}`); return; }
-  return sgMail.send({ to, from: { email: process.env.SENDGRID_FROM_EMAIL, name: 'PETclub India' }, subject, html });
+  if (!resend) { console.log(`[Email skipped — no Resend key] to=${to} subject=${subject}`); return; }
+  return resend.emails.send({ from: process.env.RESEND_FROM_EMAIL || 'PETclub <onboarding@resend.dev>', to, subject, html });
 };
 
 // ══════════════════════════════════════════════════════
 //  AUTH: SEND OTP
 // ══════════════════════════════════════════════════════
-const DEMO_PHONE = '9876543210';
+const DEMO_PHONES = new Set([
+  '+919876543210', // Customer - India
+  '+14697512039',  // Customer - USA
+  '+910000000001', // Admin
+  '+910000000002', // Groomer
+]);
 
 app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
   try {
-    const { phone } = req.body;
+    const { phone, countryCode = '91' } = req.body;
     if (!phone || !/^\d{10}$/.test(phone))
       return res.status(400).json({ error: 'Valid 10-digit number required' });
 
-    const otp = phone === DEMO_PHONE ? '123456' : genOTP();
+    const fullPhone = `+${countryCode}${phone}`;
+    const isDemo = DEMO_PHONES.has(fullPhone);
+    const otp = isDemo ? '123456' : genOTP();
     const expires = new Date(Date.now() + 10 * 60000).toISOString();
 
-    await supabase.from('otp_tokens').upsert({ phone, otp, expires_at: expires, verified: false }, { onConflict: 'phone' });
+    await supabase.from('otp_tokens').upsert({ phone: fullPhone, otp, expires_at: expires, verified: false }, { onConflict: 'phone' });
 
-    if (phone !== DEMO_PHONE) {
-      sendSMS(phone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`).catch(e =>
+    if (!isDemo) {
+      sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`).catch(e =>
         console.error('SMS delivery failed (OTP stored in DB):', e.message)
       );
     }
 
-    res.json({ success: true, message: `OTP sent to +91 ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}` });
+    const flag = countryCode === '1' ? '🇺🇸' : '🇮🇳';
+    res.json({ success: true, message: `OTP sent to ${flag} +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}` });
   } catch (err) {
     console.error('OTP send error:', err.message);
     res.status(500).json({ error: 'Failed to send OTP. Try again.' });
@@ -87,21 +94,22 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
 // ══════════════════════════════════════════════════════
 app.post('/api/auth/verify-otp', async (req, res) => {
   try {
-    const { phone, otp } = req.body;
+    const { phone, otp, countryCode = '91' } = req.body;
     if (!phone || !otp) return res.status(400).json({ error: 'Phone and OTP required' });
 
-    const { data: rec } = await supabase.from('otp_tokens').select('*').eq('phone', phone).single();
+    const fullPhone = phone.startsWith('+') ? phone : `+${countryCode}${phone}`;
+    const { data: rec } = await supabase.from('otp_tokens').select('*').eq('phone', fullPhone).single();
     if (!rec) return res.status(400).json({ error: 'OTP not found. Request a new one.' });
     if (rec.verified) return res.status(400).json({ error: 'OTP already used.' });
     if (new Date() > new Date(rec.expires_at)) return res.status(400).json({ error: 'OTP expired. Request a new one.' });
     if (rec.otp !== otp) return res.status(400).json({ error: 'Incorrect OTP.' });
 
-    await supabase.from('otp_tokens').update({ verified: true }).eq('phone', phone);
+    await supabase.from('otp_tokens').update({ verified: true }).eq('phone', fullPhone);
 
-    let { data: user } = await supabase.from('users').select('*').eq('phone', phone).single();
+    let { data: user } = await supabase.from('users').select('*').eq('phone', fullPhone).single();
     const isNew = !user;
     if (!user) {
-      const { data: nu } = await supabase.from('users').insert({ phone, role: 'customer', is_active: true }).select().single();
+      const { data: nu } = await supabase.from('users').insert({ phone: fullPhone, role: 'customer', is_active: true }).select().single();
       user = nu;
     }
 
@@ -123,10 +131,11 @@ app.post('/api/contact/send-link', async (req, res) => {
 
     const fn = name.split(' ')[0];
 
-    // SMS via Twilio
-    await sendSMS(phone,
-      `Hi ${fn}! 🐾 Welcome to PETclub India!\n\nDownload the app:\n📱 iOS: ${IOS_LINK}\n▶️ Android: ${ANDROID_LINK}\n\nAll pet services in ${city || 'your city'}!`
-    );
+    // SMS via Twilio (non-blocking — India toll-free restriction handled gracefully)
+    const fullLeadPhone = phone.startsWith('+') ? phone : `+91${phone}`;
+    sendSMS(fullLeadPhone,
+      `Hi ${fn}! 🐾 Welcome to PETclub!\n\nDownload the app:\n📱 iOS: ${IOS_LINK}\n▶️ Android: ${ANDROID_LINK}\n\nAll pet services in ${city || 'your city'}!`
+    ).catch(e => console.error('Lead SMS failed (non-blocking):', e.message));
 
     // Email via SendGrid
     await sendEmail(email, `🐾 Your PETclub App Link, ${fn}!`, `
@@ -269,7 +278,7 @@ app.post('/api/bookings', auth, async (req, res) => {
   // Notify professional via SMS
   if (req.body.professional_id) {
     const { data: p } = await supabase.from('professional_profiles').select('users(phone)').eq('id', req.body.professional_id).single();
-    if (p?.users?.phone) sendSMS(p.users.phone, `🐾 New PETclub booking: ${req.body.service_name || req.body.service_type}. Check the app! `).catch(console.error);
+    if (p?.users?.phone) sendSMS(p.users.phone.startsWith('+') ? p.users.phone : `+91${p.users.phone}`, `🐾 New PETclub booking: ${req.body.service_name || req.body.service_type}. Check the app! `).catch(console.error);
   }
   res.json({ success: true, booking });
 });
@@ -324,7 +333,8 @@ app.put('/api/admin/verify/:id', auth, adminOnly, async (req, res) => {
     const sms = action === 'approve'
       ? `✅ Congrats! Your PETclub profile is verified. Open the app to go live and start earning! 🐾`
       : `❌ PETclub verification not approved. Reason: ${reason||'Documents incomplete'}. Resubmit via the app.`;
-    sendSMS(prof.users.phone, sms).catch(console.error);
+    const fullPhone = prof.users.phone.startsWith('+') ? prof.users.phone : `+91${prof.users.phone}`;
+    sendSMS(fullPhone, sms).catch(console.error);
     if (prof.users.email) sendEmail(prof.users.email, `PETclub Verification ${action==='approve'?'Approved ✅':'Update ❌'}`, `<p>${sms}</p>`).catch(console.error);
   }
   res.json({ success: true, professional: prof });
