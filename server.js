@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════
 //  PETclub India — Complete Backend API v1.0
-//  Stack: Node.js + Express + Twilio + SendGrid + Supabase + JWT
+//  Stack: Node.js + Express + Twilio + Nodemailer/Resend + Supabase + JWT
 // ═══════════════════════════════════════════════════════════
 require('dotenv').config();
 const express = require('express');
@@ -9,6 +9,7 @@ const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const twilio = require('twilio');
 const { Resend } = require('resend');
+const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -21,6 +22,19 @@ const WEBSITE_URL = 'https://petclub-website.vercel.app';
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
+
+// Gmail SMTP transporter (used when GMAIL_USER + GMAIL_APP_PASSWORD are set)
+// → Can send to ANY email address, no domain verification needed
+// → Set up: Google Account → Security → App Passwords → "PETclub"
+const gmailTransporter = (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD)
+  ? nodemailer.createTransport({
+      service: 'gmail',
+      auth: {
+        user: process.env.GMAIL_USER,
+        pass: process.env.GMAIL_APP_PASSWORD,  // 16-char App Password (not account password)
+      },
+    })
+  : null;
 
 // ── Middleware ─────────────────────────────────────────
 const ALLOWED_ORIGINS = [
@@ -66,8 +80,29 @@ const sendSMS = async (fullPhone, body) => {
 };
 
 const sendEmail = async (to, subject, html) => {
-  if (!resend) { console.log(`[Email skipped — no Resend key] to=${to} subject=${subject}`); return; }
-  return resend.emails.send({ from: process.env.RESEND_FROM_EMAIL || 'PETclub <onboarding@resend.dev>', to, subject, html });
+  // Strategy: Gmail SMTP first (sends to anyone), Resend as fallback
+  if (gmailTransporter) {
+    const info = await gmailTransporter.sendMail({
+      from: `"PETclub 🐾" <${process.env.GMAIL_USER}>`,
+      to,
+      subject,
+      html,
+    });
+    console.log(`[Gmail] Email sent to ${to} — messageId: ${info.messageId}`);
+    return info;
+  }
+  // Fallback: Resend (free plan: only delivers to verified account email)
+  if (resend) {
+    const result = await resend.emails.send({
+      from: process.env.RESEND_FROM_EMAIL || 'PETclub <onboarding@resend.dev>',
+      to,
+      subject,
+      html,
+    });
+    console.log(`[Resend] Email sent to ${to}`);
+    return result;
+  }
+  console.warn(`[Email skipped — no email provider configured] to=${to}`);
 };
 
 // ══════════════════════════════════════════════════════
@@ -85,7 +120,7 @@ const sendEmail = async (to, subject, html) => {
 })();
 
 // ══════════════════════════════════════════════════════
-//  AUTH: SEND OTP  (SMS + email fallback)
+//  AUTH: SEND OTP  (SMS for US · Email for India)
 // ══════════════════════════════════════════════════════
 app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
   try {
@@ -98,17 +133,18 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
     const otp = genOTP();
     const expires = new Date(Date.now() + 10 * 60000).toISOString();
 
+    // Store OTP in DB
     await supabase.from('otp_tokens').upsert(
       { phone: fullPhone, otp, expires_at: expires, verified: false },
       { onConflict: 'phone' }
     );
 
     const otpEmailHtml = `
-      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:420px;margin:0 auto;text-align:center;padding:40px 20px;background:#fff;border-radius:20px;">
+      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:420px;margin:0 auto;text-align:center;padding:40px 20px;background:#fff;border-radius:20px;box-shadow:0 4px 24px rgba(0,0,0,0.06);">
         <div style="font-size:52px;margin-bottom:12px">🐾</div>
         <h2 style="color:#1e293b;font-size:22px;margin:0 0 6px">Your PETclub OTP</h2>
         <p style="color:#64748b;font-size:14px;margin:0 0 28px">Use this code to sign in or create your account</p>
-        <div style="background:#fff7ed;border:2px solid #f97316;border-radius:16px;padding:28px 20px;margin-bottom:24px;display:inline-block;min-width:200px;">
+        <div style="background:#fff7ed;border:2px solid #f97316;border-radius:16px;padding:28px 20px;margin-bottom:24px;">
           <div style="font-size:44px;font-weight:900;color:#f97316;letter-spacing:10px;font-family:monospace">${otp}</div>
         </div>
         <p style="color:#94a3b8;font-size:13px;margin:0">Valid for <strong>10 minutes</strong> · Never share this code</p>
@@ -116,83 +152,43 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
         <p style="color:#cbd5e1;font-size:11px">© 2025 PETclub · For pets, with love 🐾</p>
       </div>`;
 
-    let emailSent = false;
-    // TESTING_RELAY_EMAIL: During beta/testing, relay all OTPs to admin email too
-    // (Resend free plan can only deliver to verified account email)
-    const relayEmail = process.env.TESTING_RELAY_EMAIL;
+    const validEmail = email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
-    // Helper: build relay HTML that shows which phone/email this OTP is for
-    const relayHtml = (targetEmail, targetPhone) => `
-      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:460px;margin:0 auto;padding:20px;background:#fff;">
-        <div style="background:#fef3c7;border:2px solid #f59e0b;border-radius:12px;padding:16px;margin-bottom:16px;">
-          <p style="margin:0;font-size:13px;color:#92400e;font-weight:700;">🧪 TESTING RELAY — Admin Only</p>
-          <p style="margin:4px 0 0;font-size:12px;color:#78350f;">OTP for phone: <strong>${targetPhone}</strong> · email: <strong>${targetEmail}</strong></p>
-        </div>
-        ${otpEmailHtml}
-      </div>`;
-
-    // India (+91): SMS not available — email is the ONLY channel, so await it
     if (isIndia) {
-      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
-        return res.status(400).json({ error: 'Email is required for India (+91) users — OTP will be sent to your email.' });
+      // ── India: Email is the ONLY delivery channel (Twilio SMS not available) ──
+      if (!validEmail)
+        return res.status(400).json({ error: 'Email address is required for India (+91) — your OTP will be sent there.' });
 
-      // Try sending to user's email
-      let primaryFailed = false;
+      // Send OTP to user's exact email (Gmail SMTP reaches any address; Resend may be limited)
       try {
-        await sendEmail(email, `🐾 PETclub OTP: ${otp}`, otpEmailHtml);
-        emailSent = true;
+        await sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, otpEmailHtml);
+        console.log(`[OTP] India OTP sent to ${email} for ${fullPhone}`);
       } catch (e) {
-        primaryFailed = true;
-        console.error('India email OTP primary failed:', e.message);
-        // Try relay fallback before giving up
-        if (relayEmail && relayEmail !== email) {
-          try {
-            await sendEmail(relayEmail, `🐾 PETclub OTP [relay for ${email}]: ${otp}`, relayHtml(email, fullPhone));
-            emailSent = true;
-            console.log(`OTP relayed to ${relayEmail} for ${email}`);
-          } catch (e2) {
-            console.error('Relay email also failed:', e2.message);
-          }
-        }
-        if (!emailSent) {
-          return res.status(500).json({
-            error: `Failed to send OTP to ${email}. During beta, please use the email address registered with our system. (${e.message?.slice(0,100)})`,
-          });
-        }
+        console.error('India OTP email failed:', e.message);
+        return res.status(500).json({
+          error: `Could not send OTP to ${email}. Please check the email address and try again.`,
+        });
       }
 
-      // Also send relay copy if primary succeeded and relay is different
-      if (emailSent && relayEmail && relayEmail !== email) {
-        sendEmail(relayEmail, `🧪 [Relay] OTP for ${email} — ${otp}`, relayHtml(email, fullPhone))
-          .catch(e => console.error('Relay copy failed:', e.message));
-      }
-
-      const deliveredTo = primaryFailed ? relayEmail : email;
-      const flag = '🇮🇳';
-      res.json({
+      return res.json({
         success: true,
-        emailSent: true,
-        deliveredTo,
-        message: primaryFailed
-          ? `OTP sent to admin relay — check ${relayEmail} · ${flag} +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}`
-          : `OTP sent to ${email} · ${flag} +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}`,
+        message: `OTP sent to ${email} · 🇮🇳 Check your inbox (and spam folder if not seen in 1 min)`,
       });
-      return;
     }
 
-    // US (+1): SMS primary, email optional backup
+    // ── US (+1): SMS primary + email backup ──
     sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`)
       .catch(e => console.error('SMS failed:', e.message));
-    if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      sendEmail(email, `🐾 PETclub OTP: ${otp}`, otpEmailHtml)
-        .then(() => { emailSent = true; })
-        .catch(e => console.error('Email OTP failed (non-critical):', e.message));
+
+    if (validEmail) {
+      sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, otpEmailHtml)
+        .catch(e => console.error('Email backup failed (non-critical):', e.message));
     }
-    if (relayEmail) {
-      sendEmail(relayEmail, `🧪 [Relay] OTP for +1${phone} (${email||'no email'}) — ${otp}`, relayHtml(email||'no email', fullPhone))
-        .catch(e => console.error('Relay failed:', e.message));
-    }
-    res.json({ success: true, emailSent, message: `OTP sent via SMS${email ? ' + email' : ''} · 🇺🇸 +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}` });
+
+    res.json({
+      success: true,
+      message: `OTP sent via SMS${validEmail ? ` + email to ${email}` : ''} · 🇺🇸`,
+    });
   } catch (err) {
     console.error('OTP send error:', err.message);
     res.status(500).json({ error: 'Failed to send OTP. Try again.' });
