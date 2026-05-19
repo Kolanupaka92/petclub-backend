@@ -13,6 +13,7 @@ const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
+app.set('trust proxy', 1); // Trust Railway's reverse proxy — needed for rate-limit & real IP
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const WEB_APP_URL = 'https://petclub-app.vercel.app';
@@ -200,24 +201,39 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
       });
     }
 
-    // ── US (+1): SMS primary + email backup ──
-    sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`)
+    // ── US (+1): SMS + Email (both channels fired in parallel) ──
+    let smsSent = false, emailSent = false;
+
+    // SMS (Twilio — may be limited on trial accounts)
+    await sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`)
+      .then(() => { smsSent = true; console.log(`[OTP] SMS sent to ${fullPhone}`); })
       .catch(e => console.error('SMS failed:', e.message));
 
+    // Email — awaited so failures surface clearly in logs
     if (validEmail) {
-      sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, userOtpHtml)
-        .catch(e => console.error('Email backup failed:', e.message));
+      await sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, userOtpHtml)
+        .then(() => { emailSent = true; console.log(`[OTP] Email sent to ${email}`); })
+        .catch(e => console.error(`[OTP] Email failed (${email}):`, e.message));
     }
 
-    // Admin copy for US too
+    // Admin copy
     if (adminEmail && adminEmail !== email) {
       sendEmail(adminEmail, `🔔 [PETclub OTP Copy] ${fullPhone} → ${email || 'SMS only'}`, adminRelayHtml(email, fullPhone))
         .catch(e => console.error('[OTP] Admin copy failed:', e.message));
     }
 
+    if (!smsSent && !emailSent && !validEmail) {
+      return res.status(500).json({ error: 'Could not send OTP — please provide an email address as backup.' });
+    }
+
+    console.log(`[OTP] Delivery summary → SMS:${smsSent} Email:${emailSent} Phone:${fullPhone}`);
     res.json({
       success: true,
-      message: `OTP sent via SMS${validEmail ? ` + email to ${email}` : ''} · 🇺🇸`,
+      message: smsSent
+        ? `OTP sent via SMS${validEmail ? ` + email to ${email}` : ''} · 🇺🇸`
+        : validEmail
+          ? `OTP sent to ${email} (SMS unavailable) · 🇺🇸`
+          : 'OTP sent · 🇺🇸',
     });
   } catch (err) {
     console.error('OTP send error:', err.message);
