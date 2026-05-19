@@ -26,12 +26,25 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 const ALLOWED_ORIGINS = [
   'https://petclub-app.vercel.app',
   'https://petclub-website.vercel.app',
+  'http://localhost:5173',
+  'http://localhost:5174',
+  'http://localhost:4173',
   process.env.FRONTEND_URL,
 ].filter(Boolean);
 app.use(cors({ origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.includes(origin) ? true : false) }));
-app.use(express.json());
-app.use(rateLimit({ windowMs: 15 * 60 * 1000, max: 200 }));
-const otpLimit = rateLimit({ windowMs: 60000, max: 3, message: { error: 'Too many OTP requests. Wait 1 minute.' } });
+app.use(express.json({ limit: '10mb' }));
+// Global rate limit — returns proper JSON
+app.use(rateLimit({
+  windowMs: 15 * 60 * 1000, max: 300,
+  standardHeaders: true, legacyHeaders: false,
+  handler: (req, res) => res.status(429).json({ error: 'Too many requests. Please slow down.' }),
+}));
+// OTP-specific rate limit
+const otpLimit = rateLimit({
+  windowMs: 60 * 1000, max: 5,
+  standardHeaders: true, legacyHeaders: false,
+  handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait 1 minute and try again.' }),
+});
 
 // ── Helpers ────────────────────────────────────────────
 const genOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
