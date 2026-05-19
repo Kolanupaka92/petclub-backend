@@ -611,6 +611,37 @@ app.post('/api/reviews', auth, async (req, res) => {
 // ══════════════════════════════════════════════════════
 //  ADMIN ROUTES
 // ══════════════════════════════════════════════════════
+
+// Admin OTP lookup — for testing/debugging only
+// GET /api/admin/otp?phone=+919876543210  OR  ?phone=9876543210&cc=91
+app.get('/api/admin/otp', auth, adminOnly, async (req, res) => {
+  try {
+    let { phone, cc = '91' } = req.query;
+    if (!phone) return res.status(400).json({ error: 'phone query param required' });
+    const fullPhone = phone.startsWith('+') ? phone : `+${cc}${phone}`;
+    const { data: rec } = await supabase
+      .from('otp_tokens')
+      .select('otp, expires_at, verified, phone')
+      .eq('phone', fullPhone)
+      .single();
+    if (!rec) return res.status(404).json({ error: `No OTP found for ${fullPhone}` });
+    const expired = new Date() > new Date(rec.expires_at);
+    const minsLeft = Math.max(0, Math.ceil((new Date(rec.expires_at) - Date.now()) / 60000));
+    res.json({
+      success: true,
+      phone: rec.phone,
+      otp: rec.otp,
+      verified: rec.verified,
+      expired,
+      expires_at: rec.expires_at,
+      mins_left: minsLeft,
+      note: expired ? 'OTP has expired — request a new one' : verified ? 'OTP already used' : `Valid for ${minsLeft} more min(s)`,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/admin/stats', auth, adminOnly, async (req, res) => {
   const [u, p, b, l] = await Promise.all([
     supabase.from('users').select('id', { count: 'exact' }),
