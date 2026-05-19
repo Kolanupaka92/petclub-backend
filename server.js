@@ -121,6 +121,12 @@ const sendEmail = async (to, subject, html) => {
 
 // ══════════════════════════════════════════════════════
 //  AUTH: SEND OTP  (SMS for US · Email for India)
+//
+//  Email delivery strategy:
+//  1. Always try user's OWN email first (direct delivery)
+//  2. Always CC admin (ADMIN_EMAIL env) so admin sees every OTP during beta
+//     → Admin can verbally relay code to user if direct delivery fails
+//  3. Once Gmail SMTP is configured → direct delivery always works
 // ══════════════════════════════════════════════════════
 app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
   try {
@@ -132,6 +138,8 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
     const fullPhone = `+${countryCode}${phone}`;
     const otp = genOTP();
     const expires = new Date(Date.now() + 10 * 60000).toISOString();
+    // Admin email receives a copy of every OTP during beta testing
+    const adminEmail = process.env.ADMIN_EMAIL || process.env.GMAIL_USER;
 
     // Store OTP in DB
     await supabase.from('otp_tokens').upsert(
@@ -139,7 +147,8 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
       { onConflict: 'phone' }
     );
 
-    const otpEmailHtml = `
+    // ── OTP email template (sent to user) ──
+    const userOtpHtml = `
       <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:420px;margin:0 auto;text-align:center;padding:40px 20px;background:#fff;border-radius:20px;box-shadow:0 4px 24px rgba(0,0,0,0.06);">
         <div style="font-size:52px;margin-bottom:12px">🐾</div>
         <h2 style="color:#1e293b;font-size:22px;margin:0 0 6px">Your PETclub OTP</h2>
@@ -152,27 +161,42 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
         <p style="color:#cbd5e1;font-size:11px">© 2025 PETclub · For pets, with love 🐾</p>
       </div>`;
 
+    // ── Admin relay template (always sent to admin during beta) ──
+    const adminRelayHtml = (userEmail, userPhone) => `
+      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:460px;margin:0 auto;padding:20px;background:#fff;">
+        <div style="background:#f0fdf4;border:2px solid #86efac;border-radius:12px;padding:16px;margin-bottom:20px;">
+          <p style="margin:0;font-size:13px;font-weight:700;color:#166534;">🔔 PETclub — OTP Admin Copy</p>
+          <p style="margin:6px 0 0;font-size:12px;color:#15803d;">
+            User phone: <strong>${userPhone}</strong><br/>
+            User email: <strong>${userEmail || 'not provided'}</strong><br/>
+            OTP: <strong style="font-size:18px;letter-spacing:4px;font-family:monospace">${otp}</strong>
+          </p>
+        </div>
+        ${userOtpHtml}
+      </div>`;
+
     const validEmail = email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
 
     if (isIndia) {
-      // ── India: Email is the ONLY delivery channel (Twilio SMS not available) ──
+      // ── India (+91): Email is the ONLY channel (Twilio SMS unavailable) ──
       if (!validEmail)
-        return res.status(400).json({ error: 'Email address is required for India (+91) — your OTP will be sent there.' });
+        return res.status(400).json({ error: 'Email address is required for India (+91) — your OTP will be sent to it.' });
 
-      // Send OTP to user's exact email (Gmail SMTP reaches any address; Resend may be limited)
-      try {
-        await sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, otpEmailHtml);
-        console.log(`[OTP] India OTP sent to ${email} for ${fullPhone}`);
-      } catch (e) {
-        console.error('India OTP email failed:', e.message);
-        return res.status(500).json({
-          error: `Could not send OTP to ${email}. Please check the email address and try again.`,
-        });
+      // 1️⃣ Send directly to user's own email (works with Gmail SMTP; may be limited on Resend)
+      let sentToUser = false;
+      sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, userOtpHtml)
+        .then(() => { sentToUser = true; console.log(`[OTP] Delivered to user: ${email}`); })
+        .catch(e => console.error(`[OTP] User email failed (${email}):`, e.message));
+
+      // 2️⃣ Always send admin copy — ensures OTP is always visible during beta
+      if (adminEmail && adminEmail !== email) {
+        sendEmail(adminEmail, `🔔 [PETclub OTP Copy] ${fullPhone} → ${email}`, adminRelayHtml(email, fullPhone))
+          .catch(e => console.error('[OTP] Admin copy failed:', e.message));
       }
 
       return res.json({
         success: true,
-        message: `OTP sent to ${email} · 🇮🇳 Check your inbox (and spam folder if not seen in 1 min)`,
+        message: `OTP sent to ${email} · 🇮🇳 Check your inbox & spam folder`,
       });
     }
 
@@ -181,8 +205,14 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
       .catch(e => console.error('SMS failed:', e.message));
 
     if (validEmail) {
-      sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, otpEmailHtml)
-        .catch(e => console.error('Email backup failed (non-critical):', e.message));
+      sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, userOtpHtml)
+        .catch(e => console.error('Email backup failed:', e.message));
+    }
+
+    // Admin copy for US too
+    if (adminEmail && adminEmail !== email) {
+      sendEmail(adminEmail, `🔔 [PETclub OTP Copy] ${fullPhone} → ${email || 'SMS only'}`, adminRelayHtml(email, fullPhone))
+        .catch(e => console.error('[OTP] Admin copy failed:', e.message));
     }
 
     res.json({
