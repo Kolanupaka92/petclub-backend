@@ -16,8 +16,8 @@ const app = express();
 app.set('trust proxy', 1); // Trust Railway's reverse proxy — needed for rate-limit & real IP
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET;
-const WEB_APP_URL = 'https://petclub-app.vercel.app';
-const WEBSITE_URL = 'https://petclub-website.vercel.app';
+const WEB_APP_URL = 'https://app.mypetclub.app';
+const WEBSITE_URL = 'https://mypetclub.app';
 
 // ── Services ───────────────────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
@@ -27,10 +27,35 @@ const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KE
 // NOTE: Gmail SMTP is not used — Railway blocks outbound SMTP (port 587/465).
 // All email goes through Resend HTTPS API instead.
 
+// ── Razorpay (India payment gateway) — live once RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET set ──
+let razorpay = null;
+if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
+  try {
+    const Razorpay = require('razorpay');
+    razorpay = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
+    console.log('✅ Razorpay initialized (India payments live)');
+  } catch (e) { console.warn('[Razorpay] Not loaded — run: npm install razorpay →', e.message); }
+}
+
+// ── Firebase Admin (FCM push notifications) — live once FIREBASE_SERVICE_ACCOUNT_JSON set ──
+let firebaseAdmin = null;
+if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
+  try {
+    const fbAdmin = require('firebase-admin');
+    const svcAcct = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
+    if (!fbAdmin.apps.length) fbAdmin.initializeApp({ credential: fbAdmin.credential.cert(svcAcct) });
+    firebaseAdmin = fbAdmin;
+    console.log('✅ Firebase Admin initialized (push notifications live)');
+  } catch (e) { console.warn('[Firebase] Not initialized — run: npm install firebase-admin →', e.message); }
+}
+
 // ── Middleware ─────────────────────────────────────────
 const ALLOWED_ORIGINS = [
-  'https://petclub-app.vercel.app',
-  'https://petclub-website.vercel.app',
+  'https://app.mypetclub.app',
+  'https://mypetclub.app',
+  'https://www.mypetclub.app',
+  'https://app.mypetclub.app',       // legacy — keep during DNS cutover
+  'https://mypetclub.app',   // legacy — keep during DNS cutover
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:4173',
@@ -38,6 +63,21 @@ const ALLOWED_ORIGINS = [
 ].filter(Boolean);
 app.use(cors({ origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.includes(origin) ? true : false) }));
 app.use(express.json({ limit: '10mb' }));
+
+// ── Request ID + timing logger ─────────────────────────────
+app.use((req, res, next) => {
+  req.id = Math.random().toString(36).slice(2, 10).toUpperCase();
+  req.startTime = Date.now();
+  res.setHeader('X-Request-ID', req.id);
+  res.on('finish', () => {
+    const ms = Date.now() - req.startTime;
+    const lvl = res.statusCode >= 500 ? '🔴' : res.statusCode >= 400 ? '🟡' : '🟢';
+    if (!req.path.includes('/health')) {
+      console.log(`${lvl} [${req.id}] ${req.method} ${req.path} → ${res.statusCode} (${ms}ms)`);
+    }
+  });
+  next();
+});
 // Global rate limit — returns proper JSON
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000, max: 300,
@@ -70,6 +110,21 @@ const sendSMS = async (fullPhone, body) => {
   return twilioClient.messages.create({ body, from: process.env.TWILIO_PHONE_NUMBER, to: fullPhone });
 };
 
+// ── Push Notification via Firebase Cloud Messaging ────────────────────────────
+const sendPush = async (fcmToken, title, body, data = {}) => {
+  if (!firebaseAdmin || !fcmToken) return;
+  try {
+    await firebaseAdmin.messaging().send({
+      token: fcmToken,
+      notification: { title, body },
+      data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
+      android: { priority: 'high', notification: { sound: 'default', channelId: 'petclub_bookings' } },
+      apns: { payload: { aps: { sound: 'default', badge: 1 } } },
+    });
+    console.log(`[FCM] Push sent → ${fcmToken.slice(0, 20)}…`);
+  } catch (e) { console.warn('[FCM] Send failed:', e.message); }
+};
+
 const sendEmail = async (to, subject, html) => {
   // Resend HTTPS API — works on Railway (no SMTP needed); free plan allows any TO address
   if (resend) {
@@ -98,6 +153,14 @@ const sendEmail = async (to, subject, html) => {
     }
   }
 })();
+
+// ══════════════════════════════════════════════════════
+//  BOOKING TIMEOUT CRON — runs every 2 minutes
+//  (also runs lazily on booking API calls as a safety net)
+// ══════════════════════════════════════════════════════
+setInterval(() => {
+  processTimedOutAssignments().catch(e => console.error('[Cron] Booking timeout check failed:', e.message));
+}, 2 * 60 * 1000);
 
 // ══════════════════════════════════════════════════════
 //  BOOKING DISPATCH SYSTEM — Round-Robin / Uber-style
@@ -168,7 +231,7 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
           <tr><td style="padding:8px 0;font-size:12px;color:#94a3b8">Location</td><td style="padding:8px 0;font-size:14px;font-weight:700;color:#1e293b">${location}</td></tr>
         </table>
         <div style="text-align:center;margin-bottom:16px;">
-          <a href="https://petclub-app.vercel.app" style="display:inline-block;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;padding:14px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:14px;">✅ Open App to Respond</a>
+          <a href="https://app.mypetclub.app" style="display:inline-block;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;padding:14px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:14px;">✅ Open App to Respond</a>
         </div>
         <p style="color:#94a3b8;font-size:11px;text-align:center;margin:0;">No response in ${RESPONSE_TIMEOUT_MINS} mins → request auto-passes to next professional</p>
       </div>
@@ -180,8 +243,13 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
   if (proPhone) {
     sendSMS(
       proPhone.startsWith('+') ? proPhone : `+91${proPhone}`,
-      `🐾 PETclub: New ${svc} booking for ${petName}!\n📅 ${dateStr} · 📍 ${location}\n⏰ Accept or Reject within ${RESPONSE_TIMEOUT_MINS} mins in the app.\nhttps://petclub-app.vercel.app`
+      `🐾 PETclub: New ${svc} booking for ${petName}!\n📅 ${dateStr} · 📍 ${location}\n⏰ Accept or Reject within ${RESPONSE_TIMEOUT_MINS} mins in the app.\nhttps://app.mypetclub.app`
     ).catch(console.error);
+  }
+  // FCM push notification to professional
+  const { data: proUser } = await supabase.from('users').select('fcm_token').eq('id', pro.user_id).single().catch(() => ({ data: null }));
+  if (proUser?.fcm_token) {
+    sendPush(proUser.fcm_token, `🐾 New ${svc} Request!`, `${petName} · ${dateStr} · Respond in ${RESPONSE_TIMEOUT_MINS} min`, { bookingId: bookingId, type: 'new_booking' }).catch(() => {});
   }
 };
 
@@ -380,7 +448,7 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 // ══════════════════════════════════════════════════════
 app.post('/api/users/set-role', auth, async (req, res) => {
   try {
-    const { role, subRole, name, email, city, pet } = req.body;
+    const { role, subRole, name, email, city, address, pet } = req.body;
     const validRoles = ['customer', 'professional'];
     if (!validRoles.includes(role)) return res.status(400).json({ error: 'Role must be customer or professional' });
 
@@ -392,8 +460,14 @@ app.post('/api/users/set-role', auth, async (req, res) => {
         return res.status(400).json({ error: 'subRole must be Groomer, Trainer, or Vet' });
       await supabase.from('professional_profiles').upsert({
         user_id: req.user.id, sub_role: subRole, verification_status: 'pending',
-        is_available: false, city: city || null,
+        is_available: false, city: city || null, address: address || null,
       }, { onConflict: 'user_id' });
+    }
+
+    if (role === 'customer') {
+      await supabase.from('customer_profiles').upsert({
+        user_id: req.user.id, address: address || null,
+      }, { onConflict: 'user_id' }).catch(() => {});
     }
 
     // For customers — create initial pet if provided
@@ -463,11 +537,11 @@ app.post('/api/users/set-role', auth, async (req, res) => {
             </div>
             `}
             <div style="text-align:center;margin:28px 0 0;">
-              <a href="https://petclub-app.vercel.app" style="display:inline-block;background:linear-gradient(135deg,#f97316,#fbbf24);color:white;padding:15px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:15px;box-shadow:0 4px 20px rgba(249,115,22,0.3)">Open PETclub App →</a>
+              <a href="https://app.mypetclub.app" style="display:inline-block;background:linear-gradient(135deg,#f97316,#fbbf24);color:white;padding:15px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:15px;box-shadow:0 4px 20px rgba(249,115,22,0.3)">Open PETclub App →</a>
             </div>
           </div>
           <div style="background:#f8fafc;padding:16px 32px;text-align:center;border-top:1px solid #f1f5f9;">
-            <p style="margin:0;font-size:12px;color:#94a3b8">© 2025 PETclub · For pets, with love 🐾 · <a href="https://petclub-website.vercel.app" style="color:#f97316;text-decoration:none">petclub.com</a></p>
+            <p style="margin:0;font-size:12px;color:#94a3b8">© 2025 PETclub · For pets, with love 🐾 · <a href="https://mypetclub.app" style="color:#f97316;text-decoration:none">petclub.com</a></p>
           </div>
         </div>`;
       sendEmail(email,
@@ -580,11 +654,11 @@ app.get('/api/users/me', auth, async (req, res) => {
 });
 
 app.put('/api/users/me', auth, async (req, res) => {
-  const { name, email, city, area, address, pincode } = req.body;
+  const { name, email, city, area, address, pincode, country } = req.body;
   await supabase.from('users').update({ name, email }).eq('id', req.user.id);
   // Only write address fields to customer_profiles for customers (not professionals)
   if (req.user.role === 'customer') {
-    await supabase.from('customer_profiles').upsert({ user_id: req.user.id, city, area, address, pincode }, { onConflict: 'user_id' });
+    await supabase.from('customer_profiles').upsert({ user_id: req.user.id, city, area, address, pincode, country }, { onConflict: 'user_id' });
   }
   res.json({ success: true, message: 'Profile updated' });
 });
@@ -664,6 +738,14 @@ app.put('/api/professionals/me', auth, async (req, res) => {
   res.json({ success: true, profile: data });
 });
 
+// Toggle online/offline availability
+app.put('/api/professionals/availability', auth, async (req, res) => {
+  const { is_available } = req.body;
+  if (typeof is_available !== 'boolean') return res.status(400).json({ error: 'is_available must be true or false' });
+  await supabase.from('professional_profiles').update({ is_available }).eq('user_id', req.user.id);
+  res.json({ success: true, is_available, message: is_available ? 'You are now Online 🟢' : 'You are now Offline ⏸' });
+});
+
 app.post('/api/professionals/apply', auth, async (req, res) => {
   const { data } = await supabase.from('professional_profiles').upsert({ user_id: req.user.id, verification_status: 'pending', ...req.body }, { onConflict: 'user_id' }).select().single();
   await supabase.from('users').update({ role: 'professional' }).eq('id', req.user.id);
@@ -710,9 +792,71 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
       photo_url: photoUrl,
     }, { onConflict: 'prof_id' });
 
+    // Also save certification if provided (professionals)
+    const { certType, certPhoto } = req.body;
+    if (certType || certPhoto) {
+      let certUrl = null;
+      if (certPhoto && certPhoto.length > 100) {
+        try {
+          const base64Data = certPhoto.replace(/^data:image\/\w+;base64,/, '');
+          const buffer = Buffer.from(base64Data, 'base64');
+          const ext = certPhoto.startsWith('data:image/png') ? 'png' : 'jpg';
+          const filename = `${req.user.id}/cert-${Date.now()}.${ext}`;
+          const { error: upErr } = await supabase.storage
+            .from('id-documents')
+            .upload(filename, buffer, { contentType: `image/${ext}`, upsert: true });
+          if (!upErr) {
+            const { data: urlData } = supabase.storage.from('id-documents').getPublicUrl(filename);
+            certUrl = urlData.publicUrl;
+          }
+        } catch (e) { console.error('Cert photo error:', e.message); }
+      }
+      await supabase.from('id_documents').update({
+        cert_type: certType || null,
+        cert_photo_url: certUrl,
+      }).eq('prof_id', prof.id);
+    }
+
     res.json({ success: true, photoUrl, message: 'ID document saved' });
   } catch (err) {
     console.error('ID upload error:', err.message);
+    res.status(500).json({ error: 'Failed to save document. Try again.' });
+  }
+});
+
+// Customer government ID upload
+app.post('/api/users/upload-id-photo', auth, async (req, res) => {
+  try {
+    const { docType, docNumber, docPhoto } = req.body;
+    if (!docType) return res.status(400).json({ error: 'Document type required' });
+
+    let photoUrl = null;
+    if (docPhoto && docPhoto.length > 100) {
+      try {
+        const base64Data = docPhoto.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Buffer.from(base64Data, 'base64');
+        const ext = docPhoto.startsWith('data:image/png') ? 'png' : 'jpg';
+        const filename = `customers/${req.user.id}/${Date.now()}.${ext}`;
+        const { error: upErr } = await supabase.storage
+          .from('id-documents')
+          .upload(filename, buffer, { contentType: `image/${ext}`, upsert: true });
+        if (!upErr) {
+          const { data: urlData } = supabase.storage.from('id-documents').getPublicUrl(filename);
+          photoUrl = urlData.publicUrl;
+        }
+      } catch (e) { console.error('Customer ID photo error:', e.message); }
+    }
+
+    await supabase.from('customer_profiles').upsert({
+      user_id: req.user.id,
+      id_doc_type: docType,
+      id_doc_number: docNumber || null,
+      id_photo_url: photoUrl,
+    }, { onConflict: 'user_id' });
+
+    res.json({ success: true, photoUrl, message: 'ID document saved' });
+  } catch (err) {
+    console.error('Customer ID upload error:', err.message);
     res.status(500).json({ error: 'Failed to save document. Try again.' });
   }
 });
@@ -744,7 +888,7 @@ app.post('/api/bookings', auth, async (req, res) => {
     processTimedOutAssignments().catch(console.error); // background cleanup
     const { service_type, city, pet_id, service_name, scheduled_at, address, notes, amount } = req.body;
     const { data: booking } = await supabase.from('bookings').insert({
-      customer_id: req.user.id, status: 'upcoming', payment_status: 'pending',
+      customer_id: req.user.id, status: 'upcoming',
       assignment_status: 'searching',
       service_type: service_type || null, service_name: service_name || null,
       pet_id: pet_id || null, scheduled_at: scheduled_at || null,
@@ -752,6 +896,16 @@ app.post('/api/bookings', auth, async (req, res) => {
       amount: amount || null,
     }).select().single();
     if (!booking) return res.status(500).json({ error: 'Failed to create booking' });
+
+    // Confirm SMS to customer
+    const { data: custUser } = await supabase.from('users').select('phone, name').eq('id', req.user.id).single();
+    if (custUser?.phone) {
+      const svcLabel = service_name || service_type || 'Service';
+      const dateLabel = scheduled_at ? new Date(scheduled_at).toLocaleString('en-IN', { weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : 'TBD';
+      sendSMS(custUser.phone.startsWith('+') ? custUser.phone : `+91${custUser.phone}`,
+        `🐾 PETclub: Your ${svcLabel} booking is placed!\n📅 ${dateLabel}\n🔍 Finding the best professional for you — you'll hear back shortly.\nTrack: https://app.mypetclub.app`
+      ).catch(() => {});
+    }
 
     // Auto-assign round-robin
     if (service_type && ['Groomer', 'Trainer', 'Vet'].includes(service_type)) {
@@ -831,13 +985,18 @@ app.post('/api/bookings/:id/respond', auth, async (req, res) => {
               <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">Professional</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${proName}</td></tr>
               <tr><td style="padding:8px 0;font-size:12px;color:#94a3b8">Date & Time</td><td style="padding:8px 0;font-size:14px;font-weight:700;color:#1e293b">${dateStr}</td></tr>
             </table>
-            <div style="text-align:center;"><a href="https://petclub-app.vercel.app" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:14px 32px;border-radius:50px;text-decoration:none;font-weight:700;">Open PETclub App →</a></div>
+            <div style="text-align:center;"><a href="https://app.mypetclub.app" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:14px 32px;border-radius:50px;text-decoration:none;font-weight:700;">Open PETclub App →</a></div>
           </div>`).catch(console.error);
       }
       if (custPhone) {
         sendSMS(custPhone.startsWith('+') ? custPhone : `+91${custPhone}`,
-          `✅ PETclub: ${svc} booking confirmed!\n👤 ${proName} will arrive on ${dateStr}.\n📱 View in app: https://petclub-app.vercel.app`
+          `✅ PETclub: ${svc} booking confirmed!\n👤 ${proName} will arrive on ${dateStr}.\n📱 View in app: https://app.mypetclub.app`
         ).catch(console.error);
+      }
+      // FCM push to customer
+      const { data: custUserFcm } = await supabase.from('users').select('fcm_token').eq('id', bk?.users?.id || bk?.customer_id || '').single().catch(() => ({ data: null }));
+      if (custUserFcm?.fcm_token) {
+        sendPush(custUserFcm.fcm_token, `✅ Booking Confirmed!`, `${proName} will be there on ${dateStr}`, { bookingId: req.params.id, type: 'booking_confirmed' }).catch(() => {});
       }
       return res.json({ success: true, message: `Booking accepted! Customer has been notified.` });
     }
@@ -913,28 +1072,173 @@ app.put('/api/bookings/:id/assign', auth, adminOnly, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════
-//  PAYMENTS
+//  LIVE TRACKING (SSE — Ola/Rapido-style)
 // ══════════════════════════════════════════════════════
 
-// Payment routes — disabled until payment gateway is configured
-app.post('/api/payments/create-order', auth, (_req, res) => {
-  res.status(503).json({ error: 'Online payments are not yet available. Please pay on the day of service.' });
-});
-app.post('/api/payments/verify', auth, (_req, res) => {
-  res.status(503).json({ error: 'Online payments are not yet available.' });
-});
+// In-memory SSE client registry: bookingId → Set<res>
+const trackingClients = new Map();
 
-// ══════════════════════════════════════════════════════
-//  REVIEWS
-// ══════════════════════════════════════════════════════
-app.post('/api/reviews', auth, async (req, res) => {
-  const { data: review } = await supabase.from('reviews').insert({ reviewer_id: req.user.id, ...req.body }).select().single();
-  if (req.body.reviewee_id) {
-    const { data: reviews } = await supabase.from('reviews').select('rating').eq('reviewee_id', req.body.reviewee_id);
-    const avg = (reviews.reduce((s, r) => s + r.rating, 0) / reviews.length).toFixed(1);
-    await supabase.from('professional_profiles').update({ rating: parseFloat(avg), total_reviews: reviews.length }).eq('user_id', req.body.reviewee_id);
+// Customer subscribes — GET /api/bookings/:id/track?token=<jwt>
+// Uses query-param token because EventSource doesn't support custom headers
+app.get('/api/bookings/:id/track', async (req, res) => {
+  const { token } = req.query;
+  if (!token) return res.status(401).json({ error: 'token required' });
+
+  let userId;
+  try { userId = jwt.verify(token, JWT_SECRET).id; }
+  catch { return res.status(401).json({ error: 'Invalid token' }); }
+
+  const bookingId = req.params.id;
+
+  // Verify booking belongs to this customer
+  const { data: booking } = await supabase
+    .from('bookings')
+    .select('id, user_id, pro_lat, pro_lng, assignment_status')
+    .eq('id', bookingId)
+    .single();
+
+  if (!booking || booking.user_id !== userId) return res.status(403).json({ error: 'Booking not found' });
+
+  // SSE handshake
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no');   // disable Nginx / Railway proxy buffering
+  res.flushHeaders();
+
+  // Send last known position immediately (if any)
+  if (booking.pro_lat && booking.pro_lng) {
+    res.write(`data: ${JSON.stringify({ lat: booking.pro_lat, lng: booking.pro_lng })}\n\n`);
   }
-  res.json({ success: true, review });
+
+  // Keepalive comment every 25 s (prevents Railway/Vercel from closing idle connections)
+  const keepAlive = setInterval(() => { try { res.write(': ka\n\n'); } catch {} }, 25000);
+
+  // Register
+  if (!trackingClients.has(bookingId)) trackingClients.set(bookingId, new Set());
+  trackingClients.get(bookingId).add(res);
+
+  req.on('close', () => {
+    clearInterval(keepAlive);
+    trackingClients.get(bookingId)?.delete(res);
+    if (trackingClients.get(bookingId)?.size === 0) trackingClients.delete(bookingId);
+  });
+});
+
+// Professional sends GPS — POST /api/bookings/:id/location { lat, lng }
+app.post('/api/bookings/:id/location', auth, async (req, res) => {
+  try {
+    const { lat, lng } = req.body;
+    if (!lat || !lng) return res.status(400).json({ error: 'lat and lng required' });
+
+    const bookingId = req.params.id;
+
+    // Verify booking is assigned to this professional
+    const { data: proProfile } = await supabase
+      .from('professional_profiles')
+      .select('id')
+      .eq('user_id', req.user.id)
+      .single();
+
+    if (!proProfile) return res.status(403).json({ error: 'Not a professional' });
+
+    const { data: booking } = await supabase
+      .from('bookings')
+      .select('id, professional_profile_id, assignment_status')
+      .eq('id', bookingId)
+      .eq('professional_profile_id', proProfile.id)
+      .single();
+
+    if (!booking) return res.status(403).json({ error: 'Booking not found or not yours' });
+    if (!['confirmed','on_the_way','in_progress'].includes(booking.assignment_status)) {
+      return res.status(400).json({ error: 'Booking is not in an active state' });
+    }
+
+    // Persist latest position to DB (customers polling REST will get this too)
+    await supabase.from('bookings').update({
+      pro_lat: lat,
+      pro_lng: lng,
+      pro_location_updated_at: new Date().toISOString(),
+    }).eq('id', bookingId);
+
+    // Push to all subscribed SSE clients
+    const clients = trackingClients.get(bookingId);
+    const payload = JSON.stringify({ lat, lng, t: Date.now() });
+    let pushed = 0;
+    clients?.forEach(client => {
+      try { client.write(`data: ${payload}\n\n`); pushed++; }
+      catch { clients.delete(client); }
+    });
+
+    res.json({ ok: true, pushed });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// REST snapshot fallback — GET /api/bookings/:id/tracking
+app.get('/api/bookings/:id/tracking', auth, async (req, res) => {
+  try {
+    const { data: booking } = await supabase
+      .from('bookings')
+      .select('pro_lat, pro_lng, pro_location_updated_at, assignment_status')
+      .eq('id', req.params.id)
+      .single();
+    if (!booking) return res.status(404).json({ error: 'Not found' });
+    res.json(booking);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════
+//  RATINGS & REVIEWS
+// ══════════════════════════════════════════════════════
+
+// Rate a completed booking (customer only, one rating per booking)
+app.post('/api/bookings/:id/rate', auth, async (req, res) => {
+  try {
+    const { rating, review } = req.body;
+    if (!rating || rating < 1 || rating > 5) return res.status(400).json({ error: 'Rating must be between 1 and 5' });
+    if (req.user.role !== 'customer') return res.status(403).json({ error: 'Only customers can rate bookings' });
+
+    const { data: booking } = await supabase.from('bookings')
+      .select('*, professional_profiles(id, user_id)')
+      .eq('id', req.params.id).eq('customer_id', req.user.id).single();
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    if (booking.status !== 'completed') return res.status(400).json({ error: 'Can only rate completed bookings' });
+    if (!booking.professional_id) return res.status(400).json({ error: 'No professional assigned to this booking' });
+
+    const profUserId = booking.professional_profiles?.user_id;
+
+    // Upsert — one rating per booking
+    await supabase.from('reviews').upsert({
+      reviewer_id: req.user.id,
+      reviewee_id: profUserId,
+      booking_id: req.params.id,
+      rating: parseInt(rating),
+      review: review?.trim() || null,
+    }, { onConflict: 'booking_id' });
+
+    // Recalculate pro's average rating
+    if (profUserId) {
+      const { data: allRatings } = await supabase.from('reviews').select('rating').eq('reviewee_id', profUserId);
+      if (allRatings?.length) {
+        const avg = (allRatings.reduce((s, r) => s + r.rating, 0) / allRatings.length).toFixed(2);
+        await supabase.from('professional_profiles').update({ rating: parseFloat(avg), total_reviews: allRatings.length }).eq('user_id', profUserId);
+      }
+    }
+    res.json({ success: true, message: 'Thank you for your feedback! 🌟' });
+  } catch (err) {
+    console.error('Rate booking error:', err.message);
+    res.status(500).json({ error: 'Failed to submit rating' });
+  }
+});
+
+// Check if a booking has been rated (customer only)
+app.get('/api/bookings/:id/my-rating', auth, async (req, res) => {
+  const { data } = await supabase.from('reviews').select('rating, review').eq('booking_id', req.params.id).eq('reviewer_id', req.user.id).single();
+  res.json({ success: true, rated: !!data, rating: data?.rating || null, review: data?.review || null });
 });
 
 // ══════════════════════════════════════════════════════
@@ -964,7 +1268,7 @@ app.get('/api/admin/otp', auth, adminOnly, async (req, res) => {
       expired,
       expires_at: rec.expires_at,
       mins_left: minsLeft,
-      note: expired ? 'OTP has expired — request a new one' : verified ? 'OTP already used' : `Valid for ${minsLeft} more min(s)`,
+      note: expired ? 'OTP has expired — request a new one' : rec.verified ? 'OTP already used' : `Valid for ${minsLeft} more min(s)`,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1027,10 +1331,151 @@ app.put('/api/admin/users/:id/suspend', auth, adminOnly, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════
+//  FCM: Save push notification token
+// ══════════════════════════════════════════════════════
+app.post('/api/users/fcm-token', auth, async (req, res) => {
+  try {
+    const { token } = req.body;
+    if (!token) return res.status(400).json({ error: 'FCM token required' });
+    // Store token — add fcm_token column via migration if not present
+    const { error } = await supabase.from('users').update({ fcm_token: token }).eq('id', req.user.id);
+    if (error) {
+      console.warn('[FCM Token] Column may not exist yet — run migration:', error.message);
+      return res.json({ success: false, message: 'FCM token not saved — run DB migration first' });
+    }
+    res.json({ success: true, message: 'Push notifications enabled' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════
+//  PAYMENTS: Razorpay (India) — active after LLC registration
+//  Set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET in Railway env
+// ══════════════════════════════════════════════════════
+
+// Create a Razorpay order (called before payment screen opens)
+app.post('/api/payments/create-order', auth, async (req, res) => {
+  try {
+    if (!razorpay) {
+      return res.status(503).json({
+        error: 'Payments not yet active',
+        message: 'Razorpay integration is ready — set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Railway env to activate.',
+        coming_soon: true,
+      });
+    }
+    const { amount, bookingId, currency = 'INR', notes = {} } = req.body;
+    if (!amount || !bookingId) return res.status(400).json({ error: 'amount and bookingId required' });
+    if (amount < 100) return res.status(400).json({ error: 'Amount must be at least ₹1 (100 paise)' });
+
+    // Verify booking belongs to this customer
+    const { data: booking } = await supabase.from('bookings').select('id, status, assignment_status').eq('id', bookingId).eq('customer_id', req.user.id).single();
+    if (!booking) return res.status(404).json({ error: 'Booking not found or not yours' });
+
+    const order = await razorpay.orders.create({
+      amount: Math.round(amount * 100), // Razorpay works in paise
+      currency,
+      receipt: `pclub_${bookingId.slice(0, 12)}`,
+      notes: { bookingId, userId: req.user.id, ...notes },
+    });
+
+    // Save order ID to booking for reference
+    await supabase.from('bookings').update({ razorpay_order_id: order.id }).eq('id', bookingId);
+    res.json({ success: true, order, key: process.env.RAZORPAY_KEY_ID });
+  } catch (err) {
+    console.error('[Razorpay] Create order error:', err.message);
+    res.status(500).json({ error: 'Failed to create payment order' });
+  }
+});
+
+// Verify Razorpay payment signature (called after payment success)
+app.post('/api/payments/verify', auth, async (req, res) => {
+  try {
+    if (!razorpay) {
+      return res.status(503).json({ error: 'Payments not yet active', coming_soon: true });
+    }
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, bookingId } = req.body;
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
+      return res.status(400).json({ error: 'Missing payment verification fields' });
+
+    const crypto = require('crypto');
+    const expected = crypto
+      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
+      .update(`${razorpay_order_id}|${razorpay_payment_id}`)
+      .digest('hex');
+
+    if (expected !== razorpay_signature)
+      return res.status(400).json({ error: 'Payment signature mismatch — possible tamper attempt' });
+
+    // Mark booking as paid
+    await supabase.from('bookings').update({
+      payment_status: 'paid',
+      razorpay_payment_id,
+      razorpay_order_id,
+    }).eq('id', bookingId).eq('customer_id', req.user.id);
+
+    // Log payment
+    await supabase.from('payment_logs').insert({
+      booking_id: bookingId,
+      user_id: req.user.id,
+      razorpay_order_id,
+      razorpay_payment_id,
+      status: 'success',
+    }).catch(() => {}); // table may not exist yet
+
+    res.json({ success: true, message: '✅ Payment verified and booking confirmed!' });
+  } catch (err) {
+    console.error('[Razorpay] Verify error:', err.message);
+    res.status(500).json({ error: 'Payment verification failed' });
+  }
+});
+
+// Get Razorpay public key (frontend uses this to initialize the checkout)
+app.get('/api/payments/config', auth, (req, res) => {
+  res.json({
+    enabled: !!razorpay,
+    key: razorpay ? process.env.RAZORPAY_KEY_ID : null,
+    coming_soon: !razorpay,
+    message: razorpay ? 'Payments active' : 'Payments coming soon — LLC registration in progress',
+  });
+});
+
+// ══════════════════════════════════════════════════════
 //  HEALTH CHECK
 // ══════════════════════════════════════════════════════
-app.get('/api/health', (req, res) => res.json({ status: '🐾 PETclub API running', time: new Date() }));
+app.get('/api/health', (req, res) => res.json({
+  status: '🐾 PETclub API running',
+  time: new Date(),
+  services: {
+    supabase: '✅',
+    twilio: process.env.TWILIO_ACCOUNT_SID ? '✅' : '⚠️ not configured',
+    resend: process.env.RESEND_API_KEY ? '✅' : '⚠️ not configured',
+    razorpay: razorpay ? '✅ live' : '⏳ pending (set env vars)',
+    fcm: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
+  },
+}));
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 app.use((err, req, res, next) => { console.error(err); res.status(500).json({ error: 'Server error' }); });
 
-app.listen(PORT, () => console.log(`🐾 PETclub API → http://localhost:${PORT}`));
+// ── Startup migration: add live-tracking columns to bookings (safe, IF NOT EXISTS) ──
+async function runStartupMigrations() {
+  const migrations = [
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_lat                  DOUBLE PRECISION`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_lng                  DOUBLE PRECISION`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_location_updated_at  TIMESTAMPTZ`,
+  ];
+  for (const sql of migrations) {
+    // PostgREST can't run DDL, but Supabase service-role key can call
+    // the pg_query RPC if it's enabled — fallback: log and continue
+    const { error } = await supabase.rpc('pg_query', { query: sql }).catch(() => ({ error: { message: 'rpc_not_available' } }));
+    if (error && !error.message?.includes('already exists') && !error.message?.includes('rpc_not_available')) {
+      console.warn('[migration] Could not run:', sql.slice(0, 60), '→', error.message);
+    }
+  }
+}
+
+app.listen(PORT, async () => {
+  console.log(`🐾 PETclub API → http://localhost:${PORT}`);
+  // Run migrations in background — won't block startup
+  runStartupMigrations().catch(e => console.warn('[startup migration]', e.message));
+});
