@@ -14,8 +14,8 @@ const { createClient } = require('@supabase/supabase-js');
 const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET;
-const IOS_LINK = 'https://apps.apple.com/in/app/petclub';
-const ANDROID_LINK = 'https://play.google.com/store/apps/details?id=in.petclub';
+const WEB_APP_URL = 'https://petclub-app.vercel.app';
+const WEBSITE_URL = 'https://petclub-website.vercel.app';
 
 // ── Services ───────────────────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
@@ -294,33 +294,40 @@ app.post('/api/contact/send-link', async (req, res) => {
     // SMS via Twilio (non-blocking — India toll-free restriction handled gracefully)
     const fullLeadPhone = phone.startsWith('+') ? phone : `+91${phone}`;
     sendSMS(fullLeadPhone,
-      `Hi ${fn}! 🐾 Welcome to PETclub!\n\nDownload the app:\n📱 iOS: ${IOS_LINK}\n▶️ Android: ${ANDROID_LINK}\n\nAll pet services in ${city || 'your city'}!`
+      `Hi ${fn}! 🐾 Welcome to PETclub!\n\nAccess the app here:\n🌐 ${WEB_APP_URL}\n\nAll pet services in ${city || 'your city'}! 📱 Mobile apps coming soon.`
     ).catch(e => console.error('Lead SMS failed (non-blocking):', e.message));
 
     // Email via SendGrid
-    await sendEmail(email, `🐾 Your PETclub App Link, ${fn}!`, `
-      <div style="font-family:Arial,sans-serif;max-width:600px;margin:0 auto;">
-        <div style="background:linear-gradient(135deg,#f97316,#f59e0b);padding:40px;text-align:center;color:white;border-radius:20px 20px 0 0;">
-          <div style="font-size:48px">🐾</div>
-          <h1 style="margin:10px 0 4px">Welcome to PETclub India!</h1>
-          <p style="opacity:.9">Your app download link is ready</p>
+    await sendEmail(email, `🐾 Welcome to PETclub, ${fn}!`, `
+      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:580px;margin:0 auto;background:#fff;border-radius:20px;overflow:hidden;border:1px solid #f1f5f9;">
+        <div style="background:linear-gradient(135deg,#f97316,#fbbf24);padding:40px 32px;text-align:center;">
+          <div style="font-size:52px;margin-bottom:8px">🐾</div>
+          <h1 style="color:white;margin:0;font-size:26px;font-weight:800">Welcome to PETclub!</h1>
+          <p style="color:rgba(255,255,255,0.88);margin:8px 0 0;font-size:15px">India's #1 pet care platform</p>
         </div>
-        <div style="background:white;padding:32px;border:1px solid #f1f5f9;">
-          <p>Hi <b>${fn}</b>! Book ${service||'grooming, training & vet care'} for ${pet||'your pet'} in ${city||'your city'}.</p>
-          <div style="text-align:center;margin:24px 0;">
-            <a href="${IOS_LINK}" style="display:inline-block;background:#0f172a;color:white;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:700;margin:6px;">🍎 App Store</a><br/>
-            <a href="${ANDROID_LINK}" style="display:inline-block;background:#0f172a;color:white;padding:14px 28px;border-radius:12px;text-decoration:none;font-weight:700;margin:6px;">▶️ Google Play</a>
+        <div style="padding:32px;">
+          <p style="color:#1e293b;font-size:16px;margin:0 0 20px">Hi <b>${fn}</b>! 🎉 You're all set. Book ${service||'grooming, training & vet care'} for ${pet||'your pet'} in ${city||'your city'} — right from your browser.</p>
+
+          <div style="text-align:center;margin:28px 0;">
+            <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:16px 36px;border-radius:14px;text-decoration:none;font-weight:800;font-size:16px;letter-spacing:0.3px;">🚀 Open PETclub App</a>
           </div>
-          <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:12px;padding:16px;">
-            <b style="color:#16a34a">🌟 What's on the app:</b>
-            <ul style="color:#64748b;line-height:2;margin-top:8px">
-              <li>Grooming, Training, Vet & Pet Food</li><li>Live GPS tracking & progress reports</li>
-              <li>🛡️ ₹25,000 service protection</li><li>Digital health records for 3 years</li>
+
+          <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:20px;margin-bottom:20px;">
+            <p style="color:#c2410c;font-weight:700;margin:0 0 10px;font-size:14px">🌟 What you can do:</p>
+            <ul style="color:#64748b;line-height:2;margin:0;padding-left:18px;font-size:14px">
+              <li>Book grooming, training, vet visits & more</li>
+              <li>Manage your pet's health records digitally</li>
+              <li>Track service professionals in real time</li>
+              <li>🛡️ ₹25,000 service protection guarantee</li>
             </ul>
           </div>
+
+          <div style="background:#f8fafc;border-radius:12px;padding:16px;text-align:center;">
+            <p style="color:#64748b;font-size:13px;margin:0">📱 <b>Native mobile apps coming soon</b> for iOS & Android.<br/>Until then, our web app works great on any device!</p>
+          </div>
         </div>
-        <div style="background:#f8fafc;padding:16px;text-align:center;border-radius:0 0 20px 20px;font-size:12px;color:#94a3b8;">
-          © 2025 PETclub India
+        <div style="background:#f8fafc;padding:16px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #f1f5f9;">
+          © 2025 PETclub · For pets, with love 🐾 · <a href="${WEBSITE_URL}" style="color:#f97316;text-decoration:none;">petclub.in</a>
         </div>
       </div>`);
 
