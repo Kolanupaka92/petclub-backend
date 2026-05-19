@@ -9,7 +9,7 @@ const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const twilio = require('twilio');
 const { Resend } = require('resend');
-const nodemailer = require('nodemailer');
+// nodemailer removed — Railway blocks SMTP; using Resend HTTPS API instead
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
@@ -24,18 +24,8 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SER
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
-// Gmail SMTP transporter (used when GMAIL_USER + GMAIL_APP_PASSWORD are set)
-// → Can send to ANY email address, no domain verification needed
-// → Set up: Google Account → Security → App Passwords → "PETclub"
-const gmailTransporter = (process.env.GMAIL_USER && process.env.GMAIL_APP_PASSWORD)
-  ? nodemailer.createTransport({
-      service: 'gmail',
-      auth: {
-        user: process.env.GMAIL_USER,
-        pass: process.env.GMAIL_APP_PASSWORD,  // 16-char App Password (not account password)
-      },
-    })
-  : null;
+// NOTE: Gmail SMTP is not used — Railway blocks outbound SMTP (port 587/465).
+// All email goes through Resend HTTPS API instead.
 
 // ── Middleware ─────────────────────────────────────────
 const ALLOWED_ORIGINS = [
@@ -81,18 +71,7 @@ const sendSMS = async (fullPhone, body) => {
 };
 
 const sendEmail = async (to, subject, html) => {
-  // Strategy: Gmail SMTP first (sends to anyone), Resend as fallback
-  if (gmailTransporter) {
-    const info = await gmailTransporter.sendMail({
-      from: `"PETclub 🐾" <${process.env.GMAIL_USER}>`,
-      to,
-      subject,
-      html,
-    });
-    console.log(`[Gmail] Email sent to ${to} — messageId: ${info.messageId}`);
-    return info;
-  }
-  // Fallback: Resend (free plan: only delivers to verified account email)
+  // Resend HTTPS API — works on Railway (no SMTP needed); free plan allows any TO address
   if (resend) {
     const result = await resend.emails.send({
       from: process.env.RESEND_FROM_EMAIL || 'PETclub <onboarding@resend.dev>',
@@ -119,6 +98,125 @@ const sendEmail = async (to, subject, html) => {
     }
   }
 })();
+
+// ══════════════════════════════════════════════════════
+//  BOOKING DISPATCH SYSTEM — Round-Robin / Uber-style
+// ══════════════════════════════════════════════════════
+const RESPONSE_TIMEOUT_MINS = 5; // Pro has 5 mins to Accept/Reject
+
+// Round-robin: find next eligible professional (not already tried for this booking)
+const findNextPro = async (city, subRole, excludeProIds = []) => {
+  let q = supabase
+    .from('professional_profiles')
+    .select('id, user_id, last_assigned_at, users(name, phone, email)')
+    .eq('verification_status', 'approved')
+    .eq('is_available', true)
+    .eq('sub_role', subRole);
+  if (city) q = q.ilike('city', `%${city}%`);
+  // Exclude pros who already got this booking and rejected / timed out
+  for (const xid of excludeProIds) q = q.neq('id', xid);
+  const { data: pros } = await q;
+  if (!pros || pros.length === 0) return null;
+  // Sort: never-assigned first (null last_assigned_at), then oldest assignment = fair rotation
+  pros.sort((a, b) => {
+    if (!a.last_assigned_at && !b.last_assigned_at) return 0;
+    if (!a.last_assigned_at) return -1;
+    if (!b.last_assigned_at) return 1;
+    return new Date(a.last_assigned_at) - new Date(b.last_assigned_at);
+  });
+  return pros[0];
+};
+
+// Offer a booking to a specific professional + send email/SMS notification
+const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
+  const deadline = new Date(Date.now() + RESPONSE_TIMEOUT_MINS * 60 * 1000).toISOString();
+  await supabase.from('booking_assignments').upsert({
+    booking_id: bookingId, professional_id: pro.id,
+    status: 'offered', offered_at: new Date().toISOString(), response_deadline: deadline,
+  }, { onConflict: 'booking_id, professional_id' });
+  await supabase.from('bookings').update({
+    professional_id: pro.id, assignment_status: 'offered', response_deadline: deadline,
+  }).eq('id', bookingId);
+  await supabase.from('professional_profiles').update({ last_assigned_at: new Date().toISOString() }).eq('id', pro.id);
+
+  const svc      = bookingDetails.service_name || bookingDetails.service_type || 'Service';
+  const petName  = bookingDetails.pet_name || 'Pet';
+  const dateStr  = bookingDetails.scheduled_at
+    ? new Date(bookingDetails.scheduled_at).toLocaleString('en-IN', { weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' })
+    : 'TBD';
+  const location = bookingDetails.city || bookingDetails.address || 'TBD';
+  const proPhone = pro.users?.phone;
+  const proEmail = pro.users?.email;
+
+  const notifHtml = `
+    <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:16px;border:1px solid #f1f5f9;overflow:hidden;">
+      <div style="background:linear-gradient(135deg,#f97316,#ea580c);padding:28px 24px;text-align:center;">
+        <div style="font-size:40px;margin-bottom:8px">🐾</div>
+        <h2 style="color:white;margin:0;font-size:20px;font-weight:800">New Booking Request!</h2>
+        <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:13px">You have <strong>${RESPONSE_TIMEOUT_MINS} minutes</strong> to respond</p>
+      </div>
+      <div style="padding:24px;">
+        <div style="background:#fff7ed;border:2px solid #fed7aa;border-radius:12px;padding:14px;margin-bottom:20px;text-align:center;">
+          <div style="font-size:28px;margin-bottom:4px">⏱️</div>
+          <div style="font-size:24px;font-weight:900;color:#c2410c;font-family:monospace">${RESPONSE_TIMEOUT_MINS}:00</div>
+          <div style="font-size:12px;color:#9a3412;margin-top:4px">minutes to Accept or Reject</div>
+        </div>
+        <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+          <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8;width:38%">Service</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${svc}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">Pet</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${petName}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">Date & Time</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${dateStr}</td></tr>
+          <tr><td style="padding:8px 0;font-size:12px;color:#94a3b8">Location</td><td style="padding:8px 0;font-size:14px;font-weight:700;color:#1e293b">${location}</td></tr>
+        </table>
+        <div style="text-align:center;margin-bottom:16px;">
+          <a href="https://petclub-app.vercel.app" style="display:inline-block;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;padding:14px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:14px;">✅ Open App to Respond</a>
+        </div>
+        <p style="color:#94a3b8;font-size:11px;text-align:center;margin:0;">No response in ${RESPONSE_TIMEOUT_MINS} mins → request auto-passes to next professional</p>
+      </div>
+    </div>`;
+
+  if (proEmail) {
+    sendEmail(proEmail, `🐾 New Booking Request — ${svc} · Respond in ${RESPONSE_TIMEOUT_MINS} min`, notifHtml).catch(console.error);
+  }
+  if (proPhone) {
+    sendSMS(
+      proPhone.startsWith('+') ? proPhone : `+91${proPhone}`,
+      `🐾 PETclub: New ${svc} booking for ${petName}!\n📅 ${dateStr} · 📍 ${location}\n⏰ Accept or Reject within ${RESPONSE_TIMEOUT_MINS} mins in the app.\nhttps://petclub-app.vercel.app`
+    ).catch(console.error);
+  }
+};
+
+// Process timed-out offers (lazy eval — called on booking endpoints)
+const processTimedOutAssignments = async () => {
+  const { data: timedOut } = await supabase
+    .from('booking_assignments')
+    .select('*, bookings(*)')
+    .eq('status', 'offered')
+    .lt('response_deadline', new Date().toISOString());
+  if (!timedOut?.length) return;
+
+  for (const assignment of timedOut) {
+    await supabase.from('booking_assignments')
+      .update({ status: 'timed_out', responded_at: new Date().toISOString() }).eq('id', assignment.id);
+    const bk = assignment.bookings;
+    if (!bk || bk.assignment_status === 'confirmed') continue;
+    // Fetch all previously tried pros for this booking
+    const { data: tried } = await supabase.from('booking_assignments').select('professional_id')
+      .eq('booking_id', assignment.booking_id).in('status', ['rejected', 'timed_out', 'accepted']);
+    const excludeIds = tried?.map(r => r.professional_id) || [];
+    // Get pet name for notification
+    let petName = 'Pet';
+    if (bk.pet_id) {
+      const { data: pet } = await supabase.from('pets').select('name').eq('id', bk.pet_id).single();
+      petName = pet?.name || 'Pet';
+    }
+    const nextPro = await findNextPro(bk.city || '', bk.service_type || '', excludeIds);
+    if (nextPro) {
+      await offerBookingToPro(assignment.booking_id, nextPro, { ...bk, pet_name: petName });
+    } else {
+      await supabase.from('bookings').update({ assignment_status: 'no_pros_available', professional_id: null }).eq('id', assignment.booking_id);
+    }
+  }
+};
 
 // ══════════════════════════════════════════════════════
 //  AUTH: SEND OTP  (SMS for US · Email for India)
@@ -201,18 +299,14 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
       });
     }
 
-    // ── US (+1): SMS + Email (both channels fired in parallel) ──
-    let smsSent = false, emailSent = false;
-
-    // SMS (Twilio — may be limited on trial accounts)
-    await sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`)
-      .then(() => { smsSent = true; console.log(`[OTP] SMS sent to ${fullPhone}`); })
+    // ── US (+1): SMS + Email fired in parallel (non-blocking) ──
+    sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`)
+      .then(() => console.log(`[OTP] SMS sent to ${fullPhone}`))
       .catch(e => console.error('SMS failed:', e.message));
 
-    // Email — awaited so failures surface clearly in logs
     if (validEmail) {
-      await sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, userOtpHtml)
-        .then(() => { emailSent = true; console.log(`[OTP] Email sent to ${email}`); })
+      sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, userOtpHtml)
+        .then(() => console.log(`[OTP] Email sent to ${email}`))
         .catch(e => console.error(`[OTP] Email failed (${email}):`, e.message));
     }
 
@@ -222,18 +316,11 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
         .catch(e => console.error('[OTP] Admin copy failed:', e.message));
     }
 
-    if (!smsSent && !emailSent && !validEmail) {
-      return res.status(500).json({ error: 'Could not send OTP — please provide an email address as backup.' });
-    }
-
-    console.log(`[OTP] Delivery summary → SMS:${smsSent} Email:${emailSent} Phone:${fullPhone}`);
     res.json({
       success: true,
-      message: smsSent
-        ? `OTP sent via SMS${validEmail ? ` + email to ${email}` : ''} · 🇺🇸`
-        : validEmail
-          ? `OTP sent to ${email} (SMS unavailable) · 🇺🇸`
-          : 'OTP sent · 🇺🇸',
+      message: validEmail
+        ? `OTP sent via SMS + email to ${email} · 🇺🇸`
+        : `OTP sent via SMS · 🇺🇸`,
     });
   } catch (err) {
     console.error('OTP send error:', err.message);
@@ -266,15 +353,22 @@ app.post('/api/auth/verify-otp', async (req, res) => {
       user = nu;
     }
 
-    // For professionals, include their verification status
+    // Block suspended accounts
+    if (user.is_active === false) {
+      return res.status(403).json({ error: 'Your account has been suspended. Contact support at support@petclub.in' });
+    }
+
+    // For professionals, include their verification status and sub_role
     let verificationStatus = null;
+    let subRole = null;
     if (user.role === 'professional') {
       const { data: prof } = await supabase.from('professional_profiles').select('verification_status, sub_role').eq('user_id', user.id).single();
       verificationStatus = prof?.verification_status || 'pending';
+      subRole = prof?.sub_role || null;
     }
 
     const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
-    res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus } });
+    res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     console.error('OTP verify error:', err.message);
     res.status(500).json({ error: 'Verification failed.' });
@@ -318,6 +412,7 @@ app.post('/api/users/set-role', auth, async (req, res) => {
     const { data: user } = await supabase.from('users').select('*').eq('id', req.user.id).single();
     const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
     const verificationStatus = role === 'professional' ? 'pending' : null;
+    // subRole already defined above from req.body
 
     // Send welcome email (non-blocking)
     const fn = (name || 'there').split(' ')[0];
@@ -381,7 +476,7 @@ app.post('/api/users/set-role', auth, async (req, res) => {
       ).catch(e => console.error('Welcome email failed:', e.message));
     }
 
-    res.json({ success: true, token, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus } });
+    res.json({ success: true, token, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
   } catch (err) {
     console.error('Set role error:', err.message);
     res.status(500).json({ error: 'Failed to set role.' });
@@ -469,14 +564,28 @@ app.post('/api/admin/make-admin', async (req, res) => {
 //  USER ROUTES
 // ══════════════════════════════════════════════════════
 app.get('/api/users/me', auth, async (req, res) => {
-  const { data } = await supabase.from('users').select('*, customer_profiles(*)').eq('id', req.user.id).single();
-  res.json({ success: true, user: data });
+  const { data } = await supabase
+    .from('users')
+    .select('*, customer_profiles(*), professional_profiles(verification_status, sub_role, city, bio, is_available)')
+    .eq('id', req.user.id)
+    .single();
+  // Flatten professional profile fields for easier consumption on the client
+  const prof = data?.professional_profiles?.[0] || data?.professional_profiles || null;
+  const user = {
+    ...data,
+    verificationStatus: prof?.verification_status || null,
+    subRole: prof?.sub_role || null,
+  };
+  res.json({ success: true, user });
 });
 
 app.put('/api/users/me', auth, async (req, res) => {
   const { name, email, city, area, address, pincode } = req.body;
   await supabase.from('users').update({ name, email }).eq('id', req.user.id);
-  await supabase.from('customer_profiles').upsert({ user_id: req.user.id, city, area, address, pincode }, { onConflict: 'user_id' });
+  // Only write address fields to customer_profiles for customers (not professionals)
+  if (req.user.role === 'customer') {
+    await supabase.from('customer_profiles').upsert({ user_id: req.user.id, city, area, address, pincode }, { onConflict: 'user_id' });
+  }
   res.json({ success: true, message: 'Profile updated' });
 });
 
@@ -537,13 +646,21 @@ app.get('/api/professionals/me', auth, async (req, res) => {
 
 app.put('/api/professionals/me', auth, async (req, res) => {
   const { name, email, city, area, address, bio, experience, services, service_areas, langs, price_basic, price_full, price_custom } = req.body;
+  const { sub_role, certification, license_number, clinic_name } = req.body;
   if (name !== undefined || email !== undefined)
     await supabase.from('users').update({ name, email }).eq('id', req.user.id);
-  const { data } = await supabase.from('professional_profiles').update({
+  const updatePayload = {
     city, area, address, bio, experience,
     services: Array.isArray(services) ? JSON.stringify(services) : services,
     service_areas, langs, price_basic, price_full, price_custom,
-  }).eq('user_id', req.user.id).select().single();
+    certification, license_number, clinic_name,
+  };
+  // Only update sub_role if explicitly provided (prevents overwriting with undefined)
+  if (sub_role && ['Groomer','Trainer','Vet'].includes(sub_role)) {
+    updatePayload.sub_role = sub_role;
+  }
+  const { data } = await supabase.from('professional_profiles').update(updatePayload)
+    .eq('user_id', req.user.id).select().single();
   res.json({ success: true, profile: data });
 });
 
@@ -623,18 +740,188 @@ app.get('/api/bookings', auth, async (req, res) => {
 });
 
 app.post('/api/bookings', auth, async (req, res) => {
-  const { data: booking } = await supabase.from('bookings').insert({ customer_id: req.user.id, status: 'upcoming', payment_status: 'pending', ...req.body }).select().single();
-  // Notify professional via SMS
-  if (req.body.professional_id) {
-    const { data: p } = await supabase.from('professional_profiles').select('users(phone)').eq('id', req.body.professional_id).single();
-    if (p?.users?.phone) sendSMS(p.users.phone.startsWith('+') ? p.users.phone : `+91${p.users.phone}`, `🐾 New PETclub booking: ${req.body.service_name || req.body.service_type}. Check the app! `).catch(console.error);
+  try {
+    processTimedOutAssignments().catch(console.error); // background cleanup
+    const { service_type, city, pet_id, service_name, scheduled_at, address, notes, amount } = req.body;
+    const { data: booking } = await supabase.from('bookings').insert({
+      customer_id: req.user.id, status: 'upcoming', payment_status: 'pending',
+      assignment_status: 'searching',
+      service_type: service_type || null, service_name: service_name || null,
+      pet_id: pet_id || null, scheduled_at: scheduled_at || null,
+      city: city || null, address: address || null, notes: notes || null,
+      amount: amount || null,
+    }).select().single();
+    if (!booking) return res.status(500).json({ error: 'Failed to create booking' });
+
+    // Auto-assign round-robin
+    if (service_type && ['Groomer', 'Trainer', 'Vet'].includes(service_type)) {
+      let petName = 'Pet';
+      if (pet_id) {
+        const { data: pet } = await supabase.from('pets').select('name').eq('id', pet_id).single();
+        petName = pet?.name || 'Pet';
+      }
+      const nextPro = await findNextPro(city || '', service_type, []);
+      if (nextPro) {
+        await offerBookingToPro(booking.id, nextPro, { ...booking, pet_name: petName });
+      } else {
+        await supabase.from('bookings').update({ assignment_status: 'no_pros_available' }).eq('id', booking.id);
+      }
+    }
+
+    const { data: updated } = await supabase.from('bookings').select('*').eq('id', booking.id).single();
+    res.json({ success: true, booking: updated });
+  } catch (err) {
+    console.error('Create booking error:', err.message);
+    res.status(500).json({ error: 'Failed to create booking' });
   }
-  res.json({ success: true, booking });
 });
 
 app.put('/api/bookings/:id/status', auth, async (req, res) => {
+  const { data: booking } = await supabase.from('bookings').select('customer_id, professional_id').eq('id', req.params.id).single();
+  if (!booking) return res.status(404).json({ error: 'Booking not found' });
+
+  // Ownership check: customer or the professional involved can update status
+  let authorized = false;
+  if (req.user.role === 'admin') authorized = true;
+  else if (req.user.role === 'customer' && booking.customer_id === req.user.id) authorized = true;
+  else if (req.user.role === 'professional') {
+    const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
+    if (prof && booking.professional_id === prof.id) authorized = true;
+  }
+  if (!authorized) return res.status(403).json({ error: 'Not authorized to update this booking' });
+
   const { data } = await supabase.from('bookings').update({ status: req.body.status }).eq('id', req.params.id).select().single();
   res.json({ success: true, booking: data });
+});
+
+// Pro: Accept or Reject a booking offer
+app.post('/api/bookings/:id/respond', auth, async (req, res) => {
+  try {
+    const { action } = req.body; // 'accept' | 'reject'
+    if (!['accept','reject'].includes(action)) return res.status(400).json({ error: "action must be 'accept' or 'reject'" });
+
+    const { data: prof } = await supabase.from('professional_profiles').select('id, users(name, phone, email)').eq('user_id', req.user.id).single();
+    if (!prof) return res.status(403).json({ error: 'Professional profile not found' });
+
+    const { data: assignment } = await supabase.from('booking_assignments')
+      .select('*').eq('booking_id', req.params.id).eq('professional_id', prof.id).eq('status', 'offered').single();
+    if (!assignment) return res.status(404).json({ error: 'No active offer found for this booking' });
+    if (new Date() > new Date(assignment.response_deadline))
+      return res.status(400).json({ error: 'Response window expired — the request was auto-passed' });
+
+    await supabase.from('booking_assignments').update({ status: action === 'accept' ? 'accepted' : 'rejected', responded_at: new Date().toISOString() }).eq('id', assignment.id);
+
+    if (action === 'accept') {
+      await supabase.from('bookings').update({ assignment_status: 'confirmed', professional_id: prof.id, status: 'upcoming' }).eq('id', req.params.id);
+
+      // Notify customer
+      const { data: bk } = await supabase.from('bookings').select('*, users!customer_id(name,phone,email)').eq('id', req.params.id).single();
+      const custEmail = bk?.users?.email;
+      const custPhone = bk?.users?.phone;
+      const proName = prof.users?.name || 'Your professional';
+      const svc = bk?.service_name || bk?.service_type || 'Service';
+      const dateStr = bk?.scheduled_at ? new Date(bk.scheduled_at).toLocaleString('en-IN', { weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : 'TBD';
+
+      if (custEmail) {
+        sendEmail(custEmail, `✅ Booking Confirmed — ${proName} will serve you!`, `
+          <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#fff;border-radius:16px;border:1px solid #f1f5f9;">
+            <div style="text-align:center;margin-bottom:20px;"><div style="font-size:48px">✅</div><h2 style="color:#16a34a;margin:8px 0">Booking Confirmed!</h2></div>
+            <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
+              <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8;width:38%">Service</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${svc}</td></tr>
+              <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">Professional</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${proName}</td></tr>
+              <tr><td style="padding:8px 0;font-size:12px;color:#94a3b8">Date & Time</td><td style="padding:8px 0;font-size:14px;font-weight:700;color:#1e293b">${dateStr}</td></tr>
+            </table>
+            <div style="text-align:center;"><a href="https://petclub-app.vercel.app" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:14px 32px;border-radius:50px;text-decoration:none;font-weight:700;">Open PETclub App →</a></div>
+          </div>`).catch(console.error);
+      }
+      if (custPhone) {
+        sendSMS(custPhone.startsWith('+') ? custPhone : `+91${custPhone}`,
+          `✅ PETclub: ${svc} booking confirmed!\n👤 ${proName} will arrive on ${dateStr}.\n📱 View in app: https://petclub-app.vercel.app`
+        ).catch(console.error);
+      }
+      return res.json({ success: true, message: `Booking accepted! Customer has been notified.` });
+    }
+
+    // Reject: find next pro (round-robin)
+    const { data: tried } = await supabase.from('booking_assignments').select('professional_id')
+      .eq('booking_id', req.params.id).in('status', ['rejected', 'timed_out', 'accepted']);
+    const excludeIds = tried?.map(r => r.professional_id) || [];
+    const { data: bk } = await supabase.from('bookings').select('*').eq('id', req.params.id).single();
+    let petName = 'Pet';
+    if (bk?.pet_id) {
+      const { data: pet } = await supabase.from('pets').select('name').eq('id', bk.pet_id).single();
+      petName = pet?.name || 'Pet';
+    }
+    const nextPro = await findNextPro(bk?.city || '', bk?.service_type || '', excludeIds);
+    if (nextPro) {
+      await offerBookingToPro(req.params.id, nextPro, { ...bk, pet_name: petName });
+      return res.json({ success: true, message: 'Passed to next available professional' });
+    }
+    await supabase.from('bookings').update({ assignment_status: 'no_pros_available', professional_id: null }).eq('id', req.params.id);
+    res.json({ success: true, message: 'No other professionals available right now' });
+  } catch (err) {
+    console.error('Respond booking error:', err.message);
+    res.status(500).json({ error: 'Failed to process response' });
+  }
+});
+
+// Pro: Get all incoming (offered) bookings
+app.get('/api/bookings/incoming', auth, async (req, res) => {
+  try {
+    processTimedOutAssignments().catch(console.error);
+    const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
+    if (!prof) return res.json({ success: true, bookings: [] });
+
+    const { data: assignments } = await supabase
+      .from('booking_assignments')
+      .select('*, bookings(*, pets(name, species, breed), users!customer_id(name, phone))')
+      .eq('professional_id', prof.id)
+      .eq('status', 'offered')
+      .gt('response_deadline', new Date().toISOString());
+
+    const bookings = (assignments || []).map(a => ({
+      ...(a.bookings || {}),
+      assignment_id: a.id,
+      response_deadline: a.response_deadline,
+      offered_at: a.offered_at,
+    }));
+    res.json({ success: true, bookings });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Admin: Manually assign a booking to a specific professional
+app.put('/api/bookings/:id/assign', auth, adminOnly, async (req, res) => {
+  try {
+    const { professionalId } = req.body;
+    const { data: prof } = await supabase.from('professional_profiles').select('id, users(name, phone, email)').eq('id', professionalId).single();
+    if (!prof) return res.status(404).json({ error: 'Professional not found' });
+    const { data: bk } = await supabase.from('bookings').select('*').eq('id', req.params.id).single();
+    if (!bk) return res.status(404).json({ error: 'Booking not found' });
+    let petName = 'Pet';
+    if (bk.pet_id) {
+      const { data: pet } = await supabase.from('pets').select('name').eq('id', bk.pet_id).single();
+      petName = pet?.name || 'Pet';
+    }
+    await offerBookingToPro(req.params.id, prof, { ...bk, pet_name: petName });
+    await supabase.from('bookings').update({ assignment_status: 'offered' }).eq('id', req.params.id);
+    res.json({ success: true, message: `Assigned to ${prof.users?.name || professionalId}` });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════
+//  PAYMENTS
+// ══════════════════════════════════════════════════════
+
+// Payment routes — disabled until payment gateway is configured
+app.post('/api/payments/create-order', auth, (_req, res) => {
+  res.status(503).json({ error: 'Online payments are not yet available. Please pay on the day of service.' });
+});
+app.post('/api/payments/verify', auth, (_req, res) => {
+  res.status(503).json({ error: 'Online payments are not yet available.' });
 });
 
 // ══════════════════════════════════════════════════════
@@ -707,7 +994,10 @@ app.get('/api/admin/pending-verifications', auth, adminOnly, async (req, res) =>
 app.put('/api/admin/verify/:id', auth, adminOnly, async (req, res) => {
   const { action, reason } = req.body;
   const status = action === 'approve' ? 'approved' : 'rejected';
-  const { data: prof } = await supabase.from('professional_profiles').update({ verification_status: status }).eq('id', req.params.id).select('*, users(name,phone,email)').single();
+  const profileUpdate = { verification_status: status };
+  // When approving, set is_available: true so the professional appears in search results
+  if (action === 'approve') profileUpdate.is_available = true;
+  const { data: prof } = await supabase.from('professional_profiles').update(profileUpdate).eq('id', req.params.id).select('*, users(name,phone,email)').single();
   await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: `${action}_professional`, target_id: req.params.id, target_type: 'professional', notes: reason });
   if (prof?.users?.phone) {
     const sms = action === 'approve'
@@ -718,6 +1008,15 @@ app.put('/api/admin/verify/:id', auth, adminOnly, async (req, res) => {
     if (prof.users.email) sendEmail(prof.users.email, `PETclub Verification ${action==='approve'?'Approved ✅':'Update ❌'}`, `<p>${sms}</p>`).catch(console.error);
   }
   res.json({ success: true, professional: prof });
+});
+
+// Admin: set sub_role for a professional (fixes users with null sub_role)
+app.put('/api/admin/users/:id/set-role', auth, adminOnly, async (req, res) => {
+  const { subRole } = req.body;
+  if (!['Groomer','Trainer','Vet'].includes(subRole))
+    return res.status(400).json({ error: 'subRole must be Groomer, Trainer, or Vet' });
+  await supabase.from('professional_profiles').update({ sub_role: subRole }).eq('user_id', req.params.id);
+  res.json({ success: true, subRole });
 });
 
 app.put('/api/admin/users/:id/suspend', auth, adminOnly, async (req, res) => {
