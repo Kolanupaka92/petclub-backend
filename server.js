@@ -93,6 +93,7 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
     if (!phone || !/^\d{6,15}$/.test(phone))
       return res.status(400).json({ error: 'Valid phone number required' });
 
+    const isIndia = countryCode === '91';
     const fullPhone = `+${countryCode}${phone}`;
     const otp = genOTP();
     const expires = new Date(Date.now() + 10 * 60000).toISOString();
@@ -102,11 +103,6 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
       { onConflict: 'phone' }
     );
 
-    // Send SMS (primary — may fail for unregistered toll-free in US)
-    sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`)
-      .catch(e => console.error('SMS failed:', e.message));
-
-    // Send via email (fallback — always try if email provided)
     const otpEmailHtml = `
       <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:420px;margin:0 auto;text-align:center;padding:40px 20px;background:#fff;border-radius:20px;">
         <div style="font-size:52px;margin-bottom:12px">🐾</div>
@@ -120,14 +116,38 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
         <p style="color:#cbd5e1;font-size:11px">© 2025 PETclub · For pets, with love 🐾</p>
       </div>`;
 
-    if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      sendEmail(email, `🐾 PETclub OTP: ${otp}`, otpEmailHtml)
-        .catch(e => console.error('Email OTP failed:', e.message));
+    let emailSent = false;
+    let emailError = null;
+
+    // India (+91): SMS not available — email is the ONLY channel, so await it
+    if (isIndia) {
+      if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+        return res.status(400).json({ error: 'Email is required for India (+91) users — OTP will be sent to your email.' });
+      try {
+        await sendEmail(email, `🐾 PETclub OTP: ${otp}`, otpEmailHtml);
+        emailSent = true;
+      } catch (e) {
+        emailError = e.message;
+        console.error('India email OTP failed:', e.message);
+        // OTP is stored — tell user it failed so they can retry with correct email
+        return res.status(500).json({
+          error: `Failed to send OTP email to ${email}. Please check the email address and try again. (${e.message?.slice(0,80)})`,
+        });
+      }
+    } else {
+      // US (+1): SMS primary, email optional backup
+      sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`)
+        .catch(e => console.error('SMS failed:', e.message));
+      if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        sendEmail(email, `🐾 PETclub OTP: ${otp}`, otpEmailHtml)
+          .then(() => { emailSent = true; })
+          .catch(e => console.error('Email OTP failed (non-critical):', e.message));
+      }
     }
 
-    const flag = countryCode === '1' ? '🇺🇸' : '🇮🇳';
-    const emailNote = email ? ' and email' : '';
-    res.json({ success: true, message: `OTP sent via SMS${emailNote} to ${flag} +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}` });
+    const flag = isIndia ? '🇮🇳' : '🇺🇸';
+    const channel = isIndia ? `email (${email})` : `SMS${emailSent ? ` + email (${email})` : ''}`;
+    res.json({ success: true, message: `OTP sent via ${channel} · ${flag} +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}`, emailSent });
   } catch (err) {
     console.error('OTP send error:', err.message);
     res.status(500).json({ error: 'Failed to send OTP. Try again.' });
