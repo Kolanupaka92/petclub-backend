@@ -117,37 +117,82 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
       </div>`;
 
     let emailSent = false;
-    let emailError = null;
+    // TESTING_RELAY_EMAIL: During beta/testing, relay all OTPs to admin email too
+    // (Resend free plan can only deliver to verified account email)
+    const relayEmail = process.env.TESTING_RELAY_EMAIL;
+
+    // Helper: build relay HTML that shows which phone/email this OTP is for
+    const relayHtml = (targetEmail, targetPhone) => `
+      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:460px;margin:0 auto;padding:20px;background:#fff;">
+        <div style="background:#fef3c7;border:2px solid #f59e0b;border-radius:12px;padding:16px;margin-bottom:16px;">
+          <p style="margin:0;font-size:13px;color:#92400e;font-weight:700;">🧪 TESTING RELAY — Admin Only</p>
+          <p style="margin:4px 0 0;font-size:12px;color:#78350f;">OTP for phone: <strong>${targetPhone}</strong> · email: <strong>${targetEmail}</strong></p>
+        </div>
+        ${otpEmailHtml}
+      </div>`;
 
     // India (+91): SMS not available — email is the ONLY channel, so await it
     if (isIndia) {
       if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
         return res.status(400).json({ error: 'Email is required for India (+91) users — OTP will be sent to your email.' });
+
+      // Try sending to user's email
+      let primaryFailed = false;
       try {
         await sendEmail(email, `🐾 PETclub OTP: ${otp}`, otpEmailHtml);
         emailSent = true;
       } catch (e) {
-        emailError = e.message;
-        console.error('India email OTP failed:', e.message);
-        // OTP is stored — tell user it failed so they can retry with correct email
-        return res.status(500).json({
-          error: `Failed to send OTP email to ${email}. Please check the email address and try again. (${e.message?.slice(0,80)})`,
-        });
+        primaryFailed = true;
+        console.error('India email OTP primary failed:', e.message);
+        // Try relay fallback before giving up
+        if (relayEmail && relayEmail !== email) {
+          try {
+            await sendEmail(relayEmail, `🐾 PETclub OTP [relay for ${email}]: ${otp}`, relayHtml(email, fullPhone));
+            emailSent = true;
+            console.log(`OTP relayed to ${relayEmail} for ${email}`);
+          } catch (e2) {
+            console.error('Relay email also failed:', e2.message);
+          }
+        }
+        if (!emailSent) {
+          return res.status(500).json({
+            error: `Failed to send OTP to ${email}. During beta, please use the email address registered with our system. (${e.message?.slice(0,100)})`,
+          });
+        }
       }
-    } else {
-      // US (+1): SMS primary, email optional backup
-      sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`)
-        .catch(e => console.error('SMS failed:', e.message));
-      if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-        sendEmail(email, `🐾 PETclub OTP: ${otp}`, otpEmailHtml)
-          .then(() => { emailSent = true; })
-          .catch(e => console.error('Email OTP failed (non-critical):', e.message));
+
+      // Also send relay copy if primary succeeded and relay is different
+      if (emailSent && relayEmail && relayEmail !== email) {
+        sendEmail(relayEmail, `🧪 [Relay] OTP for ${email} — ${otp}`, relayHtml(email, fullPhone))
+          .catch(e => console.error('Relay copy failed:', e.message));
       }
+
+      const deliveredTo = primaryFailed ? relayEmail : email;
+      const flag = '🇮🇳';
+      res.json({
+        success: true,
+        emailSent: true,
+        deliveredTo,
+        message: primaryFailed
+          ? `OTP sent to admin relay — check ${relayEmail} · ${flag} +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}`
+          : `OTP sent to ${email} · ${flag} +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}`,
+      });
+      return;
     }
 
-    const flag = isIndia ? '🇮🇳' : '🇺🇸';
-    const channel = isIndia ? `email (${email})` : `SMS${emailSent ? ` + email (${email})` : ''}`;
-    res.json({ success: true, message: `OTP sent via ${channel} · ${flag} +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}`, emailSent });
+    // US (+1): SMS primary, email optional backup
+    sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`)
+      .catch(e => console.error('SMS failed:', e.message));
+    if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      sendEmail(email, `🐾 PETclub OTP: ${otp}`, otpEmailHtml)
+        .then(() => { emailSent = true; })
+        .catch(e => console.error('Email OTP failed (non-critical):', e.message));
+    }
+    if (relayEmail) {
+      sendEmail(relayEmail, `🧪 [Relay] OTP for +1${phone} (${email||'no email'}) — ${otp}`, relayHtml(email||'no email', fullPhone))
+        .catch(e => console.error('Relay failed:', e.message));
+    }
+    res.json({ success: true, emailSent, message: `OTP sent via SMS${email ? ' + email' : ''} · 🇺🇸 +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}` });
   } catch (err) {
     console.error('OTP send error:', err.message);
     res.status(500).json({ error: 'Failed to send OTP. Try again.' });
