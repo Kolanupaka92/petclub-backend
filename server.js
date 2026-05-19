@@ -58,11 +58,25 @@ const sendEmail = async (to, subject, html) => {
 };
 
 // ══════════════════════════════════════════════════════
-//  AUTH: SEND OTP
+//  STORAGE: init id-documents bucket on startup
+// ══════════════════════════════════════════════════════
+(async () => {
+  try {
+    await supabase.storage.createBucket('id-documents', { public: true });
+    console.log('✅ Storage bucket ready: id-documents');
+  } catch (e) {
+    if (!e.message?.includes('already exists') && !String(e).includes('already exists')) {
+      console.error('Storage bucket init:', e.message || e);
+    }
+  }
+})();
+
+// ══════════════════════════════════════════════════════
+//  AUTH: SEND OTP  (SMS + email fallback)
 // ══════════════════════════════════════════════════════
 app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
   try {
-    const { phone, countryCode = '91' } = req.body;
+    const { phone, countryCode = '91', email } = req.body;
     if (!phone || !/^\d{6,15}$/.test(phone))
       return res.status(400).json({ error: 'Valid phone number required' });
 
@@ -70,14 +84,37 @@ app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
     const otp = genOTP();
     const expires = new Date(Date.now() + 10 * 60000).toISOString();
 
-    await supabase.from('otp_tokens').upsert({ phone: fullPhone, otp, expires_at: expires, verified: false }, { onConflict: 'phone' });
-
-    sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`).catch(e =>
-      console.error('SMS delivery failed (OTP stored in DB):', e.message)
+    await supabase.from('otp_tokens').upsert(
+      { phone: fullPhone, otp, expires_at: expires, verified: false },
+      { onConflict: 'phone' }
     );
 
+    // Send SMS (primary — may fail for unregistered toll-free in US)
+    sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`)
+      .catch(e => console.error('SMS failed:', e.message));
+
+    // Send via email (fallback — always try if email provided)
+    const otpEmailHtml = `
+      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:420px;margin:0 auto;text-align:center;padding:40px 20px;background:#fff;border-radius:20px;">
+        <div style="font-size:52px;margin-bottom:12px">🐾</div>
+        <h2 style="color:#1e293b;font-size:22px;margin:0 0 6px">Your PETclub OTP</h2>
+        <p style="color:#64748b;font-size:14px;margin:0 0 28px">Use this code to sign in or create your account</p>
+        <div style="background:#fff7ed;border:2px solid #f97316;border-radius:16px;padding:28px 20px;margin-bottom:24px;display:inline-block;min-width:200px;">
+          <div style="font-size:44px;font-weight:900;color:#f97316;letter-spacing:10px;font-family:monospace">${otp}</div>
+        </div>
+        <p style="color:#94a3b8;font-size:13px;margin:0">Valid for <strong>10 minutes</strong> · Never share this code</p>
+        <hr style="border:none;border-top:1px solid #f1f5f9;margin:24px 0"/>
+        <p style="color:#cbd5e1;font-size:11px">© 2025 PETclub · For pets, with love 🐾</p>
+      </div>`;
+
+    if (email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      sendEmail(email, `🐾 PETclub OTP: ${otp}`, otpEmailHtml)
+        .catch(e => console.error('Email OTP failed:', e.message));
+    }
+
     const flag = countryCode === '1' ? '🇺🇸' : '🇮🇳';
-    res.json({ success: true, message: `OTP sent to ${flag} +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}` });
+    const emailNote = email ? ' and email' : '';
+    res.json({ success: true, message: `OTP sent via SMS${emailNote} to ${flag} +${countryCode} ${phone.slice(0,2)}XXXXXX${phone.slice(-2)}` });
   } catch (err) {
     console.error('OTP send error:', err.message);
     res.status(500).json({ error: 'Failed to send OTP. Try again.' });
@@ -129,7 +166,7 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 // ══════════════════════════════════════════════════════
 app.post('/api/users/set-role', auth, async (req, res) => {
   try {
-    const { role, subRole, name, email, city } = req.body;
+    const { role, subRole, name, email, city, pet } = req.body;
     const validRoles = ['customer', 'professional'];
     if (!validRoles.includes(role)) return res.status(400).json({ error: 'Role must be customer or professional' });
 
@@ -145,6 +182,19 @@ app.post('/api/users/set-role', auth, async (req, res) => {
       }, { onConflict: 'user_id' });
     }
 
+    // For customers — create initial pet if provided
+    if (role === 'customer' && pet?.name) {
+      await supabase.from('pets').insert({
+        owner_id: req.user.id,
+        name: pet.name,
+        species: pet.species || null,
+        breed: pet.breed || null,
+        age: pet.age ? parseInt(pet.age) : null,
+        gender: pet.gender || null,
+        dob: pet.dob || null,
+      }).catch(e => console.error('Initial pet creation error:', e.message));
+    }
+
     const { data: user } = await supabase.from('users').select('*').eq('id', req.user.id).single();
     const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
     const verificationStatus = role === 'professional' ? 'pending' : null;
@@ -153,42 +203,60 @@ app.post('/api/users/set-role', auth, async (req, res) => {
     const fn = (name || 'there').split(' ')[0];
     if (email) {
       const isPro = role === 'professional';
+      const roleColors = { Groomer: '#7c3aed', Trainer: '#2563eb', Vet: '#059669' };
+      const proColor = roleColors[subRole] || '#f97316';
       const welcomeHtml = `
         <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:560px;margin:0 auto;background:#fff;border-radius:20px;overflow:hidden;border:1px solid #f1f5f9;">
-          <div style="background:linear-gradient(135deg,#f97316 0%,#fb923c 50%,#fbbf24 100%);padding:40px 32px;text-align:center;">
-            <div style="font-size:52px;margin-bottom:8px">🐾</div>
-            <h1 style="color:white;margin:0;font-size:26px;font-weight:800;letter-spacing:-0.5px">Welcome to PETclub!</h1>
-            <p style="color:rgba(255,255,255,0.85);margin:8px 0 0;font-size:15px">Hi ${fn}, your account is ready</p>
+          <div style="background:${isPro ? `linear-gradient(135deg,${proColor},${proColor}cc)` : 'linear-gradient(135deg,#f97316,#fbbf24)'};padding:40px 32px;text-align:center;">
+            <div style="font-size:52px;margin-bottom:8px">${isPro ? ({ Groomer:'✂️', Trainer:'🎓', Vet:'🏥' }[subRole] || '🌟') : '🐾'}</div>
+            <h1 style="color:white;margin:0;font-size:24px;font-weight:800">${isPro ? `${subRole} Application Submitted!` : `Welcome to PETclub, ${fn}!`}</h1>
+            <p style="color:rgba(255,255,255,0.85);margin:8px 0 0;font-size:14px">${isPro ? 'Your account is under review' : 'Your account is ready to use'}</p>
           </div>
           <div style="padding:32px;">
             ${isPro ? `
-            <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:14px;padding:20px;margin-bottom:24px;">
-              <h2 style="margin:0 0 8px;color:#92400e;font-size:17px;">⏳ Application Under Review</h2>
-              <p style="margin:0;color:#78350f;font-size:14px;line-height:1.6">Your <strong>${subRole}</strong> profile has been submitted and is being reviewed by our team. You'll be notified within <strong>24–48 hours</strong>.</p>
+            <div style="background:#fffbeb;border:2px solid #fde68a;border-radius:14px;padding:24px;margin-bottom:24px;text-align:center;">
+              <div style="font-size:36px;margin-bottom:12px">⏳</div>
+              <h2 style="margin:0 0 8px;color:#92400e;font-size:18px;font-weight:800">Account Under Review</h2>
+              <p style="margin:0;color:#78350f;font-size:14px;line-height:1.7">Hi <strong>${fn}</strong>, your <strong>${subRole}</strong> application has been received. Our team will verify your identity and profile details.<br/><br/><strong>You will receive a confirmation email within 24–48 hours</strong> once your account is approved or if we need additional information.</p>
             </div>
-            <p style="color:#64748b;font-size:14px;line-height:1.7">While you wait, complete your profile in the app to boost your chances of approval — pros with complete profiles get approved faster!</p>
+            <div style="background:#f8fafc;border-radius:12px;padding:20px;margin-bottom:24px;">
+              <p style="margin:0 0 12px;font-weight:700;color:#374151;font-size:14px">📋 What happens next:</p>
+              <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px">
+                <div style="background:#f97316;color:white;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;text-align:center;line-height:24px">1</div>
+                <p style="margin:0;color:#64748b;font-size:13px">Our admin team reviews your profile and government ID</p>
+              </div>
+              <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px">
+                <div style="background:#f97316;color:white;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;text-align:center;line-height:24px">2</div>
+                <p style="margin:0;color:#64748b;font-size:13px">You get an approval email + SMS within 24–48 hours</p>
+              </div>
+              <div style="display:flex;align-items:flex-start;gap:12px">
+                <div style="background:#f97316;color:white;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;text-align:center;line-height:24px">3</div>
+                <p style="margin:0;color:#64748b;font-size:13px">Log back in to access your full professional dashboard</p>
+              </div>
+            </div>
             ` : `
-            <p style="color:#374151;font-size:15px;line-height:1.7;margin-bottom:20px">You can now book grooming, training, vet care, and pet food delivery — all in one place.</p>
+            <p style="color:#374151;font-size:15px;line-height:1.7;margin-bottom:20px">Hi <strong>${fn}</strong>! Your PETclub account is active. Book grooming, training, vet care &amp; more for your pet.</p>
+            ${pet?.name ? `<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:16px;margin-bottom:20px;"><p style="margin:0;font-weight:700;color:#9a3412;font-size:14px">🐾 ${pet.name} is now on PETclub!</p><p style="margin:4px 0 0;color:#c2410c;font-size:13px">${[pet.species, pet.breed, pet.age ? `${pet.age} yr${pet.age > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ')}</p></div>` : ''}
             <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:14px;padding:20px;margin-bottom:24px;">
-              <p style="margin:0 0 10px;font-weight:700;color:#166534;font-size:14px">🌟 What you can do:</p>
-              <ul style="margin:0;padding-left:18px;color:#4b7c5a;font-size:14px;line-height:2">
-                <li>Add your pet profiles</li>
-                <li>Book verified groomers, trainers & vets</li>
-                <li>Track appointments & health records</li>
-                <li>Get reminders & progress updates</li>
+              <p style="margin:0 0 10px;font-weight:700;color:#166534;font-size:14px">🌟 What you can do now:</p>
+              <ul style="margin:0;padding-left:18px;color:#4b7c5a;font-size:14px;line-height:2.2">
+                <li>Add more pet profiles</li>
+                <li>Book verified groomers, trainers &amp; vets</li>
+                <li>Track health records &amp; vaccinations</li>
+                <li>Get appointment reminders</li>
               </ul>
             </div>
             `}
-            <div style="text-align:center;margin:24px 0;">
-              <a href="https://petclub-app.vercel.app" style="display:inline-block;background:linear-gradient(135deg,#f97316,#fbbf24);color:white;padding:14px 32px;border-radius:50px;text-decoration:none;font-weight:700;font-size:15px;box-shadow:0 4px 20px rgba(249,115,22,0.3)">Open PETclub App →</a>
+            <div style="text-align:center;margin:28px 0 0;">
+              <a href="https://petclub-app.vercel.app" style="display:inline-block;background:linear-gradient(135deg,#f97316,#fbbf24);color:white;padding:15px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:15px;box-shadow:0 4px 20px rgba(249,115,22,0.3)">Open PETclub App →</a>
             </div>
           </div>
           <div style="background:#f8fafc;padding:16px 32px;text-align:center;border-top:1px solid #f1f5f9;">
-            <p style="margin:0;font-size:12px;color:#94a3b8">© 2025 PETclub · For pets, with love 🐾</p>
+            <p style="margin:0;font-size:12px;color:#94a3b8">© 2025 PETclub · For pets, with love 🐾 · <a href="https://petclub-website.vercel.app" style="color:#f97316;text-decoration:none">petclub.com</a></p>
           </div>
         </div>`;
       sendEmail(email,
-        isPro ? `🐾 PETclub — ${subRole} Application Received` : `🐾 Welcome to PETclub, ${fn}!`,
+        isPro ? `🐾 ${subRole} Application Received — Review in 24–48 hrs` : `🐾 Welcome to PETclub, ${fn}!`,
         welcomeHtml
       ).catch(e => console.error('Welcome email failed:', e.message));
     }
@@ -363,6 +431,46 @@ app.post('/api/professionals/upload-id', auth, async (req, res) => {
   if (!prof) return res.status(404).json({ error: 'Apply as professional first' });
   const { data } = await supabase.from('id_documents').upsert({ prof_id: prof.id, ...req.body }, { onConflict: 'prof_id' }).select().single();
   res.json({ success: true, document: data });
+});
+
+// ID document photo upload (base64 → Supabase Storage)
+app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
+  try {
+    const { docType, docNumber, docPhoto } = req.body;
+    if (!docType) return res.status(400).json({ error: 'Document type required (Aadhar Card / Passport / Driving License)' });
+
+    const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
+    if (!prof) return res.status(404).json({ error: 'Professional profile not found. Complete signup first.' });
+
+    let photoUrl = null;
+    if (docPhoto && docPhoto.length > 100) {
+      try {
+        const base64Data = docPhoto.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Buffer.from(base64Data, 'base64');
+        const ext = docPhoto.startsWith('data:image/png') ? 'png' : 'jpg';
+        const filename = `${req.user.id}/${Date.now()}.${ext}`;
+        const { error: upErr } = await supabase.storage
+          .from('id-documents')
+          .upload(filename, buffer, { contentType: `image/${ext}`, upsert: true });
+        if (!upErr) {
+          const { data: urlData } = supabase.storage.from('id-documents').getPublicUrl(filename);
+          photoUrl = urlData.publicUrl;
+        } else { console.error('Storage upload error:', upErr.message); }
+      } catch (e) { console.error('Photo processing error:', e.message); }
+    }
+
+    await supabase.from('id_documents').upsert({
+      prof_id: prof.id,
+      doc_type: docType,
+      doc_number: docNumber || null,
+      photo_url: photoUrl,
+    }, { onConflict: 'prof_id' });
+
+    res.json({ success: true, photoUrl, message: 'ID document saved' });
+  } catch (err) {
+    console.error('ID upload error:', err.message);
+    res.status(500).json({ error: 'Failed to save document. Try again.' });
+  }
 });
 
 app.post('/api/professionals/payout', auth, async (req, res) => {
