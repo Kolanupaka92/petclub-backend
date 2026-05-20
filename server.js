@@ -488,6 +488,19 @@ app.post('/api/auth/firebase-verify', async (req, res) => {
         return res.status(500).json({ error: 'Failed to create user. Try again.' });
       }
       user = nu;
+      // Notify admin of new signup
+      const adminEmail = process.env.ADMIN_EMAIL;
+      if (adminEmail) {
+        sendEmail(adminEmail, `🐾 New PETclub Signup — ${phone}`,
+          `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#fff;border-radius:16px;border:2px solid #f97316;">
+            <h2 style="color:#f97316;margin:0 0 12px">🐾 New User Signed Up</h2>
+            <p style="margin:4px 0;color:#1e293b;font-size:14px"><strong>Phone:</strong> ${phone}</p>
+            <p style="margin:4px 0;color:#64748b;font-size:13px">Role not yet set — awaiting profile setup.</p>
+            <hr style="border:none;border-top:1px solid #f1f5f9;margin:16px 0"/>
+            <p style="color:#94a3b8;font-size:12px">PETclub Admin · ${new Date().toLocaleString('en-IN')}</p>
+          </div>`
+        ).catch(() => {});
+      }
     }
 
     if (user.is_active === false) {
@@ -513,6 +526,104 @@ app.post('/api/auth/firebase-verify', async (req, res) => {
   } catch (err) {
     console.error('[FirebaseVerify] Unexpected error:', err.message);
     res.status(500).json({ error: 'Verification failed. Please try again.' });
+  }
+});
+
+// ══════════════════════════════════════════════════════
+//  AUTH: EMAIL OTP — send (for users without phone access)
+// ══════════════════════════════════════════════════════
+app.post('/api/auth/send-email-otp', otpLimit, async (req, res) => {
+  try {
+    const { email } = req.body;
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
+      return res.status(400).json({ error: 'Valid email address required' });
+
+    const otp = genOTP();
+    const expires = new Date(Date.now() + 10 * 60000).toISOString();
+
+    // Store OTP keyed by email (reuse otp_tokens table, email as phone field)
+    await supabase.from('otp_tokens').upsert(
+      { phone: email.toLowerCase(), otp, expires_at: expires, verified: false },
+      { onConflict: 'phone' }
+    );
+
+    const otpHtml = `
+      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:420px;margin:0 auto;text-align:center;padding:40px 20px;background:#fff;border-radius:20px;box-shadow:0 4px 24px rgba(0,0,0,0.06);">
+        <div style="font-size:52px;margin-bottom:12px">🐾</div>
+        <h2 style="color:#1e293b;font-size:22px;margin:0 0 6px">Your PETclub OTP</h2>
+        <p style="color:#64748b;font-size:14px;margin:0 0 28px">Use this code to sign in to your account</p>
+        <div style="background:#fff7ed;border:2px solid #f97316;border-radius:16px;padding:28px 20px;margin-bottom:24px;">
+          <div style="font-size:44px;font-weight:900;color:#f97316;letter-spacing:10px;font-family:monospace">${otp}</div>
+        </div>
+        <p style="color:#94a3b8;font-size:13px;margin:0">Valid for <strong>10 minutes</strong> · Never share this code</p>
+        <hr style="border:none;border-top:1px solid #f1f5f9;margin:24px 0"/>
+        <p style="color:#cbd5e1;font-size:11px">© PETclub · For pets, with love 🐾</p>
+      </div>`;
+
+    await sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, otpHtml);
+    console.log(`[EmailOTP] Sent to ${email}`);
+    res.json({ success: true, message: `OTP sent to ${email}` });
+  } catch (err) {
+    console.error('[EmailOTP] Send error:', err.message);
+    res.status(500).json({ error: 'Failed to send OTP. Check your email address and try again.' });
+  }
+});
+
+// ══════════════════════════════════════════════════════
+//  AUTH: EMAIL OTP — verify → issue JWT
+// ══════════════════════════════════════════════════════
+app.post('/api/auth/verify-email-otp', async (req, res) => {
+  try {
+    const { email, otp } = req.body;
+    if (!email || !otp) return res.status(400).json({ error: 'Email and OTP required' });
+
+    const key = email.toLowerCase();
+    const { data: rec } = await supabase.from('otp_tokens').select('*').eq('phone', key).single();
+    if (!rec) return res.status(400).json({ error: 'OTP not found. Request a new one.' });
+    if (rec.verified) return res.status(400).json({ error: 'OTP already used.' });
+    if (new Date() > new Date(rec.expires_at)) return res.status(400).json({ error: 'OTP expired. Request a new one.' });
+    if (rec.otp !== otp) return res.status(400).json({ error: 'Incorrect OTP.' });
+
+    await supabase.from('otp_tokens').update({ verified: true }).eq('phone', key);
+
+    // Find user by email; fall back to creating email-only account
+    let { data: user } = await supabase.from('users').select('*').eq('email', key).single();
+    const isNew = !user;
+    if (!user) {
+      const { data: nu, error: insertErr } = await supabase
+        .from('users')
+        .insert({ email: key, role: 'pending_role', is_active: true })
+        .select()
+        .single();
+      if (insertErr) return res.status(500).json({ error: 'Failed to create account. Try again.' });
+      user = nu;
+      // Admin notification for new email signup
+      const adminEmail = process.env.ADMIN_EMAIL;
+      if (adminEmail) {
+        sendEmail(adminEmail, `🐾 New PETclub Signup (Email) — ${email}`,
+          `<p style="font-family:Arial,sans-serif">New user signed up via email OTP: <strong>${email}</strong><br/>Role not yet set.</p>`
+        ).catch(() => {});
+      }
+    }
+
+    if (user.is_active === false)
+      return res.status(403).json({ error: 'Your account has been suspended. Contact support@mypetclub.app' });
+
+    let verificationStatus = null;
+    let subRole = null;
+    if (user.role === 'professional') {
+      const { data: prof } = await supabase
+        .from('professional_profiles').select('verification_status, sub_role').eq('user_id', user.id).single();
+      verificationStatus = prof?.verification_status || 'pending';
+      subRole = prof?.sub_role || null;
+    }
+
+    const token = jwt.sign({ id: user.id, phone: user.phone || null, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    console.log(`[EmailOTP] ${isNew ? 'New' : 'Returning'} user: ${email}`);
+    res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
+  } catch (err) {
+    console.error('[EmailOTP] Verify error:', err.message);
+    res.status(500).json({ error: 'Verification failed.' });
   }
 });
 
