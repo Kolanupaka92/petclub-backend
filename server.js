@@ -14,16 +14,17 @@ const app = express();
 app.set('trust proxy', 1); // Trust Cloud Run reverse proxy — needed for rate-limit & real IP
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET;
-const WEB_APP_URL = 'https://app.mypetclub.app';
-const WEBSITE_URL = 'https://mypetclub.app';
+const WEB_APP_URL  = process.env.WEB_APP_URL  || 'https://app.mypetclub.app';
+const WEBSITE_URL  = process.env.WEBSITE_URL  || 'https://mypetclub.app';
+const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@mypetclub.app';
 
 // ── Services ───────────────────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
 // ── Zoho SMTP transporter ─────────────────────────────
 // Env vars required: ZOHO_SMTP_USER, ZOHO_SMTP_PASS
-// ZOHO_SMTP_USER = saikrishna.kolanupaka@mypetclub.app
-// ZOHO_SMTP_FROM = support@mypetclub.app  (optional — defaults below)
+// ZOHO_SMTP_USER  = set in Cloud Run env vars
+// ZOHO_SMTP_FROM  = set in Cloud Run env vars (optional — falls back to SUPPORT_EMAIL)
 const zohoTransporter = nodemailer.createTransport({
   host: 'smtppro.zoho.com',
   port: 587,
@@ -58,11 +59,9 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
 
 // ── Middleware ─────────────────────────────────────────
 const ALLOWED_ORIGINS = [
-  'https://app.mypetclub.app',
-  'https://mypetclub.app',
-  'https://www.mypetclub.app',
-  'https://app.mypetclub.app',       // legacy — keep during DNS cutover
-  'https://mypetclub.app',   // legacy — keep during DNS cutover
+  WEB_APP_URL,
+  WEBSITE_URL,
+  `https://www.${new URL(WEBSITE_URL).hostname}`,
   'http://localhost:5173',
   'http://localhost:5174',
   'http://localhost:4173',
@@ -136,7 +135,7 @@ const sendEmail = async (to, subject, html) => {
   }
   const from = process.env.ZOHO_SMTP_FROM
     ? `PETclub <${process.env.ZOHO_SMTP_FROM}>`
-    : 'PETclub <support@mypetclub.app>';
+    : `PETclub <${SUPPORT_EMAIL}>`;
   const result = await zohoTransporter.sendMail({ from, to, subject, html });
   console.log(`[Zoho SMTP] Email sent to ${to} (msgId: ${result.messageId})`);
   return result;
@@ -282,7 +281,7 @@ setInterval(() => {
 // ══════════════════════════════════════════════════════
 //  BOOKING DISPATCH SYSTEM — Round-Robin / Uber-style
 // ══════════════════════════════════════════════════════
-const RESPONSE_TIMEOUT_MINS = 5; // Pro has 5 mins to Accept/Reject
+const RESPONSE_TIMEOUT_MINS = parseInt(process.env.BOOKING_RESPONSE_TIMEOUT_MINS) || 5;
 
 // Round-robin: find next eligible professional (not already tried for this booking)
 const findNextPro = async (city, subRole, excludeProIds = []) => {
@@ -464,7 +463,7 @@ app.post('/api/auth/firebase-verify', async (req, res) => {
     }
 
     if (user.is_active === false) {
-      return res.status(403).json({ error: 'Your account has been suspended. Contact support at support@mypetclub.app' });
+      return res.status(403).json({ error: `Your account has been suspended. Contact ${SUPPORT_EMAIL}` });
     }
 
     // For professionals, include verification status + sub_role
@@ -572,7 +571,7 @@ app.post('/api/auth/verify-email-otp', async (req, res) => {
     }
 
     if (user.is_active === false)
-      return res.status(403).json({ error: 'Your account has been suspended. Contact support@mypetclub.app' });
+      return res.status(403).json({ error: `Your account has been suspended. Contact ${SUPPORT_EMAIL}` });
 
     let verificationStatus = null;
     let subRole = null;
@@ -699,7 +698,7 @@ app.post('/api/users/set-role', auth, async (req, res) => {
             </div>
           </div>
           <div style="background:#f8fafc;padding:16px 32px;text-align:center;border-top:1px solid #f1f5f9;">
-            <p style="margin:0;font-size:12px;color:#94a3b8">© 2025 PETclub · For pets, with love 🐾 · <a href="https://mypetclub.app" style="color:#f97316;text-decoration:none">petclub.com</a></p>
+            <p style="margin:0;font-size:12px;color:#94a3b8">© ${new Date().getFullYear()} PETclub · For pets, with love 🐾 · <a href="${WEBSITE_URL}" style="color:#f97316;text-decoration:none">mypetclub.app</a></p>
           </div>
         </div>`;
       sendEmail(email,
@@ -757,7 +756,7 @@ app.post('/api/contact/send-link', async (req, res) => {
             </div>
           </div>
           <div style="background:#f8fafc;padding:14px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #f1f5f9;">
-            © 2025 PETclub · For pets, with love 🐾
+            © ${new Date().getFullYear()} PETclub · For pets, with love 🐾
           </div>
         </div>`);
 
@@ -811,7 +810,7 @@ app.post('/api/contact/send-link', async (req, res) => {
             </div>
           </div>
           <div style="background:#f8fafc;padding:16px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #f1f5f9;">
-            © 2025 PETclub · For pets, with love 🐾 · <a href="${WEBSITE_URL}" style="color:#f97316;text-decoration:none;">petclub.in</a>
+            © ${new Date().getFullYear()} PETclub · For pets, with love 🐾 · <a href="${WEBSITE_URL}" style="color:#f97316;text-decoration:none;">mypetclub.app</a>
           </div>
         </div>`);
     }
@@ -1300,7 +1299,7 @@ app.get('/api/bookings/:id/track', async (req, res) => {
   res.setHeader('Content-Type',  'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection',    'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no');   // disable Nginx / Railway proxy buffering
+  res.setHeader('X-Accel-Buffering', 'no');   // disable Nginx / Cloud Run proxy buffering
   res.flushHeaders();
 
   // Send last known position immediately (if any)
@@ -1308,7 +1307,7 @@ app.get('/api/bookings/:id/track', async (req, res) => {
     res.write(`data: ${JSON.stringify({ lat: booking.pro_lat, lng: booking.pro_lng })}\n\n`);
   }
 
-  // Keepalive comment every 25 s (prevents Railway/Vercel from closing idle connections)
+  // Keepalive comment every 25 s (prevents Cloud Run/Vercel from closing idle connections)
   const keepAlive = setInterval(() => { try { res.write(': ka\n\n'); } catch {} }, 25000);
 
   // Register
@@ -1645,7 +1644,7 @@ app.post('/api/users/fcm-token', auth, async (req, res) => {
 
 // ══════════════════════════════════════════════════════
 //  PAYMENTS: Razorpay (India) — active after LLC registration
-//  Set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET in Railway env
+//  Set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET in Cloud Run env vars
 // ══════════════════════════════════════════════════════
 
 // Create a Razorpay order (called before payment screen opens)
@@ -1654,7 +1653,7 @@ app.post('/api/payments/create-order', auth, async (req, res) => {
     if (!razorpay) {
       return res.status(503).json({
         error: 'Payments not yet active',
-        message: 'Razorpay integration is ready — set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Railway env to activate.',
+        message: 'Razorpay integration is ready — set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Cloud Run env vars to activate.',
         coming_soon: true,
       });
     }
@@ -1742,12 +1741,17 @@ app.get('/api/payments/config', auth, (req, res) => {
 app.get('/api/health', (req, res) => res.json({
   status: '🐾 PETclub API running',
   time: new Date(),
+  config: {
+    booking_response_timeout_mins: RESPONSE_TIMEOUT_MINS,
+    web_app_url: WEB_APP_URL,
+    website_url: WEBSITE_URL,
+  },
   services: {
-    supabase: '✅',
-    zoho_smtp: process.env.ZOHO_SMTP_USER ? '✅' : '⚠️ not configured',
+    supabase:      '✅',
+    zoho_smtp:     process.env.ZOHO_SMTP_USER ? '✅' : '⚠️ not configured',
     firebase_auth: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
-    razorpay: razorpay ? '✅ live' : '⏳ pending (set env vars)',
-    fcm: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
+    razorpay:      razorpay ? '✅ live' : '⏳ pending (set env vars)',
+    fcm:           firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
   },
 }));
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
