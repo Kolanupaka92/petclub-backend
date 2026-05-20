@@ -952,12 +952,12 @@ app.put('/api/users/me', auth, async (req, res) => {
 
   // Server-side email typo block
   if (email) {
-    const TYPOS = { 'gmail.con':'gmail.com','gmail.cim':'gmail.com','yahoo.con':'yahoo.com','hotmail.con':'hotmail.com','outlook.con':'outlook.com' };
     const domain = email.slice(email.lastIndexOf('@') + 1).toLowerCase();
-    if (TYPOS[domain]) return res.status(400).json({ error: `"${domain}" is not a valid domain. Did you mean @${TYPOS[domain]}?` });
-    const fakeTlds = ['.con','.cmo','.cim','.ocm'];
-    if (fakeTlds.some(t => email.toLowerCase().endsWith(t)))
-      return res.status(400).json({ error: `"${email}" is not a valid email address.` });
+    const [, tld] = domain.split('.');
+    // Block scrambled TLDs: .conm .cmo .ocm .con .cpm etc.
+    const badTlds = ['con','conm','cmo','ocm','cim','cpm','copm','co0m'];
+    if (tld && badTlds.includes(tld))
+      return res.status(400).json({ error: `"${domain}" looks like a typo. Did you mean @${domain.split('.')[0]}.com?` });
   }
 
   await supabase.from('users').update({ name, email }).eq('id', req.user.id);
