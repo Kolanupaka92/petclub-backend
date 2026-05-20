@@ -550,12 +550,17 @@ app.post('/api/auth/verify-email-otp', async (req, res) => {
     let { data: user } = await supabase.from('users').select('*').eq('email', key).single();
     const isNew = !user;
     if (!user) {
+      // phone column is NOT NULL — use a unique placeholder for email-only accounts
+      const emailPhone = `email_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const { data: nu, error: insertErr } = await supabase
         .from('users')
-        .insert({ email: key, role: 'pending_role', is_active: true })
+        .insert({ email: key, phone: emailPhone, role: 'pending_role', is_active: true })
         .select()
         .single();
-      if (insertErr) return res.status(500).json({ error: 'Failed to create account. Try again.' });
+      if (insertErr) {
+        console.error('[EmailOTP] Insert failed:', insertErr.message);
+        return res.status(500).json({ error: 'Failed to create account. Try again.' });
+      }
       user = nu;
       // Admin notification for new email signup
       const adminEmail = process.env.ADMIN_EMAIL;

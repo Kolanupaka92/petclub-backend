@@ -47,31 +47,35 @@ npm run dev                 # Vite — http://localhost:5174
 1. Edit server.js (or related files)
 2. Test locally:  curl http://localhost:5000/api/health
 3. git add + git commit
-4. git push origin main          ← ALWAYS push to GitHub first
-5. Deploy to Cloud Run:
+4. git push origin main   ← Cloud Build auto-triggers from GitHub (us-south1)
 ```
 
-### Backend Deploy Command
+### Backend Deploy — GitHub Auto-Trigger (primary)
 ```bash
 cd petclub-backend
+git add .
+git commit -m "your message"
+git push origin main
+# Cloud Build trigger fires automatically → Docker build → Cloud Run deploy
+# Monitor at: https://console.cloud.google.com/cloud-build/builds?project=project-c736b433-1b47-40c0-a2c
+```
 
-# Get token and upload source
+> **Build appears in us-south1 region** with source = Kolanupaka92/petclub-backend, ref = main.
+> Auto-deploy takes ~2–3 minutes. No manual step needed after `git push`.
+
+### Backend Deploy — Manual fallback (if trigger fails)
+```bash
 PROJECT="project-c736b433-1b47-40c0-a2c"
 COMMIT_SHA=$(git rev-parse HEAD)
 
-# If gcloud CLI is available:
-gcloud builds submit --config=cloudbuild.yaml \
-  "--substitutions=COMMIT_SHA=$COMMIT_SHA"
-
-# If gcloud CLI is NOT available — use REST API method:
-# 1. Get OAuth token from credentials
-# 2. Create tarball: tar -czf /tmp/src.tar.gz --exclude=./node_modules --exclude=./.git .
-# 3. Upload to GCS: gs://project-c736b433-1b47-40c0-a2c_cloudbuild/source/$COMMIT_SHA.tar.gz
+# 1. Get OAuth token (reads from gcloud credentials.db)
+# 2. Create tarball:
+tar -czf /tmp/src.tar.gz --exclude=./node_modules --exclude=./.git .
+# 3. Upload to GCS:
+#    gs://project-c736b433-1b47-40c0-a2c_cloudbuild/source/$COMMIT_SHA.tar.gz
 # 4. POST https://cloudbuild.googleapis.com/v1/projects/$PROJECT/builds
 #    with storageSource + steps from cloudbuild.yaml
 ```
-
-> **Important**: Always `git push` before deploying. Cloud Build uses your local source tarball — make sure it matches what's on GitHub.
 
 ---
 
