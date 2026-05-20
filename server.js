@@ -452,6 +452,10 @@ app.post('/api/users/set-role', auth, async (req, res) => {
     const validRoles = ['customer', 'professional'];
     if (!validRoles.includes(role)) return res.status(400).json({ error: 'Role must be customer or professional' });
 
+    // Infer country from phone prefix
+    const phoneCountry = req.user.phone?.startsWith('+1') ? 'United States'
+      : req.user.phone?.startsWith('+91') ? 'India' : null;
+
     // Update user record
     await supabase.from('users').update({ role, name: name || null, email: email || null }).eq('id', req.user.id);
 
@@ -467,7 +471,8 @@ app.post('/api/users/set-role', auth, async (req, res) => {
     if (role === 'customer') {
       try {
         await supabase.from('customer_profiles').upsert({
-          user_id: req.user.id, address: address || null,
+          user_id: req.user.id, address: address || null, city: city || null,
+          country: phoneCountry,
         }, { onConflict: 'user_id' });
       } catch (e) { console.error('customer_profiles upsert:', e.message); }
     }
