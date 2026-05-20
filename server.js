@@ -646,6 +646,12 @@ app.post('/api/users/set-role', auth, async (req, res) => {
     const city    = sanitize(req.body.city);
     const address = sanitize(req.body.address);
     const pet     = req.body.pet ? { ...req.body.pet, name: sanitize(req.body.pet.name), breed: sanitize(req.body.pet.breed) } : undefined;
+    // GPS address metadata (from AddressPicker)
+    const addressLat        = typeof req.body.addressLat  === 'number' ? req.body.addressLat  : null;
+    const addressLng        = typeof req.body.addressLng  === 'number' ? req.body.addressLng  : null;
+    const addressPostalCode = sanitize(req.body.addressPostalCode) || null;
+    const addressCity       = sanitize(req.body.addressCity)       || null;
+    const addressState      = sanitize(req.body.addressState)      || null;
     const validRoles = ['customer', 'professional'];
     if (!validRoles.includes(role)) return res.status(400).json({ error: 'Role must be customer or professional' });
 
@@ -663,6 +669,16 @@ app.post('/api/users/set-role', auth, async (req, res) => {
         user_id: req.user.id, sub_role: subRole, verification_status: 'pending',
         is_available: false, city: city || null, address: address || null,
       }, { onConflict: 'user_id' });
+      // Store GPS coords in separate update (graceful: requires GPS migration to have run)
+      if (addressLat && addressLng) {
+        supabase.from('professional_profiles').update({
+          address_lat: addressLat, address_lng: addressLng,
+          address_postal_code: addressPostalCode,
+          address_city: addressCity, address_state: addressState,
+        }).eq('user_id', req.user.id).then(({ error }) => {
+          if (error) console.error('pro GPS coords update:', error.message);
+        });
+      }
     }
 
     if (role === 'customer') {
@@ -672,6 +688,16 @@ app.post('/api/users/set-role', auth, async (req, res) => {
           country: phoneCountry,
         }, { onConflict: 'user_id' });
       } catch (e) { console.error('customer_profiles upsert:', e.message); }
+      // Store GPS coords in separate update (graceful: requires GPS migration to have run)
+      if (addressLat && addressLng) {
+        supabase.from('customer_profiles').update({
+          address_lat: addressLat, address_lng: addressLng,
+          address_postal_code: addressPostalCode,
+          address_city: addressCity, address_state: addressState,
+        }).eq('user_id', req.user.id).then(({ error }) => {
+          if (error) console.error('customer GPS coords update:', error.message);
+        });
+      }
     }
 
     // For customers — create initial pet if provided
@@ -1183,6 +1209,8 @@ app.post('/api/bookings', auth, async (req, res) => {
   try {
     processTimedOutAssignments().catch(console.error); // background cleanup
     const { service_type, city, pet_id, service_name, scheduled_at, address, notes, amount } = req.body;
+    const addressLat = typeof req.body.lat === 'number' ? req.body.lat : null;
+    const addressLng = typeof req.body.lng === 'number' ? req.body.lng : null;
     const { data: booking } = await supabase.from('bookings').insert({
       customer_id: req.user.id, status: 'upcoming',
       assignment_status: 'searching',
@@ -1191,6 +1219,13 @@ app.post('/api/bookings', auth, async (req, res) => {
       city: city || null, address: address || null, notes: notes || null,
       amount: amount || null,
     }).select().single();
+    // Store GPS coords separately (graceful: requires GPS migration to have run)
+    if (booking && addressLat && addressLng) {
+      supabase.from('bookings').update({ address_lat: addressLat, address_lng: addressLng })
+        .eq('id', booking.id).then(({ error }) => {
+          if (error) console.error('booking GPS coords update:', error.message);
+        });
+    }
     if (!booking) return res.status(500).json({ error: 'Failed to create booking' });
 
 

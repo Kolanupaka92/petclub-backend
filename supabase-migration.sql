@@ -76,3 +76,30 @@ CREATE TABLE IF NOT EXISTS payment_logs (
 );
 
 -- Done! After running, redeploy: railway up --service petclub-backend --detach
+
+-- ════════════════════════════════════════════════════════════
+--  GPS Coordinates Migration  (run after initial migration)
+-- ════════════════════════════════════════════════════════════
+
+-- 10. GPS coordinates on customer_profiles
+ALTER TABLE customer_profiles
+  ADD COLUMN IF NOT EXISTS address_lat         FLOAT8,
+  ADD COLUMN IF NOT EXISTS address_lng         FLOAT8,
+  ADD COLUMN IF NOT EXISTS address_postal_code TEXT,
+  ADD COLUMN IF NOT EXISTS address_city        TEXT,
+  ADD COLUMN IF NOT EXISTS address_state       TEXT;
+
+-- 11. GPS coordinates on professional_profiles
+ALTER TABLE professional_profiles
+  ADD COLUMN IF NOT EXISTS address_lat         FLOAT8,
+  ADD COLUMN IF NOT EXISTS address_lng         FLOAT8,
+  ADD COLUMN IF NOT EXISTS address_postal_code TEXT,
+  ADD COLUMN IF NOT EXISTS address_city        TEXT,
+  ADD COLUMN IF NOT EXISTS address_state       TEXT;
+
+-- 12. GPS coordinates on bookings (for professional navigation)
+ALTER TABLE bookings
+  ADD COLUMN IF NOT EXISTS address_lat  FLOAT8,
+  ADD COLUMN IF NOT EXISTS address_lng  FLOAT8;
+
+-- After running, redeploy backend: gcloud run deploy petclub-backend ...
