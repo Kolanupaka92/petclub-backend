@@ -1043,14 +1043,13 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
         const base64Data = docPhoto.replace(/^data:image\/\w+;base64,/, '');
         const buffer = Buffer.from(base64Data, 'base64');
         const ext = docPhoto.startsWith('data:image/png') ? 'png' : 'jpg';
-        const filename = `${req.user.id}/${Date.now()}.${ext}`;
+        const filename = `pros/${req.user.id}/${Date.now()}.${ext}`;
         const { error: upErr } = await supabase.storage
           .from('id-documents')
           .upload(filename, buffer, { contentType: `image/${ext}`, upsert: true });
-        if (!upErr) {
-          const { data: urlData } = supabase.storage.from('id-documents').getPublicUrl(filename);
-          photoUrl = urlData.publicUrl;
-        } else { console.error('Storage upload error:', upErr.message); }
+        // Store the storage PATH (not a public URL) — bucket is private, admin uses signed URLs
+        if (!upErr) photoUrl = filename;
+        else console.error('Storage upload error:', upErr.message);
       } catch (e) { console.error('Photo processing error:', e.message); }
     }
 
@@ -1058,35 +1057,32 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
       prof_id: prof.id,
       doc_type: docType,
       doc_number: docNumber || null,
-      photo_url: photoUrl,
+      photo_url: photoUrl, // stores path like "pros/user_id/timestamp.jpg"
     }, { onConflict: 'prof_id' });
 
     // Also save certification if provided (professionals)
     const { certType, certPhoto } = req.body;
     if (certType || certPhoto) {
-      let certUrl = null;
+      let certPath = null;
       if (certPhoto && certPhoto.length > 100) {
         try {
           const base64Data = certPhoto.replace(/^data:image\/\w+;base64,/, '');
           const buffer = Buffer.from(base64Data, 'base64');
           const ext = certPhoto.startsWith('data:image/png') ? 'png' : 'jpg';
-          const filename = `${req.user.id}/cert-${Date.now()}.${ext}`;
+          const filename = `pros/${req.user.id}/cert-${Date.now()}.${ext}`;
           const { error: upErr } = await supabase.storage
             .from('id-documents')
             .upload(filename, buffer, { contentType: `image/${ext}`, upsert: true });
-          if (!upErr) {
-            const { data: urlData } = supabase.storage.from('id-documents').getPublicUrl(filename);
-            certUrl = urlData.publicUrl;
-          }
+          if (!upErr) certPath = filename; // store path, not public URL
         } catch (e) { console.error('Cert photo error:', e.message); }
       }
       await supabase.from('id_documents').update({
         cert_type: certType || null,
-        cert_photo_url: certUrl,
+        cert_photo_url: certPath,
       }).eq('prof_id', prof.id);
     }
 
-    res.json({ success: true, photoUrl, message: 'ID document saved' });
+    res.json({ success: true, message: 'ID document saved' });
   } catch (err) {
     console.error('ID upload error:', err.message);
     res.status(500).json({ error: 'Failed to save document. Try again.' });
@@ -1116,14 +1112,28 @@ app.post('/api/users/upload-id-photo', auth, async (req, res) => {
       } catch (e) { console.error('Customer ID photo error:', e.message); }
     }
 
+    let customerPhotoPath = null;
+    if (req.body.docPhoto && req.body.docPhoto.length > 100) {
+      try {
+        const base64Data = req.body.docPhoto.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Buffer.from(base64Data, 'base64');
+        const ext = req.body.docPhoto.startsWith('data:image/png') ? 'png' : 'jpg';
+        const filename = `customers/${req.user.id}/${Date.now()}.${ext}`;
+        const { error: upErr } = await supabase.storage
+          .from('id-documents')
+          .upload(filename, buffer, { contentType: `image/${ext}`, upsert: true });
+        if (!upErr) customerPhotoPath = filename; // store path, not public URL
+      } catch (e) { console.error('Customer ID photo error:', e.message); }
+    }
+
     await supabase.from('customer_profiles').upsert({
       user_id: req.user.id,
       id_doc_type: docType,
       id_doc_number: docNumber || null,
-      id_photo_url: photoUrl,
+      id_photo_url: customerPhotoPath, // stores path like "customers/user_id/timestamp.jpg"
     }, { onConflict: 'user_id' });
 
-    res.json({ success: true, photoUrl, message: 'ID document saved' });
+    res.json({ success: true, message: 'ID document saved' });
   } catch (err) {
     console.error('Customer ID upload error:', err.message);
     res.status(500).json({ error: 'Failed to save document. Try again.' });
@@ -1559,6 +1569,19 @@ app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
 
   const users = data?.map(u => ({ ...u, suspended_at: suspendedAtMap[u.id] || null }));
   res.json({ success: true, users });
+});
+
+// Admin: generate a short-lived signed URL for a private storage document
+// The URL expires in 60 seconds — admin must view it immediately
+app.get('/api/admin/signed-url', auth, adminOnly, async (req, res) => {
+  const { path } = req.query;
+  if (!path || typeof path !== 'string' || path.includes('..'))
+    return res.status(400).json({ error: 'Valid storage path required' });
+  const { data, error } = await supabase.storage
+    .from('id-documents')
+    .createSignedUrl(path, 60); // expires in 60 seconds
+  if (error) return res.status(404).json({ error: 'Document not found' });
+  res.json({ success: true, url: data.signedUrl, expiresIn: 60 });
 });
 
 app.get('/api/admin/pending-verifications', auth, adminOnly, async (req, res) => {
