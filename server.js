@@ -4,19 +4,40 @@
 // ═══════════════════════════════════════════════════════════
 require('dotenv').config();
 const express = require('express');
-const cors = require('cors');
+const helmet  = require('helmet');
+const cors    = require('cors');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
 
+// ── Startup secret guard — refuse to boot without critical secrets ─────────
+const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
+const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
+if (missingEnv.length) {
+  console.error(`\n❌ FATAL: Missing required environment variables: ${missingEnv.join(', ')}\nSet them in Cloud Run env vars and redeploy.\n`);
+  process.exit(1);
+}
+
 const app = express();
 app.set('trust proxy', 1); // Trust Cloud Run reverse proxy — needed for rate-limit & real IP
 const PORT = process.env.PORT || 5000;
+const IS_PROD = process.env.NODE_ENV === 'production' || !process.env.ALLOW_DEV_TOOLS;
 const JWT_SECRET = process.env.JWT_SECRET;
 const WEB_APP_URL  = process.env.WEB_APP_URL  || 'https://app.mypetclub.app';
 const WEBSITE_URL  = process.env.WEBSITE_URL  || 'https://mypetclub.app';
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@mypetclub.app';
+
+// ── Security helpers ───────────────────────────────────────
+// Mask phone/email in logs — never log full PII
+const maskPhone = p => (typeof p === 'string' && p.length > 6) ? `${p.slice(0, 4)}****${p.slice(-2)}` : '—';
+const maskEmail = e => {
+  if (!e || !e.includes('@')) return '—';
+  const [local, domain] = e.split('@');
+  return `${local.slice(0, 2)}***@${domain}`;
+};
+// Strip HTML tags from user inputs — prevents XSS in admin emails
+const sanitize = s => typeof s === 'string' ? s.replace(/<[^>]*>/g, '').trim().slice(0, 2000) : s;
 
 // ── Services ───────────────────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
@@ -58,14 +79,19 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
 }
 
 // ── Middleware ─────────────────────────────────────────
+// Security headers — disable CSP so JSON API clients aren't affected
+app.use(helmet({
+  contentSecurityPolicy: false,
+  crossOriginEmbedderPolicy: false,
+}));
+
 const ALLOWED_ORIGINS = [
   WEB_APP_URL,
   WEBSITE_URL,
   `https://www.${new URL(WEBSITE_URL).hostname}`,
-  'http://localhost:5173',
-  'http://localhost:5174',
-  'http://localhost:4173',
   process.env.FRONTEND_URL,
+  // Localhost allowed in dev only (set ALLOW_DEV_TOOLS=true in local .env)
+  ...(IS_PROD ? [] : ['http://localhost:5173','http://localhost:5174','http://localhost:4173']),
 ].filter(Boolean);
 app.use(cors({ origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.includes(origin) ? true : false) }));
 app.use(express.json({ limit: '10mb' }));
@@ -90,11 +116,17 @@ app.use(rateLimit({
   standardHeaders: true, legacyHeaders: false,
   handler: (req, res) => res.status(429).json({ error: 'Too many requests. Please slow down.' }),
 }));
-// OTP-specific rate limit
+// OTP send rate limit — max 5 sends per minute per IP
 const otpLimit = rateLimit({
   windowMs: 60 * 1000, max: 5,
   standardHeaders: true, legacyHeaders: false,
   handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait 1 minute and try again.' }),
+});
+// Auth verify rate limit — max 10 attempts per 15 min per IP (prevents brute-force)
+const authLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10,
+  standardHeaders: true, legacyHeaders: false,
+  handler: (req, res) => res.status(429).json({ error: 'Too many login attempts. Please wait 15 minutes.' }),
 });
 
 // ── Helpers ────────────────────────────────────────────
@@ -146,7 +178,8 @@ const sendEmail = async (to, subject, html) => {
 // ══════════════════════════════════════════════════════
 (async () => {
   try {
-    await supabase.storage.createBucket('id-documents', { public: true });
+    // PRIVATE bucket — ID documents (Aadhar, PAN, Passport) must never be publicly accessible
+    await supabase.storage.createBucket('id-documents', { public: false });
     console.log('✅ Storage bucket ready: id-documents');
   } catch (e) {
     if (!e.message?.includes('already exists') && !String(e).includes('already exists')) {
@@ -278,6 +311,16 @@ setInterval(() => {
   autoDeleteSuspendedUsers().catch(e => console.error('[Cron] Auto-delete suspended users failed:', e.message));
 }, 60 * 60 * 1000); // every hour
 
+// ── Expired OTP cleanup — runs every hour ─────────────────
+// Prevents otp_tokens table accumulating verified/expired codes
+setInterval(async () => {
+  try {
+    const { count } = await supabase.from('otp_tokens')
+      .delete({ count: 'exact' }).lt('expires_at', new Date().toISOString());
+    if (count > 0) console.log(`[OTP Cleanup] Purged ${count} expired token(s)`);
+  } catch (e) { console.warn('[OTP Cleanup] Failed:', e.message); }
+}, 60 * 60 * 1000);
+
 // ══════════════════════════════════════════════════════
 //  BOOKING DISPATCH SYSTEM — Round-Robin / Uber-style
 // ══════════════════════════════════════════════════════
@@ -347,7 +390,7 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
           <tr><td style="padding:8px 0;font-size:12px;color:#94a3b8">Location</td><td style="padding:8px 0;font-size:14px;font-weight:700;color:#1e293b">${location}</td></tr>
         </table>
         <div style="text-align:center;margin-bottom:16px;">
-          <a href="https://app.mypetclub.app" style="display:inline-block;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;padding:14px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:14px;">✅ Open App to Respond</a>
+          <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;padding:14px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:14px;">✅ Open App to Respond</a>
         </div>
         <p style="color:#94a3b8;font-size:11px;text-align:center;margin:0;">No response in ${RESPONSE_TIMEOUT_MINS} mins → request auto-passes to next professional</p>
       </div>
@@ -415,7 +458,7 @@ app.post('/api/auth/verify-otp', (req, res) => res.status(410).json({
 //  We verify it with Firebase Admin, then find/create the user
 //  in Supabase and return our own JWT (same shape as verify-otp).
 // ══════════════════════════════════════════════════════
-app.post('/api/auth/firebase-verify', async (req, res) => {
+app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
   try {
     const { idToken } = req.body;
     if (!idToken) return res.status(400).json({ error: 'Firebase ID token required' });
@@ -480,7 +523,7 @@ app.post('/api/auth/firebase-verify', async (req, res) => {
     }
 
     const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
-    console.log(`[FirebaseVerify] ${isNew ? 'New' : 'Returning'} user: ${phone}`);
+    console.log(`[FirebaseVerify] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
     res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     console.error('[FirebaseVerify] Unexpected error:', err.message);
@@ -531,7 +574,7 @@ app.post('/api/auth/send-email-otp', otpLimit, async (req, res) => {
 // ══════════════════════════════════════════════════════
 //  AUTH: EMAIL OTP — verify → issue JWT
 // ══════════════════════════════════════════════════════
-app.post('/api/auth/verify-email-otp', async (req, res) => {
+app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
   try {
     const { email, otp } = req.body;
     if (!email || !otp) return res.status(400).json({ error: 'Email and OTP required' });
@@ -583,7 +626,7 @@ app.post('/api/auth/verify-email-otp', async (req, res) => {
     }
 
     const token = jwt.sign({ id: user.id, phone: user.phone || null, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
-    console.log(`[EmailOTP] ${isNew ? 'New' : 'Returning'} user: ${email}`);
+    console.log(`[EmailOTP] ${isNew ? 'New' : 'Returning'} user: ${maskEmail(email)}`);
     res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     console.error('[EmailOTP] Verify error:', err.message);
@@ -596,7 +639,13 @@ app.post('/api/auth/verify-email-otp', async (req, res) => {
 // ══════════════════════════════════════════════════════
 app.post('/api/users/set-role', auth, async (req, res) => {
   try {
-    const { role, subRole, name, email, city, address, pet } = req.body;
+    const { role, subRole } = req.body;
+    // Sanitize all text inputs to strip HTML and limit length
+    const name    = sanitize(req.body.name);
+    const email   = sanitize(req.body.email);
+    const city    = sanitize(req.body.city);
+    const address = sanitize(req.body.address);
+    const pet     = req.body.pet ? { ...req.body.pet, name: sanitize(req.body.pet.name), breed: sanitize(req.body.pet.breed) } : undefined;
     const validRoles = ['customer', 'professional'];
     if (!validRoles.includes(role)) return res.status(400).json({ error: 'Role must be customer or professional' });
 
@@ -864,7 +913,10 @@ app.get('/api/users/me', auth, async (req, res) => {
 });
 
 app.put('/api/users/me', auth, async (req, res) => {
-  const { name, email, city, area, address, pincode, country } = req.body;
+  const name = sanitize(req.body.name), email = sanitize(req.body.email);
+  const city = sanitize(req.body.city), area = sanitize(req.body.area);
+  const address = sanitize(req.body.address), pincode = sanitize(req.body.pincode);
+  const country = sanitize(req.body.country);
   await supabase.from('users').update({ name, email }).eq('id', req.user.id);
   // Only write address fields to customer_profiles for customers (not professionals)
   if (req.user.role === 'customer') {
@@ -929,8 +981,15 @@ app.get('/api/professionals/me', auth, async (req, res) => {
 });
 
 app.put('/api/professionals/me', auth, async (req, res) => {
-  const { name, email, city, area, address, bio, experience, services, service_areas, langs, price_basic, price_full, price_custom } = req.body;
-  const { sub_role, certification, license_number, clinic_name } = req.body;
+  const name = sanitize(req.body.name), email = sanitize(req.body.email);
+  const city = sanitize(req.body.city), area = sanitize(req.body.area);
+  const address = sanitize(req.body.address), bio = sanitize(req.body.bio);
+  const experience = sanitize(req.body.experience), service_areas = sanitize(req.body.service_areas);
+  const langs = sanitize(req.body.langs), certification = sanitize(req.body.certification);
+  const license_number = sanitize(req.body.license_number), clinic_name = sanitize(req.body.clinic_name);
+  const price_basic = req.body.price_basic, price_full = req.body.price_full, price_custom = req.body.price_custom;
+  const { sub_role } = req.body;
+  const services = req.body.services;
   if (name !== undefined || email !== undefined)
     await supabase.from('users').update({ name, email }).eq('id', req.user.id);
   const updatePayload = {
@@ -1441,9 +1500,10 @@ app.get('/api/bookings/:id/my-rating', auth, async (req, res) => {
 //  ADMIN ROUTES
 // ══════════════════════════════════════════════════════
 
-// Admin OTP lookup — for testing/debugging only
+// Admin OTP lookup — DEV ONLY. Disabled in production (set ALLOW_DEV_TOOLS=true locally).
 // GET /api/admin/otp?phone=+919876543210  OR  ?phone=9876543210&cc=91
 app.get('/api/admin/otp', auth, adminOnly, async (req, res) => {
+  if (IS_PROD) return res.status(403).json({ error: 'This debug endpoint is disabled in production. Set ALLOW_DEV_TOOLS=true in local .env to use it.' });
   try {
     let { phone, cc = '91' } = req.query;
     if (!phone) return res.status(400).json({ error: 'phone query param required' });
