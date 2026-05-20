@@ -575,51 +575,110 @@ app.post('/api/contact/send-link', async (req, res) => {
     if (!phone || !email || !name) return res.status(400).json({ error: 'Name, phone and email required' });
 
     const fn = name.split(' ')[0];
-
-    // SMS via Twilio (non-blocking — India toll-free restriction handled gracefully)
+    const adminEmail = process.env.ADMIN_EMAIL || process.env.GMAIL_USER;
     const fullLeadPhone = phone.startsWith('+') ? phone : `+91${phone}`;
+    const isInquiry = ['Pet Food', 'Pet Boarding'].includes(service);
+
+    // SMS (non-blocking — India toll-free restriction handled gracefully)
     sendSMS(fullLeadPhone,
-      `Hi ${fn}! 🐾 Welcome to PETclub!\n\nAccess the app here:\n🌐 ${WEB_APP_URL}\n\nAll pet services in ${city || 'your city'}! 📱 Mobile apps coming soon.`
+      isInquiry
+        ? `Hi ${fn}! 🐾 We received your ${service} inquiry. Our team will reach out to you within 24 hours. – PETclub`
+        : `Hi ${fn}! 🐾 Welcome to PETclub!\n\nAccess the app here:\n🌐 ${WEB_APP_URL}\n\nAll pet services in ${city || 'your city'}! 📱 Mobile apps coming soon.`
     ).catch(e => console.error('Lead SMS failed (non-blocking):', e.message));
 
-    // Email via SendGrid
-    await sendEmail(email, `🐾 Welcome to PETclub, ${fn}!`, `
-      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:580px;margin:0 auto;background:#fff;border-radius:20px;overflow:hidden;border:1px solid #f1f5f9;">
-        <div style="background:linear-gradient(135deg,#f97316,#fbbf24);padding:40px 32px;text-align:center;">
-          <div style="font-size:52px;margin-bottom:8px">🐾</div>
-          <h1 style="color:white;margin:0;font-size:26px;font-weight:800">Welcome to PETclub!</h1>
-          <p style="color:rgba(255,255,255,0.88);margin:8px 0 0;font-size:15px">India's #1 pet care platform</p>
-        </div>
-        <div style="padding:32px;">
-          <p style="color:#1e293b;font-size:16px;margin:0 0 20px">Hi <b>${fn}</b>! 🎉 You're all set. Book ${service||'grooming, training & vet care'} for ${pet||'your pet'} in ${city||'your city'} — right from your browser.</p>
-
-          <div style="text-align:center;margin:28px 0;">
-            <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:16px 36px;border-radius:14px;text-decoration:none;font-weight:800;font-size:16px;letter-spacing:0.3px;">🚀 Open PETclub App</a>
+    if (isInquiry) {
+      // ── Inquiry confirmation to user ──
+      const svcIcon = service === 'Pet Food' ? '🍖' : '🏠';
+      const svcColor = service === 'Pet Food' ? '#16a34a' : '#f97316';
+      await sendEmail(email, `${svcIcon} Your ${service} Inquiry — PETclub Will Reach Out ASAP`, `
+        <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:560px;margin:0 auto;background:#fff;border-radius:20px;overflow:hidden;border:1px solid #f1f5f9;">
+          <div style="background:linear-gradient(135deg,${svcColor},${svcColor}cc);padding:36px 32px;text-align:center;">
+            <div style="font-size:52px;margin-bottom:8px">${svcIcon}</div>
+            <h1 style="color:white;margin:0;font-size:24px;font-weight:800">Inquiry Received!</h1>
+            <p style="color:rgba(255,255,255,0.88);margin:8px 0 0;font-size:15px">${service} · PETclub</p>
           </div>
-
-          <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:20px;margin-bottom:20px;">
-            <p style="color:#c2410c;font-weight:700;margin:0 0 10px;font-size:14px">🌟 What you can do:</p>
-            <ul style="color:#64748b;line-height:2;margin:0;padding-left:18px;font-size:14px">
-              <li>Book grooming, training, vet visits & more</li>
-              <li>Manage your pet's health records digitally</li>
-              <li>Track service professionals in real time</li>
-              <li>🛡️ ₹25,000 service protection guarantee</li>
-            </ul>
+          <div style="padding:32px;">
+            <p style="color:#1e293b;font-size:16px;margin:0 0 16px">Hi <b>${fn}</b>! 👋</p>
+            <p style="color:#475569;font-size:15px;margin:0 0 20px;line-height:1.6">
+              Thanks for your interest in <b>${service}</b>! We've received your inquiry and our team will reach out to you at <b>${email}</b> within <b>24 hours</b>.
+            </p>
+            <div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:14px;padding:20px;margin-bottom:24px;">
+              <p style="color:#64748b;font-weight:700;margin:0 0 8px;font-size:13px;text-transform:uppercase;letter-spacing:0.5px;">Your Request</p>
+              <p style="color:#1e293b;font-size:14px;margin:0;line-height:1.7;white-space:pre-wrap;">${message || '(No details provided)'}</p>
+            </div>
+            <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:16px;margin-bottom:24px;text-align:center;">
+              <p style="color:#c2410c;font-size:14px;margin:0;font-weight:600">⏱ Response within 24 hours<br/>📧 Reach us anytime: <a href="mailto:support@petclub.in" style="color:#f97316;">support@petclub.in</a></p>
+            </div>
+            <div style="text-align:center;">
+              <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:14px 32px;border-radius:14px;text-decoration:none;font-weight:800;font-size:15px;">Explore PETclub App →</a>
+            </div>
           </div>
-
-          <div style="background:#f8fafc;border-radius:12px;padding:16px;text-align:center;">
-            <p style="color:#64748b;font-size:13px;margin:0">📱 <b>Native mobile apps coming soon</b> for iOS & Android.<br/>Until then, our web app works great on any device!</p>
+          <div style="background:#f8fafc;padding:14px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #f1f5f9;">
+            © 2025 PETclub · For pets, with love 🐾
           </div>
-        </div>
-        <div style="background:#f8fafc;padding:16px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #f1f5f9;">
-          © 2025 PETclub · For pets, with love 🐾 · <a href="${WEBSITE_URL}" style="color:#f97316;text-decoration:none;">petclub.in</a>
-        </div>
-      </div>`);
+        </div>`);
 
-    // Save lead to DB
-    await supabase.from('website_leads').insert({ name, phone, email, city, pet_type: pettype, service_interest: service, pet_name: pet, message });
+      // ── Admin notification ──
+      if (adminEmail) {
+        sendEmail(adminEmail, `🔔 [${service} Inquiry] ${name} · ${email}`, `
+          <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:16px;border:2px solid ${svcColor};overflow:hidden;">
+            <div style="background:${svcColor};padding:20px 24px;">
+              <h2 style="color:#fff;margin:0;font-size:18px;">${svcIcon} New ${service} Inquiry</h2>
+              <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px;">Action required — reach out within 24 hours</p>
+            </div>
+            <div style="padding:24px;">
+              <table style="width:100%;border-collapse:collapse;font-size:14px;">
+                <tr><td style="padding:6px 0;color:#64748b;width:80px;">Name</td><td style="padding:6px 0;font-weight:700;color:#1e293b;">${name}</td></tr>
+                <tr><td style="padding:6px 0;color:#64748b;">Email</td><td style="padding:6px 0;color:#1e293b;"><a href="mailto:${email}" style="color:#f97316;">${email}</a></td></tr>
+                <tr><td style="padding:6px 0;color:#64748b;">Phone</td><td style="padding:6px 0;color:#1e293b;">${fullLeadPhone}</td></tr>
+                <tr><td style="padding:6px 0;color:#64748b;">City</td><td style="padding:6px 0;color:#1e293b;">${city || '—'}</td></tr>
+              </table>
+              <hr style="border:none;border-top:1px solid #f1f5f9;margin:16px 0;" />
+              <p style="color:#64748b;font-size:13px;font-weight:700;margin:0 0 8px;">Their Request:</p>
+              <div style="background:#f8fafc;border-radius:10px;padding:14px;color:#1e293b;font-size:14px;line-height:1.7;white-space:pre-wrap;">${message || '(No details provided)'}</div>
+            </div>
+          </div>`
+        ).catch(e => console.error('[Inquiry] Admin notify failed:', e.message));
+      }
+    } else {
+      // ── Regular signup welcome email ──
+      await sendEmail(email, `🐾 Welcome to PETclub, ${fn}!`, `
+        <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:580px;margin:0 auto;background:#fff;border-radius:20px;overflow:hidden;border:1px solid #f1f5f9;">
+          <div style="background:linear-gradient(135deg,#f97316,#fbbf24);padding:40px 32px;text-align:center;">
+            <div style="font-size:52px;margin-bottom:8px">🐾</div>
+            <h1 style="color:white;margin:0;font-size:26px;font-weight:800">Welcome to PETclub!</h1>
+            <p style="color:rgba(255,255,255,0.88);margin:8px 0 0;font-size:15px">India's #1 pet care platform</p>
+          </div>
+          <div style="padding:32px;">
+            <p style="color:#1e293b;font-size:16px;margin:0 0 20px">Hi <b>${fn}</b>! 🎉 You're all set. Book ${service||'grooming, training & vet care'} for ${pet||'your pet'} in ${city||'your city'} — right from your browser.</p>
+            <div style="text-align:center;margin:28px 0;">
+              <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:16px 36px;border-radius:14px;text-decoration:none;font-weight:800;font-size:16px;letter-spacing:0.3px;">🚀 Open PETclub App</a>
+            </div>
+            <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:20px;margin-bottom:20px;">
+              <p style="color:#c2410c;font-weight:700;margin:0 0 10px;font-size:14px">🌟 What you can do:</p>
+              <ul style="color:#64748b;line-height:2;margin:0;padding-left:18px;font-size:14px">
+                <li>Book grooming, training, vet visits & more</li>
+                <li>Manage your pet's health records digitally</li>
+                <li>Track service professionals in real time</li>
+                <li>🛡️ ₹25,000 service protection guarantee</li>
+              </ul>
+            </div>
+            <div style="background:#f8fafc;border-radius:12px;padding:16px;text-align:center;">
+              <p style="color:#64748b;font-size:13px;margin:0">📱 <b>Native mobile apps coming soon</b> for iOS & Android.<br/>Until then, our web app works great on any device!</p>
+            </div>
+          </div>
+          <div style="background:#f8fafc;padding:16px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #f1f5f9;">
+            © 2025 PETclub · For pets, with love 🐾 · <a href="${WEBSITE_URL}" style="color:#f97316;text-decoration:none;">petclub.in</a>
+          </div>
+        </div>`);
+    }
 
-    res.json({ success: true, message: 'App link sent via SMS and email!' });
+    // Save lead to DB (non-blocking)
+    try {
+      await supabase.from('website_leads').insert({ name, phone: fullLeadPhone, email, city, pet_type: pettype, service_interest: service, pet_name: pet, message });
+    } catch (e) { console.error('website_leads insert:', e.message); }
+
+    res.json({ success: true, message: isInquiry ? 'Inquiry received! Team will reach out within 24h.' : 'App link sent via SMS and email!' });
   } catch (err) {
     console.error('Send link error:', err.message);
     res.status(500).json({ error: 'Failed to send. Try again.' });
