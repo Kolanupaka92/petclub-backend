@@ -165,6 +165,121 @@ setInterval(() => {
 }, 2 * 60 * 1000);
 
 // ══════════════════════════════════════════════════════
+//  SUSPENDED USER AUTO-DELETE CRON — runs every hour
+//  Deletes users suspended >24 hrs ago (no restore since).
+//  Sends admin an email summary before deletion.
+// ══════════════════════════════════════════════════════
+const autoDeleteSuspendedUsers = async () => {
+  try {
+    // Find the latest suspend_user log per user
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+    const { data: logs } = await supabase
+      .from('admin_logs')
+      .select('target_id, created_at')
+      .eq('action', 'suspend_user')
+      .lt('created_at', cutoff)
+      .order('created_at', { ascending: false });
+
+    if (!logs?.length) return;
+
+    // Unique user IDs with a suspension older than 24 hr
+    const candidateIds = [...new Set(logs.map(l => l.target_id))];
+
+    // Exclude any that have been restored after the suspension
+    const { data: restoreLogs } = await supabase
+      .from('admin_logs')
+      .select('target_id, created_at')
+      .eq('action', 'restore_user')
+      .in('target_id', candidateIds);
+
+    // Build map: userId → latest restore timestamp
+    const latestRestore = {};
+    restoreLogs?.forEach(l => {
+      if (!latestRestore[l.target_id] || l.created_at > latestRestore[l.target_id])
+        latestRestore[l.target_id] = l.created_at;
+    });
+
+    // Build map: userId → latest suspension timestamp
+    const latestSuspend = {};
+    logs.forEach(l => {
+      if (!latestSuspend[l.target_id] || l.created_at > latestSuspend[l.target_id])
+        latestSuspend[l.target_id] = l.created_at;
+    });
+
+    // Only delete if latest suspension > 24hr ago AND no restore after it
+    const toDeleteIds = candidateIds.filter(id => {
+      const suspended = latestSuspend[id];
+      const restored  = latestRestore[id];
+      if (!suspended) return false;
+      if (suspended >= cutoff) return false;        // suspended < 24hr ago
+      if (restored && restored > suspended) return false; // restored after suspension
+      return true;
+    });
+
+    if (!toDeleteIds.length) return;
+
+    // Fetch user details for the email
+    const { data: toDelete } = await supabase
+      .from('users')
+      .select('id, name, phone, email, role')
+      .in('id', toDeleteIds)
+      .eq('is_active', false);
+
+    if (!toDelete?.length) return;
+
+    // Send admin email BEFORE deletion
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (adminEmail) {
+      const rows = toDelete.map(u =>
+        `<tr style="border-bottom:1px solid #f1f5f9">
+          <td style="padding:8px 12px;font-size:13px">${u.name || '—'}</td>
+          <td style="padding:8px 12px;font-size:13px">${u.phone}</td>
+          <td style="padding:8px 12px;font-size:13px">${u.email || '—'}</td>
+          <td style="padding:8px 12px;font-size:13px;text-transform:capitalize">${u.role}</td>
+        </tr>`
+      ).join('');
+      await sendEmail(
+        adminEmail,
+        `🗑️ PETclub — ${toDelete.length} Suspended User(s) Auto-Deleted`,
+        `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:560px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
+          <div style="font-size:40px;text-align:center;margin-bottom:12px">🗑️</div>
+          <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">Auto-Deletion Complete</h2>
+          <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 24px">The following user(s) were suspended &gt;24 hours ago and have been permanently deleted.</p>
+          <table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:12px;overflow:hidden">
+            <thead><tr style="background:#fee2e2">
+              <th style="padding:10px 12px;font-size:12px;color:#991b1b;text-align:left">Name</th>
+              <th style="padding:10px 12px;font-size:12px;color:#991b1b;text-align:left">Phone</th>
+              <th style="padding:10px 12px;font-size:12px;color:#991b1b;text-align:left">Email</th>
+              <th style="padding:10px 12px;font-size:12px;color:#991b1b;text-align:left">Role</th>
+            </tr></thead>
+            <tbody>${rows}</tbody>
+          </table>
+          <hr style="border:none;border-top:1px solid #f1f5f9;margin:24px 0"/>
+          <p style="color:#94a3b8;font-size:12px;text-align:center">PETclub Admin · ${new Date().toLocaleString('en-IN')} · These accounts are permanently removed from the database.</p>
+        </div>`
+      ).catch(e => console.error('[AutoDelete] Email failed:', e.message));
+    }
+
+    // Delete related records then users
+    const idsToDelete = toDelete.map(u => u.id);
+    await supabase.from('professional_profiles').delete().in('user_id', idsToDelete);
+    await supabase.from('customer_profiles').delete().in('user_id', idsToDelete).catch(() => {});
+    await supabase.from('pets').delete().in('owner_id', idsToDelete).catch(() => {});
+    await supabase.from('otp_tokens').delete().in('phone', toDelete.map(u => u.phone)).catch(() => {});
+    await supabase.from('admin_logs').delete().in('target_id', idsToDelete);
+    await supabase.from('users').delete().in('id', idsToDelete);
+
+    console.log(`[AutoDelete] Deleted ${idsToDelete.length} suspended users: ${idsToDelete.join(', ')}`);
+  } catch (e) {
+    console.error('[AutoDelete] Cron error:', e.message);
+  }
+};
+
+setInterval(() => {
+  autoDeleteSuspendedUsers().catch(e => console.error('[Cron] Auto-delete suspended users failed:', e.message));
+}, 60 * 60 * 1000); // every hour
+
+// ══════════════════════════════════════════════════════
 //  BOOKING DISPATCH SYSTEM — Round-Robin / Uber-style
 // ══════════════════════════════════════════════════════
 const RESPONSE_TIMEOUT_MINS = 5; // Pro has 5 mins to Accept/Reject
@@ -1364,7 +1479,22 @@ app.get('/api/admin/stats', auth, adminOnly, async (req, res) => {
 
 app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
   const { data } = await supabase.from('users').select('*, professional_profiles(sub_role, verification_status, rating, city)').order('created_at', { ascending: false });
-  res.json({ success: true, users: data });
+
+  // Attach suspended_at: latest 'suspend_user' log timestamp per suspended user
+  const suspendedIds = data?.filter(u => !u.is_active && u.role !== 'admin').map(u => u.id) || [];
+  let suspendedAtMap = {};
+  if (suspendedIds.length) {
+    const { data: logs } = await supabase
+      .from('admin_logs')
+      .select('target_id, created_at')
+      .eq('action', 'suspend_user')
+      .in('target_id', suspendedIds)
+      .order('created_at', { ascending: false });
+    logs?.forEach(l => { if (!suspendedAtMap[l.target_id]) suspendedAtMap[l.target_id] = l.created_at; });
+  }
+
+  const users = data?.map(u => ({ ...u, suspended_at: suspendedAtMap[u.id] || null }));
+  res.json({ success: true, users });
 });
 
 app.get('/api/admin/pending-verifications', auth, adminOnly, async (req, res) => {
@@ -1399,10 +1529,94 @@ app.put('/api/admin/users/:id/set-role', auth, adminOnly, async (req, res) => {
 });
 
 app.put('/api/admin/users/:id/suspend', auth, adminOnly, async (req, res) => {
-  const { data: u } = await supabase.from('users').select('is_active').eq('id', req.params.id).single();
+  const { data: u } = await supabase.from('users').select('id, name, phone, email, role, is_active').eq('id', req.params.id).single();
+  if (!u) return res.status(404).json({ error: 'User not found' });
+
+  const nowSuspending = u.is_active; // true → we're suspending; false → we're restoring
   await supabase.from('users').update({ is_active: !u.is_active }).eq('id', req.params.id);
-  await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: u.is_active ? 'suspend_user' : 'restore_user', target_id: req.params.id, target_type: 'user' });
-  res.json({ success: true, is_active: !u.is_active });
+  await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: nowSuspending ? 'suspend_user' : 'restore_user', target_id: req.params.id, target_type: 'user' });
+
+  const adminEmail = process.env.ADMIN_EMAIL;
+
+  if (nowSuspending) {
+    // Compute deletion time (24 hr from now)
+    const deleteAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const deleteStr = deleteAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+
+    if (adminEmail) {
+      sendEmail(
+        adminEmail,
+        `⚠️ PETclub — User Suspended: ${u.name || u.phone}`,
+        `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:520px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
+          <div style="font-size:40px;text-align:center;margin-bottom:12px">⚠️</div>
+          <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">User Suspended</h2>
+          <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 24px">This user's account has been suspended by admin and will be <strong style="color:#dc2626">permanently deleted in 24 hours</strong>.</p>
+          <div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:14px;padding:20px;margin-bottom:20px">
+            <table style="width:100%">
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u.name || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Phone</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.phone}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Email</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.email || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Role</td><td style="color:#1e293b;font-size:13px;text-align:right;text-transform:capitalize">${u.role}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Deletes at</td><td style="color:#dc2626;font-size:13px;font-weight:700;text-align:right">${deleteStr} IST</td></tr>
+            </table>
+          </div>
+          <div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:14px;padding:16px;font-size:13px;color:#92400e">
+            <strong>To prevent deletion:</strong> Go to the Admin Dashboard → Users tab → find this user → click <em>Restore</em> before ${deleteStr} IST.
+          </div>
+          <hr style="border:none;border-top:1px solid #f1f5f9;margin:24px 0"/>
+          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin System · ${new Date().toLocaleString('en-IN')}</p>
+        </div>`
+      ).catch(e => console.error('[Suspend] Email failed:', e.message));
+    }
+  } else {
+    // User restored — notify admin
+    if (adminEmail) {
+      sendEmail(
+        adminEmail,
+        `✅ PETclub — User Restored: ${u.name || u.phone}`,
+        `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
+          <div style="font-size:40px;text-align:center;margin-bottom:12px">✅</div>
+          <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">User Restored</h2>
+          <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">The following account has been reactivated and the 24-hr deletion timer has been cancelled.</p>
+          <div style="background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:14px;padding:20px">
+            <table style="width:100%">
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u.name || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Phone</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.phone}</td></tr>
+            </table>
+          </div>
+          <hr style="border:none;border-top:1px solid #f1f5f9;margin:24px 0"/>
+          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin System · ${new Date().toLocaleString('en-IN')}</p>
+        </div>`
+      ).catch(e => console.error('[Restore] Email failed:', e.message));
+    }
+  }
+
+  const suspendedAt = nowSuspending ? new Date().toISOString() : null;
+  res.json({ success: true, is_active: !u.is_active, suspended_at: suspendedAt });
+});
+
+// ══════════════════════════════════════════════════════
+//  ADMIN: Hard-delete a user immediately
+// ══════════════════════════════════════════════════════
+app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const { data: u } = await supabase.from('users').select('id, name, phone, email, role').eq('id', req.params.id).single();
+    if (!u) return res.status(404).json({ error: 'User not found' });
+
+    await supabase.from('professional_profiles').delete().eq('user_id', u.id);
+    await supabase.from('customer_profiles').delete().eq('user_id', u.id).catch(() => {});
+    await supabase.from('pets').delete().eq('owner_id', u.id).catch(() => {});
+    await supabase.from('otp_tokens').delete().eq('phone', u.phone).catch(() => {});
+    await supabase.from('admin_logs').delete().eq('target_id', u.id);
+    await supabase.from('users').delete().eq('id', u.id);
+
+    await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: 'delete_user', target_id: u.id, target_type: 'user', notes: `Manual delete: ${u.name || u.phone}` }).catch(() => {});
+    console.log(`[AdminDelete] User ${u.id} (${u.phone}) deleted by admin ${req.user.id}`);
+    res.json({ success: true, deleted: u.id });
+  } catch (e) {
+    console.error('[AdminDelete] Error:', e.message);
+    res.status(500).json({ error: 'Failed to delete user.' });
+  }
 });
 
 // ══════════════════════════════════════════════════════
