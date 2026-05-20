@@ -1523,12 +1523,28 @@ app.put('/api/admin/verify/:id', auth, adminOnly, async (req, res) => {
   res.json({ success: true, professional: prof });
 });
 
-// Admin: set sub_role for a professional (fixes users with null sub_role)
+// Admin: set sub_role for a professional (creates profile row if missing)
 app.put('/api/admin/users/:id/set-role', auth, adminOnly, async (req, res) => {
   const { subRole } = req.body;
   if (!['Groomer','Trainer','Vet'].includes(subRole))
     return res.status(400).json({ error: 'subRole must be Groomer, Trainer, or Vet' });
-  await supabase.from('professional_profiles').update({ sub_role: subRole }).eq('user_id', req.params.id);
+
+  // Ensure the user's role is 'professional' (in case they were still pending_role)
+  await supabase.from('users').update({ role: 'professional' }).eq('id', req.params.id).neq('role', 'professional');
+
+  // Check if a professional_profiles row already exists
+  const { data: existing } = await supabase
+    .from('professional_profiles').select('id').eq('user_id', req.params.id).single();
+
+  if (existing) {
+    // Row exists — only update sub_role (preserve verification_status, is_available, etc.)
+    await supabase.from('professional_profiles').update({ sub_role: subRole }).eq('user_id', req.params.id);
+  } else {
+    // No row — create one with pending status (admin must still approve separately)
+    await supabase.from('professional_profiles').insert({
+      user_id: req.params.id, sub_role: subRole, verification_status: 'pending', is_available: false,
+    });
+  }
   res.json({ success: true, subRole });
 });
 
