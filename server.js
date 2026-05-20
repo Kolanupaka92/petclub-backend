@@ -1002,8 +1002,42 @@ app.put('/api/professionals/me', auth, async (req, res) => {
   if (sub_role && ['Groomer','Trainer','Vet'].includes(sub_role)) {
     updatePayload.sub_role = sub_role;
   }
+  // Fetch current profile BEFORE update to detect first-time profile completion
+  const { data: existingProf } = await supabase.from('professional_profiles').select('bio, experience, sub_role').eq('user_id', req.user.id).single();
+  const wasIncomplete = !existingProf?.bio && !existingProf?.experience;
+  const willBeComplete = !!(bio && experience);
+
   const { data } = await supabase.from('professional_profiles').update(updatePayload)
     .eq('user_id', req.user.id).select().single();
+
+  // Notify admin when professional completes their profile for the first time (in-review)
+  if (wasIncomplete && willBeComplete) {
+    const { data: u } = await supabase.from('users').select('name, phone, email').eq('id', req.user.id).single();
+    const adminEmail = process.env.ADMIN_EMAIL;
+    const finalSubRole = updatePayload.sub_role || existingProf?.sub_role || 'Professional';
+    if (adminEmail) {
+      sendEmail(adminEmail,
+        `🔔 PETclub — ${finalSubRole} Profile Ready for Review: ${u?.name || u?.phone}`,
+        `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px;border:2px solid #f97316;">
+          <div style="font-size:40px;text-align:center;margin-bottom:12px">🔔</div>
+          <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">New ${finalSubRole} Pending Verification</h2>
+          <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">A professional has completed their profile and is awaiting your approval.</p>
+          <div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:14px;padding:20px;margin-bottom:16px">
+            <table style="width:100%">
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u?.name || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Phone</td><td style="color:#1e293b;font-size:13px;text-align:right">${u?.phone || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Email</td><td style="color:#1e293b;font-size:13px;text-align:right">${u?.email || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Role</td><td style="color:#f97316;font-size:13px;font-weight:700;text-align:right">${finalSubRole}</td></tr>
+            </table>
+          </div>
+          <p style="text-align:center;margin:0"><a href="${WEB_APP_URL}" style="display:inline-block;background:#f97316;color:white;padding:12px 28px;border-radius:50px;text-decoration:none;font-weight:700;font-size:14px">Review in Admin Dashboard →</a></p>
+          <hr style="border:none;border-top:1px solid #f1f5f9;margin:20px 0"/>
+          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin · ${new Date().toLocaleString('en-IN')}</p>
+        </div>`
+      ).catch(e => console.error('[ProProfile] Admin notification failed:', e.message));
+    }
+  }
+
   res.json({ success: true, profile: data });
 });
 
@@ -1095,7 +1129,7 @@ app.post('/api/users/upload-id-photo', auth, async (req, res) => {
     const { docType, docNumber, docPhoto } = req.body;
     if (!docType) return res.status(400).json({ error: 'Document type required' });
 
-    let photoUrl = null;
+    let customerPhotoPath = null;
     if (docPhoto && docPhoto.length > 100) {
       try {
         const base64Data = docPhoto.replace(/^data:image\/\w+;base64,/, '');
@@ -1105,24 +1139,7 @@ app.post('/api/users/upload-id-photo', auth, async (req, res) => {
         const { error: upErr } = await supabase.storage
           .from('id-documents')
           .upload(filename, buffer, { contentType: `image/${ext}`, upsert: true });
-        if (!upErr) {
-          const { data: urlData } = supabase.storage.from('id-documents').getPublicUrl(filename);
-          photoUrl = urlData.publicUrl;
-        }
-      } catch (e) { console.error('Customer ID photo error:', e.message); }
-    }
-
-    let customerPhotoPath = null;
-    if (req.body.docPhoto && req.body.docPhoto.length > 100) {
-      try {
-        const base64Data = req.body.docPhoto.replace(/^data:image\/\w+;base64,/, '');
-        const buffer = Buffer.from(base64Data, 'base64');
-        const ext = req.body.docPhoto.startsWith('data:image/png') ? 'png' : 'jpg';
-        const filename = `customers/${req.user.id}/${Date.now()}.${ext}`;
-        const { error: upErr } = await supabase.storage
-          .from('id-documents')
-          .upload(filename, buffer, { contentType: `image/${ext}`, upsert: true });
-        if (!upErr) customerPhotoPath = filename; // store path, not public URL
+        if (!upErr) customerPhotoPath = filename; // store path (private bucket — use signed URL to view)
       } catch (e) { console.error('Customer ID photo error:', e.message); }
     }
 
@@ -1130,7 +1147,7 @@ app.post('/api/users/upload-id-photo', auth, async (req, res) => {
       user_id: req.user.id,
       id_doc_type: docType,
       id_doc_number: docNumber || null,
-      id_photo_url: customerPhotoPath, // stores path like "customers/user_id/timestamp.jpg"
+      id_photo_url: customerPhotoPath,
     }, { onConflict: 'user_id' });
 
     res.json({ success: true, message: 'ID document saved' });
@@ -1552,7 +1569,7 @@ app.get('/api/admin/stats', auth, adminOnly, async (req, res) => {
 });
 
 app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
-  const { data } = await supabase.from('users').select('*, professional_profiles(sub_role, verification_status, rating, city)').order('created_at', { ascending: false });
+  const { data } = await supabase.from('users').select('*, customer_profiles(id_photo_url, id_doc_type, id_doc_number), professional_profiles(sub_role, verification_status, rating, city)').order('created_at', { ascending: false });
 
   // Attach suspended_at: latest 'suspend_user' log timestamp per suspended user
   const suspendedIds = data?.filter(u => !u.is_active && u.role !== 'admin').map(u => u.id) || [];
@@ -1613,21 +1630,32 @@ app.put('/api/admin/users/:id/set-role', auth, adminOnly, async (req, res) => {
     return res.status(400).json({ error: 'subRole must be Groomer, Trainer, or Vet' });
 
   // Ensure the user's role is 'professional' (in case they were still pending_role)
-  await supabase.from('users').update({ role: 'professional' }).eq('id', req.params.id).neq('role', 'professional');
+  await supabase.from('users').update({ role: 'professional' }).eq('id', req.params.id);
 
-  // Check if a professional_profiles row already exists
-  const { data: existing } = await supabase
-    .from('professional_profiles').select('id').eq('user_id', req.params.id).single();
+  // Try to update existing row first (preserves verification_status, is_available, etc.)
+  const { data: updatedRows, error: updateErr } = await supabase
+    .from('professional_profiles')
+    .update({ sub_role: subRole })
+    .eq('user_id', req.params.id)
+    .select();
 
-  if (existing) {
-    // Row exists — only update sub_role (preserve verification_status, is_available, etc.)
-    await supabase.from('professional_profiles').update({ sub_role: subRole }).eq('user_id', req.params.id);
-  } else {
-    // No row — create one with pending status (admin must still approve separately)
-    await supabase.from('professional_profiles').insert({
+  if (updateErr) {
+    console.error('[SetRole] Update error:', updateErr.message);
+    return res.status(500).json({ error: 'Failed to update role: ' + updateErr.message });
+  }
+
+  // If no row was updated (user had no profile yet), insert one
+  if (!updatedRows || updatedRows.length === 0) {
+    const { error: insertErr } = await supabase.from('professional_profiles').insert({
       user_id: req.params.id, sub_role: subRole, verification_status: 'pending', is_available: false,
     });
+    if (insertErr) {
+      console.error('[SetRole] Insert error:', insertErr.message);
+      return res.status(500).json({ error: 'Failed to create profile: ' + insertErr.message });
+    }
   }
+
+  console.log(`[SetRole] Admin set sub_role=${subRole} for user ${req.params.id}`);
   res.json({ success: true, subRole });
 });
 
@@ -1715,6 +1743,29 @@ app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
 
     await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: 'delete_user', target_id: u.id, target_type: 'user', notes: `Manual delete: ${u.name || u.phone}` }).catch(() => {});
     console.log(`[AdminDelete] User ${u.id} (${u.phone}) deleted by admin ${req.user.id}`);
+
+    // Notify admin email about manual deletion
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (adminEmail) {
+      sendEmail(adminEmail, `🗑️ PETclub — User Manually Deleted: ${u.name || u.phone}`,
+        `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
+          <div style="font-size:40px;text-align:center;margin-bottom:12px">🗑️</div>
+          <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">User Permanently Deleted</h2>
+          <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">This account was manually deleted from the Admin Dashboard.</p>
+          <div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:14px;padding:20px">
+            <table style="width:100%">
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u.name || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Phone</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.phone}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Email</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.email || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Role</td><td style="color:#1e293b;font-size:13px;text-align:right;text-transform:capitalize">${u.role}</td></tr>
+            </table>
+          </div>
+          <hr style="border:none;border-top:1px solid #f1f5f9;margin:20px 0"/>
+          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin · ${new Date().toLocaleString('en-IN')}</p>
+        </div>`
+      ).catch(() => {});
+    }
+
     res.json({ success: true, deleted: u.id });
   } catch (e) {
     console.error('[AdminDelete] Error:', e.message);
