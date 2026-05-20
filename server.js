@@ -451,6 +451,72 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════
+//  AUTH: FIREBASE PHONE AUTH — verify ID token → issue JWT
+//  Frontend sends Firebase ID token after successful phone OTP.
+//  We verify it with Firebase Admin, then find/create the user
+//  in Supabase and return our own JWT (same shape as verify-otp).
+// ══════════════════════════════════════════════════════
+app.post('/api/auth/firebase-verify', async (req, res) => {
+  try {
+    const { idToken } = req.body;
+    if (!idToken) return res.status(400).json({ error: 'Firebase ID token required' });
+    if (!firebaseAdmin) return res.status(503).json({ error: 'Firebase not configured on server' });
+
+    // Verify token with Firebase Admin SDK
+    let decoded;
+    try {
+      decoded = await firebaseAdmin.auth().verifyIdToken(idToken);
+    } catch (e) {
+      console.error('[FirebaseVerify] Token invalid:', e.message);
+      return res.status(401).json({ error: 'Invalid or expired token. Please try again.' });
+    }
+
+    const phone = decoded.phone_number;
+    if (!phone) return res.status(400).json({ error: 'No phone number in Firebase token' });
+
+    // Find or create user (same logic as /auth/verify-otp)
+    let { data: user } = await supabase.from('users').select('*').eq('phone', phone).single();
+    const isNew = !user;
+    if (!user) {
+      const { data: nu, error: insertErr } = await supabase
+        .from('users')
+        .insert({ phone, role: 'pending_role', is_active: true })
+        .select()
+        .single();
+      if (insertErr) {
+        console.error('[FirebaseVerify] User insert failed:', insertErr.message);
+        return res.status(500).json({ error: 'Failed to create user. Try again.' });
+      }
+      user = nu;
+    }
+
+    if (user.is_active === false) {
+      return res.status(403).json({ error: 'Your account has been suspended. Contact support at support@mypetclub.app' });
+    }
+
+    // For professionals, include verification status + sub_role
+    let verificationStatus = null;
+    let subRole = null;
+    if (user.role === 'professional') {
+      const { data: prof } = await supabase
+        .from('professional_profiles')
+        .select('verification_status, sub_role')
+        .eq('user_id', user.id)
+        .single();
+      verificationStatus = prof?.verification_status || 'pending';
+      subRole = prof?.sub_role || null;
+    }
+
+    const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    console.log(`[FirebaseVerify] ${isNew ? 'New' : 'Returning'} user: ${phone}`);
+    res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
+  } catch (err) {
+    console.error('[FirebaseVerify] Unexpected error:', err.message);
+    res.status(500).json({ error: 'Verification failed. Please try again.' });
+  }
+});
+
+// ══════════════════════════════════════════════════════
 //  AUTH: SET ROLE (called once for new users)
 // ══════════════════════════════════════════════════════
 app.post('/api/users/set-role', auth, async (req, res) => {
