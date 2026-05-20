@@ -13,9 +13,11 @@
     "dotenv": "^16.0.0",
     "express": "^4.18.0",
     "express-rate-limit": "^7.0.0",
+    "firebase-admin": "^12.0.0",
     "jsonwebtoken": "^9.0.0",
     "nodemailer": "^8.0.7",
     "pg": "^8.21.0",
+    "razorpay": "^2.9.2",
     "resend": "^6.12.3",
     "twilio": "^5.0.0"
   },
