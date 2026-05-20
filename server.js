@@ -1,13 +1,12 @@
 // ═══════════════════════════════════════════════════════════
 //  PETclub India — Complete Backend API v1.0
-//  Stack: Node.js + Express + Twilio + Nodemailer (Zoho SMTP) + Supabase + JWT
+//  Stack: Node.js + Express + Firebase Auth + Nodemailer (Zoho SMTP) + Supabase + JWT
 // ═══════════════════════════════════════════════════════════
 require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
-const twilio = require('twilio');
 const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
 
@@ -20,7 +19,6 @@ const WEBSITE_URL = 'https://mypetclub.app';
 
 // ── Services ───────────────────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
-const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
 
 // ── Zoho SMTP transporter ─────────────────────────────
 // Env vars required: ZOHO_SMTP_USER, ZOHO_SMTP_PASS
@@ -115,9 +113,6 @@ const adminOnly = (req, res, next) => {
   next();
 };
 
-const sendSMS = async (fullPhone, body) => {
-  return twilioClient.messages.create({ body, from: process.env.TWILIO_PHONE_NUMBER, to: fullPhone });
-};
 
 // ── Push Notification via Firebase Cloud Messaging ────────────────────────────
 const sendPush = async (fcmToken, title, body, data = {}) => {
@@ -247,12 +242,6 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
   if (proEmail) {
     sendEmail(proEmail, `🐾 New Booking Request — ${svc} · Respond in ${RESPONSE_TIMEOUT_MINS} min`, notifHtml).catch(console.error);
   }
-  if (proPhone) {
-    sendSMS(
-      proPhone.startsWith('+') ? proPhone : `+91${proPhone}`,
-      `🐾 PETclub: New ${svc} booking for ${petName}!\n📅 ${dateStr} · 📍 ${location}\n⏰ Accept or Reject within ${RESPONSE_TIMEOUT_MINS} mins in the app.\nhttps://app.mypetclub.app`
-    ).catch(console.error);
-  }
   // FCM push notification to professional
   const { data: proUser } = await Promise.resolve(supabase.from('users').select('fcm_token').eq('id', pro.user_id).single()).catch(() => ({ data: null }));
   if (proUser?.fcm_token) {
@@ -294,161 +283,17 @@ const processTimedOutAssignments = async () => {
 };
 
 // ══════════════════════════════════════════════════════
-//  AUTH: SEND OTP  (SMS for US · Email for India)
-//
-//  Email delivery strategy:
-//  1. Always try user's OWN email first (direct delivery)
-//  2. Always CC admin (ADMIN_EMAIL env) so admin sees every OTP during beta
-//     → Admin can verbally relay code to user if direct delivery fails
-//  3. Once Gmail SMTP is configured → direct delivery always works
+//  AUTH: LEGACY OTP ENDPOINTS — REMOVED
+//  Replaced by:
+//    Phone → Firebase Phone Auth → POST /auth/firebase-verify
+//    Email → POST /auth/send-email-otp + POST /auth/verify-email-otp
 // ══════════════════════════════════════════════════════
-app.post('/api/auth/send-otp', otpLimit, async (req, res) => {
-  try {
-    const { phone, countryCode = '91', email } = req.body;
-    if (!phone || !/^\d{6,15}$/.test(phone))
-      return res.status(400).json({ error: 'Valid phone number required' });
-
-    const isIndia = countryCode === '91';
-    const fullPhone = `+${countryCode}${phone}`;
-    const otp = genOTP();
-    const expires = new Date(Date.now() + 10 * 60000).toISOString();
-    // Admin email receives a copy of every OTP during beta testing
-    const adminEmail = process.env.ADMIN_EMAIL || process.env.GMAIL_USER;
-
-    // Store OTP in DB
-    await supabase.from('otp_tokens').upsert(
-      { phone: fullPhone, otp, expires_at: expires, verified: false },
-      { onConflict: 'phone' }
-    );
-
-    // ── OTP email template (sent to user) ──
-    const userOtpHtml = `
-      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:420px;margin:0 auto;text-align:center;padding:40px 20px;background:#fff;border-radius:20px;box-shadow:0 4px 24px rgba(0,0,0,0.06);">
-        <div style="font-size:52px;margin-bottom:12px">🐾</div>
-        <h2 style="color:#1e293b;font-size:22px;margin:0 0 6px">Your PETclub OTP</h2>
-        <p style="color:#64748b;font-size:14px;margin:0 0 28px">Use this code to sign in or create your account</p>
-        <div style="background:#fff7ed;border:2px solid #f97316;border-radius:16px;padding:28px 20px;margin-bottom:24px;">
-          <div style="font-size:44px;font-weight:900;color:#f97316;letter-spacing:10px;font-family:monospace">${otp}</div>
-        </div>
-        <p style="color:#94a3b8;font-size:13px;margin:0">Valid for <strong>10 minutes</strong> · Never share this code</p>
-        <hr style="border:none;border-top:1px solid #f1f5f9;margin:24px 0"/>
-        <p style="color:#cbd5e1;font-size:11px">© 2025 PETclub · For pets, with love 🐾</p>
-      </div>`;
-
-    // ── Admin relay template (always sent to admin during beta) ──
-    const adminRelayHtml = (userEmail, userPhone) => `
-      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:460px;margin:0 auto;padding:20px;background:#fff;">
-        <div style="background:#f0fdf4;border:2px solid #86efac;border-radius:12px;padding:16px;margin-bottom:20px;">
-          <p style="margin:0;font-size:13px;font-weight:700;color:#166534;">🔔 PETclub — OTP Admin Copy</p>
-          <p style="margin:6px 0 0;font-size:12px;color:#15803d;">
-            User phone: <strong>${userPhone}</strong><br/>
-            User email: <strong>${userEmail || 'not provided'}</strong><br/>
-            OTP: <strong style="font-size:18px;letter-spacing:4px;font-family:monospace">${otp}</strong>
-          </p>
-        </div>
-        ${userOtpHtml}
-      </div>`;
-
-    const validEmail = email && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
-
-    if (isIndia) {
-      // ── India (+91): Email is the ONLY channel (Twilio SMS unavailable) ──
-      if (!validEmail)
-        return res.status(400).json({ error: 'Email address is required for India (+91) — your OTP will be sent to it.' });
-
-      // 1️⃣ Send directly to user's own email (works with Gmail SMTP; may be limited on Resend)
-      let sentToUser = false;
-      sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, userOtpHtml)
-        .then(() => { sentToUser = true; console.log(`[OTP] Delivered to user: ${email}`); })
-        .catch(e => console.error(`[OTP] User email failed (${email}):`, e.message));
-
-      // 2️⃣ Always send admin copy — ensures OTP is always visible during beta
-      if (adminEmail && adminEmail !== email) {
-        sendEmail(adminEmail, `🔔 [PETclub OTP Copy] ${fullPhone} → ${email}`, adminRelayHtml(email, fullPhone))
-          .catch(e => console.error('[OTP] Admin copy failed:', e.message));
-      }
-
-      return res.json({
-        success: true,
-        message: `OTP sent to ${email} · 🇮🇳 Check your inbox & spam folder`,
-      });
-    }
-
-    // ── US (+1): SMS + Email fired in parallel (non-blocking) ──
-    sendSMS(fullPhone, `Your PETclub OTP is: ${otp}\nValid 10 minutes. Do not share. 🐾`)
-      .then(() => console.log(`[OTP] SMS sent to ${fullPhone}`))
-      .catch(e => console.error('SMS failed:', e.message));
-
-    if (validEmail) {
-      sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, userOtpHtml)
-        .then(() => console.log(`[OTP] Email sent to ${email}`))
-        .catch(e => console.error(`[OTP] Email failed (${email}):`, e.message));
-    }
-
-    // Admin copy
-    if (adminEmail && adminEmail !== email) {
-      sendEmail(adminEmail, `🔔 [PETclub OTP Copy] ${fullPhone} → ${email || 'SMS only'}`, adminRelayHtml(email, fullPhone))
-        .catch(e => console.error('[OTP] Admin copy failed:', e.message));
-    }
-
-    res.json({
-      success: true,
-      message: validEmail
-        ? `OTP sent via SMS + email to ${email} · 🇺🇸`
-        : `OTP sent via SMS · 🇺🇸`,
-    });
-  } catch (err) {
-    console.error('OTP send error:', err.message);
-    res.status(500).json({ error: 'Failed to send OTP. Try again.' });
-  }
-});
-
-// ══════════════════════════════════════════════════════
-//  AUTH: VERIFY OTP → JWT LOGIN
-// ══════════════════════════════════════════════════════
-app.post('/api/auth/verify-otp', async (req, res) => {
-  try {
-    const { phone, otp, countryCode = '91' } = req.body;
-    if (!phone || !otp) return res.status(400).json({ error: 'Phone and OTP required' });
-
-    const fullPhone = phone.startsWith('+') ? phone : `+${countryCode}${phone}`;
-    const { data: rec } = await supabase.from('otp_tokens').select('*').eq('phone', fullPhone).single();
-    if (!rec) return res.status(400).json({ error: 'OTP not found. Request a new one.' });
-    if (rec.verified) return res.status(400).json({ error: 'OTP already used.' });
-    if (new Date() > new Date(rec.expires_at)) return res.status(400).json({ error: 'OTP expired. Request a new one.' });
-    if (rec.otp !== otp) return res.status(400).json({ error: 'Incorrect OTP.' });
-
-    await supabase.from('otp_tokens').update({ verified: true }).eq('phone', fullPhone);
-
-    let { data: user } = await supabase.from('users').select('*').eq('phone', fullPhone).single();
-    const isNew = !user;
-    if (!user) {
-      // New user — role defaults to 'pending_role' until they pick one
-      const { data: nu } = await supabase.from('users').insert({ phone: fullPhone, role: 'pending_role', is_active: true }).select().single();
-      user = nu;
-    }
-
-    // Block suspended accounts
-    if (user.is_active === false) {
-      return res.status(403).json({ error: 'Your account has been suspended. Contact support at support@mypetclub.app' });
-    }
-
-    // For professionals, include their verification status and sub_role
-    let verificationStatus = null;
-    let subRole = null;
-    if (user.role === 'professional') {
-      const { data: prof } = await supabase.from('professional_profiles').select('verification_status, sub_role').eq('user_id', user.id).single();
-      verificationStatus = prof?.verification_status || 'pending';
-      subRole = prof?.sub_role || null;
-    }
-
-    const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
-    res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
-  } catch (err) {
-    console.error('OTP verify error:', err.message);
-    res.status(500).json({ error: 'Verification failed.' });
-  }
-});
+app.post('/api/auth/send-otp', (req, res) => res.status(410).json({
+  error: 'This endpoint has been removed. Use Firebase Phone Auth (app) or /auth/send-email-otp for email login.',
+}));
+app.post('/api/auth/verify-otp', (req, res) => res.status(410).json({
+  error: 'This endpoint has been removed. Use /auth/firebase-verify (phone) or /auth/verify-email-otp (email).',
+}));
 
 // ══════════════════════════════════════════════════════
 //  AUTH: FIREBASE PHONE AUTH — verify ID token → issue JWT
@@ -763,12 +608,6 @@ app.post('/api/contact/send-link', async (req, res) => {
     const fullLeadPhone = phone.startsWith('+') ? phone : `+91${phone}`;
     const isInquiry = ['Pet Food', 'Pet Boarding'].includes(service);
 
-    // SMS (non-blocking — India toll-free restriction handled gracefully)
-    sendSMS(fullLeadPhone,
-      isInquiry
-        ? `Hi ${fn}! 🐾 We received your ${service} inquiry. Our team will reach out to you within 24 hours. – PETclub`
-        : `Hi ${fn}! 🐾 Welcome to PETclub!\n\nAccess the app here:\n🌐 ${WEB_APP_URL}\n\nAll pet services in ${city || 'your city'}! 📱 Mobile apps coming soon.`
-    ).catch(e => console.error('Lead SMS failed (non-blocking):', e.message));
 
     if (isInquiry) {
       // ── Inquiry confirmation to user ──
@@ -1149,15 +988,6 @@ app.post('/api/bookings', auth, async (req, res) => {
     }).select().single();
     if (!booking) return res.status(500).json({ error: 'Failed to create booking' });
 
-    // Confirm SMS to customer
-    const { data: custUser } = await supabase.from('users').select('phone, name').eq('id', req.user.id).single();
-    if (custUser?.phone) {
-      const svcLabel = service_name || service_type || 'Service';
-      const dateLabel = scheduled_at ? new Date(scheduled_at).toLocaleString('en-IN', { weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : 'TBD';
-      sendSMS(custUser.phone.startsWith('+') ? custUser.phone : `+91${custUser.phone}`,
-        `🐾 PETclub: Your ${svcLabel} booking is placed!\n📅 ${dateLabel}\n🔍 Finding the best professional for you — you'll hear back shortly.\nTrack: https://app.mypetclub.app`
-      ).catch(() => {});
-    }
 
     // Auto-assign round-robin
     if (service_type && ['Groomer', 'Trainer', 'Vet'].includes(service_type)) {
@@ -1239,11 +1069,6 @@ app.post('/api/bookings/:id/respond', auth, async (req, res) => {
             </table>
             <div style="text-align:center;"><a href="https://app.mypetclub.app" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:14px 32px;border-radius:50px;text-decoration:none;font-weight:700;">Open PETclub App →</a></div>
           </div>`).catch(console.error);
-      }
-      if (custPhone) {
-        sendSMS(custPhone.startsWith('+') ? custPhone : `+91${custPhone}`,
-          `✅ PETclub: ${svc} booking confirmed!\n👤 ${proName} will arrive on ${dateStr}.\n📱 View in app: https://app.mypetclub.app`
-        ).catch(console.error);
       }
       // FCM push to customer
       const { data: custUserFcm } = await Promise.resolve(supabase.from('users').select('fcm_token').eq('id', bk?.users?.id || bk?.customer_id || '').single()).catch(() => ({ data: null }));
@@ -1559,8 +1384,6 @@ app.put('/api/admin/verify/:id', auth, adminOnly, async (req, res) => {
     const sms = action === 'approve'
       ? `✅ Congrats! Your PETclub profile is verified. Open the app to go live and start earning! 🐾`
       : `❌ PETclub verification not approved. Reason: ${reason||'Documents incomplete'}. Resubmit via the app.`;
-    const fullPhone = prof.users.phone.startsWith('+') ? prof.users.phone : `+91${prof.users.phone}`;
-    sendSMS(fullPhone, sms).catch(console.error);
     if (prof.users.email) sendEmail(prof.users.email, `PETclub Verification ${action==='approve'?'Approved ✅':'Update ❌'}`, `<p>${sms}</p>`).catch(console.error);
   }
   res.json({ success: true, professional: prof });
@@ -1702,8 +1525,8 @@ app.get('/api/health', (req, res) => res.json({
   time: new Date(),
   services: {
     supabase: '✅',
-    twilio: process.env.TWILIO_ACCOUNT_SID ? '✅' : '⚠️ not configured',
     zoho_smtp: process.env.ZOHO_SMTP_USER ? '✅' : '⚠️ not configured',
+    firebase_auth: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
     razorpay: razorpay ? '✅ live' : '⏳ pending (set env vars)',
     fcm: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
   },
