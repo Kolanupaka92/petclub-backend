@@ -1720,6 +1720,54 @@ app.put('/api/admin/users/:id/set-role', auth, adminOnly, async (req, res) => {
   res.json({ success: true, subRole });
 });
 
+// ── Admin: fix / update user profile data (email, name, address) ──────────
+app.patch('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
+  try {
+    const { data: u } = await supabase.from('users').select('id, name, phone, email, role').eq('id', req.params.id).single();
+    if (!u) return res.status(404).json({ error: 'User not found' });
+
+    const { name, email, address, city, area, pincode } = req.body;
+
+    // Validate email if provided
+    if (email !== undefined && email !== null && email !== '') {
+      const em = email.toLowerCase().trim();
+      const domain = em.includes('@') ? em.split('@').pop() : '';
+      const tld = domain.includes('.') ? domain.split('.').pop() : '';
+      const badTlds = ['con','conm','cmo','ocm','cim','cpm','copm'];
+      if (badTlds.includes(tld)) {
+        return res.status(400).json({ error: `"${email}" has an invalid domain. Please use the correct email.` });
+      }
+    }
+
+    // Update user record
+    const userUpdate = {};
+    if (name !== undefined) userUpdate.name = sanitize(name) || null;
+    if (email !== undefined) userUpdate.email = email ? email.toLowerCase().trim() : null;
+    if (Object.keys(userUpdate).length) {
+      await supabase.from('users').update(userUpdate).eq('id', req.params.id);
+    }
+
+    // Update address in the right profile table
+    if (address !== undefined || city !== undefined || area !== undefined || pincode !== undefined) {
+      const addrPayload = {};
+      if (address !== undefined) addrPayload.address = sanitize(address) || null;
+      if (city    !== undefined) addrPayload.city    = sanitize(city) || null;
+      if (area    !== undefined) addrPayload.area    = sanitize(area) || null;
+      if (pincode !== undefined) addrPayload.pincode = sanitize(pincode) || null;
+
+      const table = u.role === 'professional' ? 'professional_profiles' : 'customer_profiles';
+      await supabase.from(table).update(addrPayload).eq('user_id', req.params.id);
+    }
+
+    await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: 'edit_user', target_id: req.params.id, target_type: 'user', notes: `Admin corrected user data` });
+    console.log(`[AdminEdit] User ${req.params.id} updated by admin ${req.user.id}`);
+    res.json({ success: true, message: 'User updated successfully' });
+  } catch (err) {
+    console.error('[AdminEdit]', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.put('/api/admin/users/:id/suspend', auth, adminOnly, async (req, res) => {
   const { data: u } = await supabase.from('users').select('id, name, phone, email, role, is_active').eq('id', req.params.id).single();
   if (!u) return res.status(404).json({ error: 'User not found' });
