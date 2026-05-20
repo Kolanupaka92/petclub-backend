@@ -943,10 +943,37 @@ app.put('/api/users/me', auth, async (req, res) => {
   const city = sanitize(req.body.city), area = sanitize(req.body.area);
   const address = sanitize(req.body.address), pincode = sanitize(req.body.pincode);
   const country = sanitize(req.body.country);
+  // GPS address metadata from AddressPicker (optional)
+  const addressLat        = typeof req.body.addressLat  === 'number' ? req.body.addressLat  : null;
+  const addressLng        = typeof req.body.addressLng  === 'number' ? req.body.addressLng  : null;
+  const addressPostalCode = sanitize(req.body.addressPostalCode) || null;
+  const addressCity       = sanitize(req.body.addressCity)       || null;
+  const addressState      = sanitize(req.body.addressState)      || null;
+
+  // Server-side email typo block
+  if (email) {
+    const TYPOS = { 'gmail.con':'gmail.com','gmail.cim':'gmail.com','yahoo.con':'yahoo.com','hotmail.con':'hotmail.com','outlook.con':'outlook.com' };
+    const domain = email.slice(email.lastIndexOf('@') + 1).toLowerCase();
+    if (TYPOS[domain]) return res.status(400).json({ error: `"${domain}" is not a valid domain. Did you mean @${TYPOS[domain]}?` });
+    const fakeTlds = ['.con','.cmo','.cim','.ocm'];
+    if (fakeTlds.some(t => email.toLowerCase().endsWith(t)))
+      return res.status(400).json({ error: `"${email}" is not a valid email address.` });
+  }
+
   await supabase.from('users').update({ name, email }).eq('id', req.user.id);
   // Only write address fields to customer_profiles for customers (not professionals)
   if (req.user.role === 'customer') {
     await supabase.from('customer_profiles').upsert({ user_id: req.user.id, city, area, address, pincode, country }, { onConflict: 'user_id' });
+    // Store GPS coords separately (migration-safe)
+    if (addressLat && addressLng) {
+      supabase.from('customer_profiles').update({
+        address_lat: addressLat, address_lng: addressLng,
+        address_postal_code: addressPostalCode,
+        address_city: addressCity, address_state: addressState,
+      }).eq('user_id', req.user.id).then(({ error }) => {
+        if (error) console.error('profile GPS update:', error.message);
+      });
+    }
   }
   res.json({ success: true, message: 'Profile updated' });
 });
