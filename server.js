@@ -247,7 +247,7 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
     ).catch(console.error);
   }
   // FCM push notification to professional
-  const { data: proUser } = await supabase.from('users').select('fcm_token').eq('id', pro.user_id).single().catch(() => ({ data: null }));
+  const { data: proUser } = await Promise.resolve(supabase.from('users').select('fcm_token').eq('id', pro.user_id).single()).catch(() => ({ data: null }));
   if (proUser?.fcm_token) {
     sendPush(proUser.fcm_token, `🐾 New ${svc} Request!`, `${petName} · ${dateStr} · Respond in ${RESPONSE_TIMEOUT_MINS} min`, { bookingId: bookingId, type: 'new_booking' }).catch(() => {});
   }
@@ -465,22 +465,26 @@ app.post('/api/users/set-role', auth, async (req, res) => {
     }
 
     if (role === 'customer') {
-      await supabase.from('customer_profiles').upsert({
-        user_id: req.user.id, address: address || null,
-      }, { onConflict: 'user_id' }).catch(() => {});
+      try {
+        await supabase.from('customer_profiles').upsert({
+          user_id: req.user.id, address: address || null,
+        }, { onConflict: 'user_id' });
+      } catch (e) { console.error('customer_profiles upsert:', e.message); }
     }
 
     // For customers — create initial pet if provided
     if (role === 'customer' && pet?.name) {
-      await supabase.from('pets').insert({
-        owner_id: req.user.id,
-        name: pet.name,
-        species: pet.species || null,
-        breed: pet.breed || null,
-        age: pet.age ? parseInt(pet.age) : null,
-        gender: pet.gender || null,
-        dob: pet.dob || null,
-      }).catch(e => console.error('Initial pet creation error:', e.message));
+      try {
+        await supabase.from('pets').insert({
+          owner_id: req.user.id,
+          name: pet.name,
+          species: pet.species || null,
+          breed: pet.breed || null,
+          age: pet.age ? parseInt(pet.age) : null,
+          gender: pet.gender || null,
+          dob: pet.dob || null,
+        });
+      } catch (e) { console.error('Initial pet creation error:', e.message); }
     }
 
     const { data: user } = await supabase.from('users').select('*').eq('id', req.user.id).single();
@@ -994,7 +998,7 @@ app.post('/api/bookings/:id/respond', auth, async (req, res) => {
         ).catch(console.error);
       }
       // FCM push to customer
-      const { data: custUserFcm } = await supabase.from('users').select('fcm_token').eq('id', bk?.users?.id || bk?.customer_id || '').single().catch(() => ({ data: null }));
+      const { data: custUserFcm } = await Promise.resolve(supabase.from('users').select('fcm_token').eq('id', bk?.users?.id || bk?.customer_id || '').single()).catch(() => ({ data: null }));
       if (custUserFcm?.fcm_token) {
         sendPush(custUserFcm.fcm_token, `✅ Booking Confirmed!`, `${proName} will be there on ${dateStr}`, { bookingId: req.params.id, type: 'booking_confirmed' }).catch(() => {});
       }
@@ -1415,13 +1419,15 @@ app.post('/api/payments/verify', auth, async (req, res) => {
     }).eq('id', bookingId).eq('customer_id', req.user.id);
 
     // Log payment
-    await supabase.from('payment_logs').insert({
-      booking_id: bookingId,
-      user_id: req.user.id,
-      razorpay_order_id,
-      razorpay_payment_id,
-      status: 'success',
-    }).catch(() => {}); // table may not exist yet
+    try {
+      await supabase.from('payment_logs').insert({
+        booking_id: bookingId,
+        user_id: req.user.id,
+        razorpay_order_id,
+        razorpay_payment_id,
+        status: 'success',
+      });
+    } catch {} // table may not exist yet
 
     res.json({ success: true, message: '✅ Payment verified and booking confirmed!' });
   } catch (err) {
@@ -1467,7 +1473,7 @@ async function runStartupMigrations() {
   for (const sql of migrations) {
     // PostgREST can't run DDL, but Supabase service-role key can call
     // the pg_query RPC if it's enabled — fallback: log and continue
-    const { error } = await supabase.rpc('pg_query', { query: sql }).catch(() => ({ error: { message: 'rpc_not_available' } }));
+    const { error } = await Promise.resolve(supabase.rpc('pg_query', { query: sql })).catch(() => ({ error: { message: 'rpc_not_available' } }));
     if (error && !error.message?.includes('already exists') && !error.message?.includes('rpc_not_available')) {
       console.warn('[migration] Could not run:', sql.slice(0, 60), '→', error.message);
     }
