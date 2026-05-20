@@ -950,14 +950,13 @@ app.put('/api/users/me', auth, async (req, res) => {
   const addressCity       = sanitize(req.body.addressCity)       || null;
   const addressState      = sanitize(req.body.addressState)      || null;
 
-  // Server-side email typo block
+  // Server-side email typo block (only explicit bad TLDs — never flag .com)
   if (email) {
     const domain = email.slice(email.lastIndexOf('@') + 1).toLowerCase();
-    const [, tld] = domain.split('.');
-    // Block scrambled TLDs: .conm .cmo .ocm .con .cpm etc.
-    const badTlds = ['con','conm','cmo','ocm','cim','cpm','copm','co0m'];
+    const tld = domain.includes('.') ? domain.split('.').pop() : '';
+    const badTlds = ['con','conm','cmo','ocm','cim','cpm','copm'];
     if (tld && badTlds.includes(tld))
-      return res.status(400).json({ error: `"${domain}" looks like a typo. Did you mean @${domain.split('.')[0]}.com?` });
+      return res.status(400).json({ error: `"${domain}" looks like a typo — did you mean .com?` });
   }
 
   await supabase.from('users').update({ name, email }).eq('id', req.user.id);
