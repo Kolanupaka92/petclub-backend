@@ -1,6 +1,6 @@
 // ═══════════════════════════════════════════════════════════
 //  PETclub India — Complete Backend API v1.0
-//  Stack: Node.js + Express + Twilio + Nodemailer/Resend + Supabase + JWT
+//  Stack: Node.js + Express + Twilio + Nodemailer (Zoho SMTP) + Supabase + JWT
 // ═══════════════════════════════════════════════════════════
 require('dotenv').config();
 const express = require('express');
@@ -8,12 +8,11 @@ const cors = require('cors');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const twilio = require('twilio');
-const { Resend } = require('resend');
-// nodemailer removed — Railway blocks SMTP; using Resend HTTPS API instead
+const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
 
 const app = express();
-app.set('trust proxy', 1); // Trust Railway's reverse proxy — needed for rate-limit & real IP
+app.set('trust proxy', 1); // Trust Cloud Run reverse proxy — needed for rate-limit & real IP
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET;
 const WEB_APP_URL = 'https://app.mypetclub.app';
@@ -22,10 +21,20 @@ const WEBSITE_URL = 'https://mypetclub.app';
 // ── Services ───────────────────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 const twilioClient = twilio(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
-const resend = process.env.RESEND_API_KEY ? new Resend(process.env.RESEND_API_KEY) : null;
 
-// NOTE: Gmail SMTP is not used — Railway blocks outbound SMTP (port 587/465).
-// All email goes through Resend HTTPS API instead.
+// ── Zoho SMTP transporter ─────────────────────────────
+// Env vars required: ZOHO_SMTP_USER, ZOHO_SMTP_PASS
+// ZOHO_SMTP_USER = saikrishna.kolanupaka@mypetclub.app
+// ZOHO_SMTP_FROM = support@mypetclub.app  (optional — defaults below)
+const zohoTransporter = nodemailer.createTransport({
+  host: 'smtppro.zoho.com',
+  port: 587,
+  secure: false,   // STARTTLS on 587
+  auth: {
+    user: process.env.ZOHO_SMTP_USER,
+    pass: process.env.ZOHO_SMTP_PASS,
+  },
+});
 
 // ── Razorpay (India payment gateway) — live once RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET set ──
 let razorpay = null;
@@ -126,18 +135,16 @@ const sendPush = async (fcmToken, title, body, data = {}) => {
 };
 
 const sendEmail = async (to, subject, html) => {
-  // Resend HTTPS API — works on Railway (no SMTP needed); free plan allows any TO address
-  if (resend) {
-    const result = await resend.emails.send({
-      from: process.env.RESEND_FROM_EMAIL || 'PETclub <noreply@mypetclub.app>',
-      to,
-      subject,
-      html,
-    });
-    console.log(`[Resend] Email sent to ${to}`);
-    return result;
+  if (!process.env.ZOHO_SMTP_USER || !process.env.ZOHO_SMTP_PASS) {
+    console.warn(`[Email skipped — ZOHO_SMTP_USER/PASS not set] to=${to}`);
+    return;
   }
-  console.warn(`[Email skipped — no email provider configured] to=${to}`);
+  const from = process.env.ZOHO_SMTP_FROM
+    ? `PETclub <${process.env.ZOHO_SMTP_FROM}>`
+    : 'PETclub <support@mypetclub.app>';
+  const result = await zohoTransporter.sendMail({ from, to, subject, html });
+  console.log(`[Zoho SMTP] Email sent to ${to} (msgId: ${result.messageId})`);
+  return result;
 };
 
 // ══════════════════════════════════════════════════════
@@ -1519,7 +1526,7 @@ app.get('/api/health', (req, res) => res.json({
   services: {
     supabase: '✅',
     twilio: process.env.TWILIO_ACCOUNT_SID ? '✅' : '⚠️ not configured',
-    resend: process.env.RESEND_API_KEY ? '✅' : '⚠️ not configured',
+    zoho_smtp: process.env.ZOHO_SMTP_USER ? '✅' : '⚠️ not configured',
     razorpay: razorpay ? '✅ live' : '⏳ pending (set env vars)',
     fcm: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
   },
