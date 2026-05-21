@@ -2209,6 +2209,168 @@ app.get('/api/payments/config', auth, (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════
+//  LOCATION GATEWAY — routes geocoding by country
+//  +91 → Mappls (MapmyIndia)  best India coverage
+//  +1  → (Phase 2) Google     US / Canada
+//  *   → Nominatim             free OSM fallback
+// ══════════════════════════════════════════════════════
+
+/* ── Mappls OAuth2 token cache ─────────────────────── */
+let _mapplsToken  = null;
+let _mapplsExpiry = 0;
+
+const getMapplsToken = async () => {
+  if (_mapplsToken && Date.now() < _mapplsExpiry) return _mapplsToken;
+  const cid = process.env.MAPPLS_CLIENT_ID;
+  const sec = process.env.MAPPLS_CLIENT_SECRET;
+  if (!cid || !sec) return null;
+  try {
+    const r = await fetch('https://outpost.mappls.com/api/security/oauth/token', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body:    `grant_type=client_credentials&client_id=${cid}&client_secret=${sec}`,
+    });
+    const d = await r.json();
+    _mapplsToken  = d.access_token;
+    _mapplsExpiry = Date.now() + ((d.expires_in || 3600) - 60) * 1000;
+    return _mapplsToken;
+  } catch (e) {
+    console.error('[Mappls] token fetch failed:', e.message);
+    return null;
+  }
+};
+
+/* ── Provider router ───────────────────────────────── */
+const getGeoProvider = (phone = '') => {
+  if (phone.startsWith('+91')) return 'mappls';
+  // Phase 2: if (phone.startsWith('+1')) return 'google';
+  return 'nominatim';
+};
+
+/* ── Mappls forward search ─────────────────────────── */
+const searchMappls = async (q, token) => {
+  const url = `https://atlas.mappls.com/api/places/search/json`
+    + `?query=${encodeURIComponent(q)}&region=IND&access_token=${token}`;
+  const d = await fetch(url).then(r => r.json());
+  return (d.suggestedLocations || []).map((f, i) => ({
+    id:         f.eLoc || i,
+    short:      f.placeName  || '',
+    full:       [f.placeName, f.placeAddress].filter(Boolean).join(', '),
+    lat:        parseFloat(f.latitude)  || null,
+    lng:        parseFloat(f.longitude) || null,
+    postalCode: f.pincode || '',
+    city:       f.city    || '',
+    state:      f.state   || '',
+  }));
+};
+
+/* ── Mappls reverse geocode ────────────────────────── */
+const reverseMappls = async (lat, lng, token) => {
+  const url = `https://atlas.mappls.com/api/places/geo_code`
+    + `?lat=${lat}&lng=${lng}&access_token=${token}`;
+  const d = await fetch(url).then(r => r.json());
+  const r = d.results?.[0] || d.copResults || null;
+  if (!r) return null;
+  const full = r.formattedAddress
+    || [r.houseNumber, r.houseName, r.street, r.subLocality,
+        r.locality, r.city, r.state, r.pincode].filter(Boolean).join(', ');
+  return { full, postalCode: r.pincode || '', city: r.city || r.district || '', state: r.state || '' };
+};
+
+/* ── Nominatim forward search (OSM fallback) ───────── */
+const searchNominatim = async (q) => {
+  const url = `https://nominatim.openstreetmap.org/search`
+    + `?q=${encodeURIComponent(q)}&format=jsonv2&addressdetails=1&limit=6&accept-language=en`;
+  const d = await fetch(url, {
+    headers: { 'Accept-Language': 'en', 'User-Agent': 'PETclub/1.0 ksk.dev87@gmail.com' },
+  }).then(r => r.json());
+  return (d || []).map((f, i) => {
+    const a = f.address || {};
+    return {
+      id:         f.place_id || i,
+      short:      (f.display_name || '').split(', ')[0],
+      full:       f.display_name,
+      lat:        parseFloat(f.lat),
+      lng:        parseFloat(f.lon),
+      postalCode: a.postcode || '',
+      city:       a.city || a.town || a.village || a.county || '',
+      state:      a.state || '',
+    };
+  });
+};
+
+/* ── Nominatim reverse geocode ─────────────────────── */
+const reverseNominatim = async (lat, lng) => {
+  const url = `https://nominatim.openstreetmap.org/reverse`
+    + `?lat=${lat}&lon=${lng}&format=jsonv2&addressdetails=1&accept-language=en`;
+  const d = await fetch(url, {
+    headers: { 'Accept-Language': 'en', 'User-Agent': 'PETclub/1.0 ksk.dev87@gmail.com' },
+  }).then(r => r.json());
+  const a = d.address || {};
+  return {
+    full:       d.display_name || '',
+    postalCode: a.postcode || '',
+    city:       a.city || a.town || a.village || a.county || '',
+    state:      a.state || '',
+  };
+};
+
+/* ── GET /api/geocode?q=... ────────────────────────── */
+app.get('/api/geocode', auth, async (req, res) => {
+  const q = (req.query.q || '').trim();
+  if (!q || q.length < 3) return res.json([]);
+  try {
+    const { data: u } = await supabase.from('users').select('phone').eq('id', req.user.id).single();
+    const provider = getGeoProvider(u?.phone || '');
+    let results = [];
+
+    if (provider === 'mappls') {
+      const token = await getMapplsToken();
+      if (token) {
+        try { results = await searchMappls(q, token); } catch (e) {
+          console.warn('[Mappls] search failed, falling back to Nominatim:', e.message);
+        }
+      }
+    }
+    // Phase 2: else if (provider === 'google') { results = await searchGoogle(q); }
+
+    if (!results.length) results = await searchNominatim(q); // always fallback
+    res.json(results);
+  } catch (e) {
+    console.error('[geocode]', e.message);
+    try { res.json(await searchNominatim(q)); } catch { res.json([]); }
+  }
+});
+
+/* ── GET /api/reverse-geocode?lat=...&lng=... ──────── */
+app.get('/api/reverse-geocode', auth, async (req, res) => {
+  const lat = parseFloat(req.query.lat);
+  const lng = parseFloat(req.query.lng);
+  if (isNaN(lat) || isNaN(lng)) return res.status(400).json({ error: 'lat and lng required' });
+  try {
+    const { data: u } = await supabase.from('users').select('phone').eq('id', req.user.id).single();
+    const provider = getGeoProvider(u?.phone || '');
+    let result = null;
+
+    if (provider === 'mappls') {
+      const token = await getMapplsToken();
+      if (token) {
+        try { result = await reverseMappls(lat, lng, token); } catch (e) {
+          console.warn('[Mappls] reverse failed, falling back to Nominatim:', e.message);
+        }
+      }
+    }
+    // Phase 2: else if (provider === 'google') { result = await reverseGoogle(lat, lng); }
+
+    if (!result) result = await reverseNominatim(lat, lng);
+    res.json(result || {});
+  } catch (e) {
+    console.error('[reverse-geocode]', e.message);
+    try { res.json(await reverseNominatim(lat, lng)); } catch { res.json({}); }
+  }
+});
+
+// ══════════════════════════════════════════════════════
 //  HEALTH CHECK
 // ══════════════════════════════════════════════════════
 app.get('/api/health', (req, res) => res.json({
@@ -2225,6 +2387,7 @@ app.get('/api/health', (req, res) => res.json({
     firebase_auth: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
     razorpay:      razorpay ? '✅ live' : '⏳ pending (set env vars)',
     fcm:           firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
+    mappls_geo:    process.env.MAPPLS_CLIENT_ID ? '✅ configured' : '⚠️ not set — using Nominatim fallback',
   },
 }));
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
