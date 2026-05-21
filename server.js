@@ -327,18 +327,39 @@ setInterval(async () => {
 const RESPONSE_TIMEOUT_MINS = parseInt(process.env.BOOKING_RESPONSE_TIMEOUT_MINS) || 5;
 
 // Round-robin: find next eligible professional (not already tried for this booking)
-const findNextPro = async (city, subRole, excludeProIds = []) => {
+const DISPATCH_RADIUS_KM = 70; // Max dispatch radius — within ~1h drive of customer
+
+const findNextPro = async (city, subRole, excludeProIds = [], bookingLat = null, bookingLng = null) => {
   let q = supabase
     .from('professional_profiles')
-    .select('id, user_id, last_assigned_at, users(name, phone, email)')
+    .select('id, user_id, last_assigned_at, address_lat, address_lng, users(name, phone, email)')
     .eq('verification_status', 'approved')
     .eq('is_available', true)
     .eq('sub_role', subRole);
-  if (city) q = q.ilike('city', `%${city}%`);
+
+  // If booking has GPS coords, fetch broader pool for GPS radius filter.
+  // Otherwise fall back to city-name match.
+  if (!bookingLat || !bookingLng) {
+    if (city) q = q.ilike('city', `%${city}%`);
+  }
   // Exclude pros who already got this booking and rejected / timed out
   for (const xid of excludeProIds) q = q.neq('id', xid);
-  const { data: pros } = await q;
-  if (!pros || pros.length === 0) return null;
+  const { data: allPros } = await q;
+  if (!allPros || allPros.length === 0) return null;
+
+  let pros = allPros;
+  // GPS radius filter: keep pros within 70km of booking address
+  if (bookingLat && bookingLng) {
+    const inRadius = allPros.filter(p => {
+      if (!p.address_lat || !p.address_lng) return false; // no GPS → exclude from GPS dispatch
+      return haversineKm(bookingLat, bookingLng, p.address_lat, p.address_lng) <= DISPATCH_RADIUS_KM;
+    });
+    // Fall back to city-name match if no GPS-verified pros in radius
+    pros = inRadius.length > 0 ? inRadius
+      : allPros.filter(p => !city || (p.city && p.city.toLowerCase().includes(city.toLowerCase())));
+  }
+  if (!pros.length) return null;
+
   // Sort: never-assigned first (null last_assigned_at), then oldest assignment = fair rotation
   pros.sort((a, b) => {
     if (!a.last_assigned_at && !b.last_assigned_at) return 0;
@@ -363,12 +384,21 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
 
   const svc      = bookingDetails.service_name || bookingDetails.service_type || 'Service';
   const petName  = bookingDetails.pet_name || 'Pet';
+  const petHealthNotes = bookingDetails.pet_health_notes || null;
   const dateStr  = bookingDetails.scheduled_at
     ? new Date(bookingDetails.scheduled_at).toLocaleString('en-IN', { weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' })
     : 'TBD';
   const location = bookingDetails.city || bookingDetails.address || 'TBD';
+  const custNotes = bookingDetails.notes || null;
   const proPhone = pro.users?.phone;
   const proEmail = pro.users?.email;
+
+  const healthNoteRow = petHealthNotes
+    ? `<tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8;width:38%">⚕️ Health Notes</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#991b1b;font-weight:600">${sanitize(petHealthNotes)}</td></tr>`
+    : '';
+  const custNotesRow = custNotes
+    ? `<tr><td style="padding:8px 0;font-size:12px;color:#94a3b8;width:38%">💬 Customer Note</td><td style="padding:8px 0;font-size:13px;color:#1e293b">${sanitize(custNotes)}</td></tr>`
+    : '';
 
   const notifHtml = `
     <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:16px;border:1px solid #f1f5f9;overflow:hidden;">
@@ -385,10 +415,13 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
         </div>
         <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
           <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8;width:38%">Service</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${svc}</td></tr>
-          <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">Pet</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${petName}</td></tr>
-          <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">Date & Time</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${dateStr}</td></tr>
-          <tr><td style="padding:8px 0;font-size:12px;color:#94a3b8">Location</td><td style="padding:8px 0;font-size:14px;font-weight:700;color:#1e293b">${location}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">🐾 Pet</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${petName}</td></tr>
+          ${healthNoteRow}
+          <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">📅 Date & Time</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${dateStr}</td></tr>
+          <tr><td style="padding:8px 0;${custNotesRow ? 'border-bottom:1px solid #f1f5f9;' : ''}font-size:12px;color:#94a3b8">📍 Location</td><td style="padding:8px 0;${custNotesRow ? 'border-bottom:1px solid #f1f5f9;' : ''}font-size:14px;font-weight:700;color:#1e293b">${location}</td></tr>
+          ${custNotesRow}
         </table>
+        ${petHealthNotes ? `<div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:10px;padding:12px 16px;margin-bottom:16px;"><p style="margin:0;font-size:12px;font-weight:700;color:#991b1b;">⚕️ Please read the health notes above before the appointment.</p></div>` : ''}
         <div style="text-align:center;margin-bottom:16px;">
           <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;padding:14px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:14px;">✅ Open App to Respond</a>
         </div>
@@ -424,15 +457,16 @@ const processTimedOutAssignments = async () => {
     const { data: tried } = await supabase.from('booking_assignments').select('professional_id')
       .eq('booking_id', assignment.booking_id).in('status', ['rejected', 'timed_out', 'accepted']);
     const excludeIds = tried?.map(r => r.professional_id) || [];
-    // Get pet name for notification
-    let petName = 'Pet';
+    // Get pet name + health notes for notification
+    let petName = 'Pet', petHealthNotes = null;
     if (bk.pet_id) {
-      const { data: pet } = await supabase.from('pets').select('name').eq('id', bk.pet_id).single();
+      const { data: pet } = await supabase.from('pets').select('name, health_notes').eq('id', bk.pet_id).single();
       petName = pet?.name || 'Pet';
+      petHealthNotes = pet?.health_notes || null;
     }
-    const nextPro = await findNextPro(bk.city || '', bk.service_type || '', excludeIds);
+    const nextPro = await findNextPro(bk.city || '', bk.service_type || '', excludeIds, bk.address_lat, bk.address_lng);
     if (nextPro) {
-      await offerBookingToPro(assignment.booking_id, nextPro, { ...bk, pet_name: petName });
+      await offerBookingToPro(assignment.booking_id, nextPro, { ...bk, pet_name: petName, pet_health_notes: petHealthNotes });
     } else {
       await supabase.from('bookings').update({ assignment_status: 'no_pros_available', professional_id: null }).eq('id', assignment.booking_id);
     }
@@ -1042,6 +1076,9 @@ app.put('/api/professionals/me', auth, async (req, res) => {
   const price_basic = req.body.price_basic, price_full = req.body.price_full, price_custom = req.body.price_custom;
   const { sub_role } = req.body;
   const services = req.body.services;
+  // GPS address metadata from AddressPicker — used for 70km radius dispatch
+  const addressLat = typeof req.body.address_lat === 'number' ? req.body.address_lat : null;
+  const addressLng = typeof req.body.address_lng === 'number' ? req.body.address_lng : null;
   if (name !== undefined || email !== undefined)
     await supabase.from('users').update({ name, email }).eq('id', req.user.id);
   const updatePayload = {
@@ -1050,6 +1087,11 @@ app.put('/api/professionals/me', auth, async (req, res) => {
     service_areas, langs, price_basic, price_full, price_custom,
     certification, license_number, clinic_name,
   };
+  // Only store GPS if provided (graceful: column may not exist yet)
+  if (addressLat && addressLng) {
+    updatePayload.address_lat = addressLat;
+    updatePayload.address_lng = addressLng;
+  }
   // Only update sub_role if explicitly provided (prevents overwriting with undefined)
   if (sub_role && ['Groomer','Trainer','Vet'].includes(sub_role)) {
     updatePayload.sub_role = sub_role;
@@ -1201,6 +1243,34 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
       }).eq('prof_id', prof.id);
     }
 
+    // Notify admin that a professional has uploaded their ID — needs manual review
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (adminEmail) {
+      const { data: u } = await supabase.from('users').select('name, phone, email').eq('id', req.user.id).single();
+      const { data: pp } = await supabase.from('professional_profiles').select('sub_role, city').eq('user_id', req.user.id).single();
+      sendEmail(adminEmail,
+        `🪪 PETclub — ID Document Uploaded: ${u?.name || u?.phone || 'Professional'}`,
+        `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px;border:2px solid #f97316;">
+          <div style="font-size:40px;text-align:center;margin-bottom:12px">🪪</div>
+          <h2 style="color:#1e293b;font-size:18px;text-align:center;margin:0 0 6px">ID Document Uploaded — Review Required</h2>
+          <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">A professional has submitted their ID proof and is awaiting verification.</p>
+          <div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:14px;padding:20px;margin-bottom:16px">
+            <table style="width:100%">
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u?.name || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Phone</td><td style="color:#1e293b;font-size:13px;text-align:right">${u?.phone || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Role</td><td style="color:#1e293b;font-size:13px;text-align:right">${pp?.sub_role || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">City</td><td style="color:#1e293b;font-size:13px;text-align:right">${pp?.city || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Doc Type</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${docType}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Uploaded</td><td style="color:#1e293b;font-size:13px;text-align:right">${new Date().toLocaleString('en-IN')}</td></tr>
+            </table>
+          </div>
+          <div style="text-align:center">
+            <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:12px 28px;border-radius:50px;text-decoration:none;font-weight:700;font-size:13px;">🔍 Review in Admin Dashboard</a>
+          </div>
+        </div>`
+      ).catch(console.error);
+    }
+
     res.json({ success: true, message: 'ID document saved' });
   } catch (err) {
     console.error('ID upload error:', err.message);
@@ -1254,10 +1324,10 @@ app.post('/api/professionals/payout', auth, async (req, res) => {
 app.get('/api/bookings', auth, async (req, res) => {
   let q;
   if (req.user.role === 'customer')
-    q = supabase.from('bookings').select('*, pets(name,species), professional_profiles(sub_role, users(name,phone))').eq('customer_id', req.user.id);
+    q = supabase.from('bookings').select('*, pets(name,species,health_notes), professional_profiles(sub_role, users(name,phone))').eq('customer_id', req.user.id);
   else if (req.user.role === 'professional') {
     const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
-    q = supabase.from('bookings').select('*, pets(name,species), users!customer_id(name,phone)').eq('professional_id', prof?.id);
+    q = supabase.from('bookings').select('*, pets(name,species,breed,health_notes), users!customer_id(name,phone)').eq('professional_id', prof?.id);
   } else
     q = supabase.from('bookings').select('*');
   const { data } = await q.order('scheduled_at', { ascending: false });
@@ -1288,14 +1358,15 @@ app.post('/api/bookings', auth, async (req, res) => {
     if (!booking) return res.status(500).json({ error: 'Failed to create booking' });
 
 
-    // Auto-assign round-robin
+    // Auto-assign round-robin (GPS radius if available, city fallback)
     if (service_type && ['Groomer', 'Trainer', 'Vet'].includes(service_type)) {
       let petName = 'Pet';
       if (pet_id) {
-        const { data: pet } = await supabase.from('pets').select('name').eq('id', pet_id).single();
+        const { data: pet } = await supabase.from('pets').select('name, health_notes').eq('id', pet_id).single();
         petName = pet?.name || 'Pet';
+        if (pet?.health_notes) booking.pet_health_notes = pet.health_notes;
       }
-      const nextPro = await findNextPro(city || '', service_type, []);
+      const nextPro = await findNextPro(city || '', service_type, [], addressLat, addressLng);
       if (nextPro) {
         await offerBookingToPro(booking.id, nextPro, { ...booking, pet_name: petName });
       } else {
@@ -1409,7 +1480,7 @@ app.get('/api/bookings/incoming', auth, async (req, res) => {
 
     const { data: assignments } = await supabase
       .from('booking_assignments')
-      .select('*, bookings(*, pets(name, species, breed), users!customer_id(name, phone))')
+      .select('*, bookings(*, pets(name, species, breed, health_notes), users!customer_id(name, phone))')
       .eq('professional_id', prof.id)
       .eq('status', 'offered')
       .gt('response_deadline', new Date().toISOString());
@@ -1434,12 +1505,13 @@ app.put('/api/bookings/:id/assign', auth, adminOnly, async (req, res) => {
     if (!prof) return res.status(404).json({ error: 'Professional not found' });
     const { data: bk } = await supabase.from('bookings').select('*').eq('id', req.params.id).single();
     if (!bk) return res.status(404).json({ error: 'Booking not found' });
-    let petName = 'Pet';
+    let petName = 'Pet', petHealthNotes = null;
     if (bk.pet_id) {
-      const { data: pet } = await supabase.from('pets').select('name').eq('id', bk.pet_id).single();
+      const { data: pet } = await supabase.from('pets').select('name, health_notes').eq('id', bk.pet_id).single();
       petName = pet?.name || 'Pet';
+      petHealthNotes = pet?.health_notes || null;
     }
-    await offerBookingToPro(req.params.id, prof, { ...bk, pet_name: petName });
+    await offerBookingToPro(req.params.id, prof, { ...bk, pet_name: petName, pet_health_notes: petHealthNotes });
     await supabase.from('bookings').update({ assignment_status: 'offered' }).eq('id', req.params.id);
     res.json({ success: true, message: `Assigned to ${prof.users?.name || professionalId}` });
   } catch (err) {
@@ -2126,12 +2198,18 @@ app.use((err, req, res, next) => { console.error(err); res.status(500).json({ er
 // ── Startup migration: add live-tracking columns to bookings (safe, IF NOT EXISTS) ──
 async function runStartupMigrations() {
   const migrations = [
+    // Bookings: live tracking + GPS coords
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_lat                  DOUBLE PRECISION`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_lng                  DOUBLE PRECISION`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_location_updated_at  TIMESTAMPTZ`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS ten_min_notified         BOOLEAN DEFAULT FALSE`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS address_lat              DOUBLE PRECISION`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS address_lng              DOUBLE PRECISION`,
+    // Professional profiles: GPS address for 70km radius dispatch
+    `ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS address_lat DOUBLE PRECISION`,
+    `ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS address_lng DOUBLE PRECISION`,
+    // Pets: health notes visible to assigned professionals
+    `ALTER TABLE pets ADD COLUMN IF NOT EXISTS health_notes TEXT`,
   ];
   for (const sql of migrations) {
     // PostgREST can't run DDL, but Supabase service-role key can call
