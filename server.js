@@ -1935,12 +1935,6 @@ app.put('/api/admin/users/:id/set-role', auth, adminOnly, async (req, res) => {
 });
 
 // ── Admin: fix / update user profile data (email, name, address) ──────────
-// POST alias — handles environments where network proxies block PATCH
-app.post('/api/admin/users/:id/edit', auth, adminOnly, async (req, res) => {
-  req.method = 'PATCH'; // delegate to PATCH handler below via shared logic
-  return adminEditUser(req, res);
-});
-
 const adminEditUser = async (req, res) => {
   try {
     const { data: u } = await supabase.from('users').select('id, name, phone, email, role').eq('id', req.params.id).single();
