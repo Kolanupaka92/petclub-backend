@@ -2,17 +2,28 @@
 #  PETclub Backend — GitHub Actions → Google Cloud Run
 #  Triggered: every push to main
 #
+#  Auth: Workload Identity Federation (keyless — no JSON key needed)
 #  Required GitHub Secrets (Settings → Secrets → Actions):
-#    GCP_SA_KEY          — Service account JSON key (full JSON, not base64)
-#                          SA needs roles: Artifact Registry Writer, Cloud Run Developer,
-#                          Service Account User, Storage Object Viewer
-#    GCP_PROJECT_ID      — project-c736b433-1b47-40c0-a2c
+#    GCP_PROJECT_ID              — project-c736b433-1b47-40c0-a2c
+#    GCP_WORKLOAD_IDENTITY_PROVIDER
+#      — full resource name, e.g.:
+#        projects/1084002294076/locations/global/workloadIdentityPools/github-pool/providers/github-provider
+#
+#  Service account used (no key required):
+#    1084002294076-compute@developer.gserviceaccount.com
+#
+#  Required IAM roles on the service account:
+#    roles/artifactregistry.writer
+#    roles/run.developer
+#    roles/iam.serviceAccountUser
+#    roles/storage.objectViewer
 #
 #  These are baked in (non-secret, match cloudbuild.yaml):
 #    REGISTRY            us-central1-docker.pkg.dev
 #    IMAGE_REPO          petclub-repo/petclub-backend
 #    CLOUD_RUN_SERVICE   petclub-backend
 #    CLOUD_RUN_REGION    us-central1
+#    SERVICE_ACCOUNT     1084002294076-compute@developer.gserviceaccount.com
 # ══════════════════════════════════════════════════════════════════
 
 name: Deploy Backend → Cloud Run
@@ -23,10 +34,16 @@ on:
   workflow_dispatch:            # allow manual trigger from GitHub UI
 
 env:
-  REGISTRY:          us-central1-docker.pkg.dev
-  IMAGE_REPO:        petclub-repo/petclub-backend
-  CLOUD_RUN_SERVICE: petclub-backend
-  CLOUD_RUN_REGION:  us-central1
+  REGISTRY:           us-central1-docker.pkg.dev
+  IMAGE_REPO:         petclub-repo/petclub-backend
+  CLOUD_RUN_SERVICE:  petclub-backend
+  CLOUD_RUN_REGION:   us-central1
+  SERVICE_ACCOUNT:    1084002294076-compute@developer.gserviceaccount.com
+
+# Required for Workload Identity Federation token exchange
+permissions:
+  contents: read
+  id-token: write
 
 jobs:
   deploy:
@@ -39,11 +56,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # ── 2. Authenticate to Google Cloud ─────────────────────
+      # ── 2. Authenticate to Google Cloud (keyless WIF) ────────
       - name: Authenticate to GCP
+        id: auth
         uses: google-github-actions/auth@v2
         with:
-          credentials_json: ${{ secrets.GCP_SA_KEY }}
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account:            ${{ env.SERVICE_ACCOUNT }}
 
       # ── 3. Set up gcloud CLI ────────────────────────────────
       - name: Set up gcloud CLI
