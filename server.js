@@ -1935,7 +1935,13 @@ app.put('/api/admin/users/:id/set-role', auth, adminOnly, async (req, res) => {
 });
 
 // ── Admin: fix / update user profile data (email, name, address) ──────────
-app.patch('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
+// POST alias — handles environments where network proxies block PATCH
+app.post('/api/admin/users/:id/edit', auth, adminOnly, async (req, res) => {
+  req.method = 'PATCH'; // delegate to PATCH handler below via shared logic
+  return adminEditUser(req, res);
+});
+
+const adminEditUser = async (req, res) => {
   try {
     const { data: u } = await supabase.from('users').select('id, name, phone, email, role').eq('id', req.params.id).single();
     if (!u) return res.status(404).json({ error: 'User not found' });
@@ -1980,7 +1986,11 @@ app.patch('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
     console.error('[AdminEdit]', err);
     res.status(500).json({ error: err.message });
   }
-});
+};
+
+// Register PATCH (standard) + POST (proxy-safe alias)
+app.patch('/api/admin/users/:id',      auth, adminOnly, adminEditUser);
+app.post('/api/admin/users/:id/edit',  auth, adminOnly, adminEditUser);
 
 app.put('/api/admin/users/:id/suspend', auth, adminOnly, async (req, res) => {
   const { data: u } = await supabase.from('users').select('id, name, phone, email, role, is_active').eq('id', req.params.id).single();
