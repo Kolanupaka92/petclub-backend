@@ -1,0 +1,95 @@
+# ══════════════════════════════════════════════════════════════════
+#  PETclub Backend — GitHub Actions → Google Cloud Run
+#  Triggered: every push to main
+#
+#  Required GitHub Secrets (Settings → Secrets → Actions):
+#    GCP_SA_KEY          — Service account JSON key (full JSON, not base64)
+#                          SA needs roles: Artifact Registry Writer, Cloud Run Developer,
+#                          Service Account User, Storage Object Viewer
+#    GCP_PROJECT_ID      — project-c736b433-1b47-40c0-a2c
+#
+#  These are baked in (non-secret, match cloudbuild.yaml):
+#    REGISTRY            us-central1-docker.pkg.dev
+#    IMAGE_REPO          petclub-repo/petclub-backend
+#    CLOUD_RUN_SERVICE   petclub-backend
+#    CLOUD_RUN_REGION    us-central1
+# ══════════════════════════════════════════════════════════════════
+
+name: Deploy Backend → Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:            # allow manual trigger from GitHub UI
+
+env:
+  REGISTRY:          us-central1-docker.pkg.dev
+  IMAGE_REPO:        petclub-repo/petclub-backend
+  CLOUD_RUN_SERVICE: petclub-backend
+  CLOUD_RUN_REGION:  us-central1
+
+jobs:
+  deploy:
+    name: Build & Deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      # ── 1. Checkout ──────────────────────────────────────────
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # ── 2. Authenticate to Google Cloud ─────────────────────
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      # ── 3. Set up gcloud CLI ────────────────────────────────
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      # ── 4. Configure Docker to use Artifact Registry ────────
+      - name: Configure Docker auth
+        run: gcloud auth configure-docker ${{ env.REGISTRY }} --quiet
+
+      # ── 5. Build Docker image ────────────────────────────────
+      - name: Build image
+        run: |
+          IMAGE=${{ env.REGISTRY }}/${{ secrets.GCP_PROJECT_ID }}/${{ env.IMAGE_REPO }}
+          docker build \
+            -t "${IMAGE}:${{ github.sha }}" \
+            -t "${IMAGE}:latest" \
+            .
+          echo "IMAGE=${IMAGE}" >> $GITHUB_ENV
+
+      # ── 6. Push image to Artifact Registry ──────────────────
+      - name: Push image
+        run: |
+          docker push "${{ env.IMAGE }}:${{ github.sha }}"
+          docker push "${{ env.IMAGE }}:latest"
+
+      # ── 7. Deploy to Cloud Run ───────────────────────────────
+      - name: Deploy to Cloud Run
+        id: deploy
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service:    ${{ env.CLOUD_RUN_SERVICE }}
+          region:     ${{ env.CLOUD_RUN_REGION }}
+          image:      ${{ env.IMAGE }}:${{ github.sha }}
+
+      # ── 8. Health check ──────────────────────────────────────
+      - name: Verify deployment
+        run: |
+          URL="${{ steps.deploy.outputs.url }}"
+          echo "Deployed to: ${URL}"
+          for i in 1 2 3; do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${URL}/api/health")
+            echo "Health check attempt $i: HTTP $STATUS"
+            [ "$STATUS" = "200" ] && { echo "✅ Health check passed"; exit 0; }
+            sleep 10
+          done
+          echo "⚠️ Health check did not return 200 — check Cloud Run logs"
+          exit 1

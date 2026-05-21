@@ -160,7 +160,8 @@ const sendPush = async (fcmToken, title, body, data = {}) => {
   } catch (e) { console.warn('[FCM] Send failed:', e.message); }
 };
 
-const sendEmail = async (to, subject, html) => {
+// attachments: nodemailer attachment array [{ filename, content (Buffer), contentType }]
+const sendEmail = async (to, subject, html, attachments = []) => {
   if (!process.env.ZOHO_SMTP_USER || !process.env.ZOHO_SMTP_PASS) {
     console.warn(`[Email skipped — ZOHO_SMTP_USER/PASS not set] to=${to}`);
     return;
@@ -168,7 +169,9 @@ const sendEmail = async (to, subject, html) => {
   const from = process.env.ZOHO_SMTP_FROM
     ? `PETclub <${process.env.ZOHO_SMTP_FROM}>`
     : `PETclub <${SUPPORT_EMAIL}>`;
-  const result = await zohoTransporter.sendMail({ from, to, subject, html });
+  const mailOpts = { from, to, subject, html };
+  if (attachments.length) mailOpts.attachments = attachments;
+  const result = await zohoTransporter.sendMail(mailOpts);
   console.log(`[Zoho SMTP] Email sent to ${to} (msgId: ${result.messageId})`);
   return result;
 };
@@ -1192,91 +1195,110 @@ app.post('/api/professionals/upload-id', auth, async (req, res) => {
 });
 
 // ID document photo upload (base64 → Supabase Storage)
+// ── Professional ID + Certification Upload ──────────────────────────────────
+// SECURITY POLICY: Photos are NEVER stored in the database or cloud storage.
+// They are emailed directly to the admin as attachments and immediately discarded.
+// Only doc_type, doc_number, cert_type are stored in id_documents (metadata only).
 app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
   try {
-    const { docType, docNumber, docPhoto } = req.body;
+    const { docType, docNumber, docPhoto, certType, certNumber, certPhoto } = req.body;
     if (!docType) return res.status(400).json({ error: 'Document type required (Aadhar Card / Passport / Driving License)' });
 
-    const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
+    const { data: prof } = await supabase.from('professional_profiles').select('id, sub_role, city').eq('user_id', req.user.id).single();
     if (!prof) return res.status(404).json({ error: 'Professional profile not found. Complete signup first.' });
 
-    let photoUrl = null;
-    if (docPhoto && docPhoto.length > 100) {
-      try {
-        const base64Data = docPhoto.replace(/^data:image\/\w+;base64,/, '');
-        const buffer = Buffer.from(base64Data, 'base64');
-        const ext = docPhoto.startsWith('data:image/png') ? 'png' : 'jpg';
-        const filename = `pros/${req.user.id}/${Date.now()}.${ext}`;
-        const { error: upErr } = await supabase.storage
-          .from('id-documents')
-          .upload(filename, buffer, { contentType: `image/${ext}`, upsert: true });
-        // Store the storage PATH (not a public URL) — bucket is private, admin uses signed URLs
-        if (!upErr) photoUrl = filename;
-        else console.error('Storage upload error:', upErr.message);
-      } catch (e) { console.error('Photo processing error:', e.message); }
-    }
-
-    await supabase.from('id_documents').upsert({
+    // Store ONLY metadata — never photo paths (photos go to admin email only)
+    const docMeta = {
       prof_id: prof.id,
       doc_type: docType,
       doc_number: docNumber || null,
-      photo_url: photoUrl, // stores path like "pros/user_id/timestamp.jpg"
-    }, { onConflict: 'prof_id' });
+      // photo_url intentionally OMITTED — photos are never stored
+    };
+    if (certType) { docMeta.cert_type = certType; docMeta.cert_number = certNumber || null; }
+    await supabase.from('id_documents').upsert(docMeta, { onConflict: 'prof_id' });
 
-    // Also save certification if provided (professionals)
-    const { certType, certPhoto } = req.body;
-    if (certType || certPhoto) {
-      let certPath = null;
-      if (certPhoto && certPhoto.length > 100) {
-        try {
-          const base64Data = certPhoto.replace(/^data:image\/\w+;base64,/, '');
-          const buffer = Buffer.from(base64Data, 'base64');
-          const ext = certPhoto.startsWith('data:image/png') ? 'png' : 'jpg';
-          const filename = `pros/${req.user.id}/cert-${Date.now()}.${ext}`;
-          const { error: upErr } = await supabase.storage
-            .from('id-documents')
-            .upload(filename, buffer, { contentType: `image/${ext}`, upsert: true });
-          if (!upErr) certPath = filename; // store path, not public URL
-        } catch (e) { console.error('Cert photo error:', e.message); }
-      }
-      await supabase.from('id_documents').update({
-        cert_type: certType || null,
-        cert_photo_url: certPath,
-      }).eq('prof_id', prof.id);
-    }
-
-    // Notify admin that a professional has uploaded their ID — needs manual review
+    // ── Email photos directly to admin as attachments ─────────────────────────
     const adminEmail = process.env.ADMIN_EMAIL;
     if (adminEmail) {
       const { data: u } = await supabase.from('users').select('name, phone, email').eq('id', req.user.id).single();
-      const { data: pp } = await supabase.from('professional_profiles').select('sub_role, city').eq('user_id', req.user.id).single();
-      sendEmail(adminEmail,
-        `🪪 PETclub — ID Document Uploaded: ${u?.name || u?.phone || 'Professional'}`,
-        `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px;border:2px solid #f97316;">
-          <div style="font-size:40px;text-align:center;margin-bottom:12px">🪪</div>
-          <h2 style="color:#1e293b;font-size:18px;text-align:center;margin:0 0 6px">ID Document Uploaded — Review Required</h2>
-          <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">A professional has submitted their ID proof and is awaiting verification.</p>
-          <div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:14px;padding:20px;margin-bottom:16px">
-            <table style="width:100%">
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u?.name || '—'}</td></tr>
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Phone</td><td style="color:#1e293b;font-size:13px;text-align:right">${u?.phone || '—'}</td></tr>
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Role</td><td style="color:#1e293b;font-size:13px;text-align:right">${pp?.sub_role || '—'}</td></tr>
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">City</td><td style="color:#1e293b;font-size:13px;text-align:right">${pp?.city || '—'}</td></tr>
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Doc Type</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${docType}</td></tr>
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Uploaded</td><td style="color:#1e293b;font-size:13px;text-align:right">${new Date().toLocaleString('en-IN')}</td></tr>
+      const proName = u?.name || u?.phone || `User#${req.user.id}`;
+      const ts = new Date().toLocaleString('en-IN', { timeZone: 'Asia/Kolkata' });
+
+      // Build email attachments from base64 photos (never touch DB/Storage)
+      const attachments = [];
+      if (docPhoto && docPhoto.length > 100) {
+        try {
+          const b64 = docPhoto.replace(/^data:image\/\w+;base64,/, '');
+          const ext  = docPhoto.startsWith('data:image/png') ? 'png' : 'jpg';
+          attachments.push({
+            filename:    `ID_${docType.replace(/\s+/g,'_')}_${req.user.id}.${ext}`,
+            content:     Buffer.from(b64, 'base64'),
+            contentType: `image/${ext}`,
+          });
+        } catch (e) { console.error('[ID photo parse]', e.message); }
+      }
+      if (certPhoto && certPhoto.length > 100) {
+        try {
+          const b64 = certPhoto.replace(/^data:image\/\w+;base64,/, '');
+          const ext  = certPhoto.startsWith('data:image/png') ? 'png' : 'jpg';
+          attachments.push({
+            filename:    `CERT_${(certType||'cert').replace(/\s+/g,'_')}_${req.user.id}.${ext}`,
+            content:     Buffer.from(b64, 'base64'),
+            contentType: `image/${ext}`,
+          });
+        } catch (e) { console.error('[Cert photo parse]', e.message); }
+      }
+
+      const html = `
+        <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:520px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px;border:2px solid #dc2626;">
+          <div style="font-size:40px;text-align:center;margin-bottom:12px">🔐</div>
+          <h2 style="color:#1e293b;font-size:18px;text-align:center;margin:0 0 4px">ID Proof — Admin Eyes Only</h2>
+          <p style="color:#64748b;font-size:12px;text-align:center;margin:0 0 20px">Photos are attached. They are <strong>not stored anywhere</strong> in the system.</p>
+          <div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:14px;padding:20px;margin-bottom:16px">
+            <table style="width:100%;border-collapse:collapse">
+              <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">Full Name</td>
+                  <td style="color:#1e293b;font-size:13px;font-weight:700;text-align:right">${sanitize(proName)}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">Phone</td>
+                  <td style="color:#1e293b;font-size:13px;text-align:right">${u?.phone || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">Email</td>
+                  <td style="color:#1e293b;font-size:13px;text-align:right">${u?.email || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">Role</td>
+                  <td style="color:#1e293b;font-size:13px;text-align:right">${prof?.sub_role || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">City</td>
+                  <td style="color:#1e293b;font-size:13px;text-align:right">${prof?.city || '—'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">ID Type</td>
+                  <td style="color:#1e293b;font-size:13px;font-weight:700;text-align:right">${sanitize(docType)}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:${certType ? '1px solid #fee2e2' : 'none'}">ID Number</td>
+                  <td style="color:#1e293b;font-size:13px;text-align:right">${sanitize(docNumber || '(not provided)')}</td></tr>
+              ${certType ? `
+              <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">Certification</td>
+                  <td style="color:#1e293b;font-size:13px;font-weight:700;text-align:right">${sanitize(certType)}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:5px 0">Cert / Licence No.</td>
+                  <td style="color:#1e293b;font-size:13px;text-align:right">${sanitize(certNumber || '(not provided)')}</td></tr>
+              ` : ''}
             </table>
           </div>
-          <div style="text-align:center">
-            <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:12px 28px;border-radius:50px;text-decoration:none;font-weight:700;font-size:13px;">🔍 Review in Admin Dashboard</a>
-          </div>
-        </div>`
-      ).catch(console.error);
+          <p style="color:#dc2626;font-size:12px;text-align:center;font-weight:700;margin:0 0 16px">
+            ⚠️ ${attachments.length} photo${attachments.length !== 1 ? 's' : ''} attached to this email.<br>
+            Do NOT forward. Delete after verification.
+          </p>
+          <p style="color:#94a3b8;font-size:11px;text-align:center;margin:0">Submitted: ${ts}</p>
+        </div>`;
+
+      sendEmail(
+        adminEmail,
+        `🔐 PETclub ID Proof — ${sanitize(proName)} (${sanitize(docType)}) — ACTION REQUIRED`,
+        html,
+        attachments
+      ).catch(e => console.error('[ID email send error]', e.message));
+    } else {
+      console.warn('[upload-id-photo] ADMIN_EMAIL not set — ID proof email not sent!');
     }
 
-    res.json({ success: true, message: 'ID document saved' });
+    res.json({ success: true, message: 'ID submitted — our team will verify within 24–48 hours.' });
   } catch (err) {
     console.error('ID upload error:', err.message);
-    res.status(500).json({ error: 'Failed to save document. Try again.' });
+    res.status(500).json({ error: 'Failed to submit document. Try again.' });
   }
 });
 
@@ -1343,6 +1365,16 @@ app.post('/api/bookings', auth, async (req, res) => {
     const { service_type, city, pet_id, service_name, scheduled_at, address, notes, amount } = req.body;
     const addressLat = typeof req.body.lat === 'number' ? req.body.lat : null;
     const addressLng = typeof req.body.lng === 'number' ? req.body.lng : null;
+
+    // ── Address geocoding enforcement ──────────────────────────────────────────
+    // If an address string is provided it must have verified GPS coordinates
+    // (set by AddressPicker when user selects from dropdown). This prevents
+    // fake/typo addresses from being booked — GPS is required for 70km dispatch.
+    if (address && address.trim() && (!addressLat || !addressLng)) {
+      return res.status(400).json({
+        error: 'Please select your address from the dropdown suggestions to verify it. This ensures we dispatch the nearest professional to you.',
+      });
+    }
     const { data: booking } = await supabase.from('bookings').insert({
       customer_id: req.user.id, status: 'upcoming',
       assignment_status: 'searching',
