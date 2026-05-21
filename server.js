@@ -2215,30 +2215,10 @@ app.get('/api/payments/config', auth, (req, res) => {
 //  *   → Nominatim             free OSM fallback
 // ══════════════════════════════════════════════════════
 
-/* ── Mappls OAuth2 token cache ─────────────────────── */
-let _mapplsToken  = null;
-let _mapplsExpiry = 0;
-
-const getMapplsToken = async () => {
-  if (_mapplsToken && Date.now() < _mapplsExpiry) return _mapplsToken;
-  const cid = process.env.MAPPLS_CLIENT_ID;
-  const sec = process.env.MAPPLS_CLIENT_SECRET;
-  if (!cid || !sec) return null;
-  try {
-    const r = await fetch('https://outpost.mappls.com/api/security/oauth/token', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body:    `grant_type=client_credentials&client_id=${cid}&client_secret=${sec}`,
-    });
-    const d = await r.json();
-    _mapplsToken  = d.access_token;
-    _mapplsExpiry = Date.now() + ((d.expires_in || 3600) - 60) * 1000;
-    return _mapplsToken;
-  } catch (e) {
-    console.error('[Mappls] token fetch failed:', e.message);
-    return null;
-  }
-};
+/* ── Mappls static key helper ──────────────────────── */
+// Mappls Cloud App issues a Static Key used directly as access_token.
+// No OAuth2 / token exchange needed — simpler and zero latency overhead.
+const getMapplsToken = async () => process.env.MAPPLS_STATIC_KEY || null;
 
 /* ── Provider router ───────────────────────────────── */
 const getGeoProvider = (phone = '') => {
@@ -2387,7 +2367,7 @@ app.get('/api/health', (req, res) => res.json({
     firebase_auth: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
     razorpay:      razorpay ? '✅ live' : '⏳ pending (set env vars)',
     fcm:           firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
-    mappls_geo:    process.env.MAPPLS_CLIENT_ID ? '✅ configured' : '⚠️ not set — using Nominatim fallback',
+    mappls_geo:    process.env.MAPPLS_STATIC_KEY ? '✅ configured' : '⚠️ not set — using Nominatim fallback',
   },
 }));
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
