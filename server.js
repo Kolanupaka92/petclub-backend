@@ -2431,21 +2431,20 @@ async function seedAdminEmail() {
   const admin = admins[0];
   const existingEmail = (admin.email || '').toLowerCase().trim();
 
-  // Step 1: Delete any stale pending_role duplicate that has the target email
-  // (created when the admin tried to log in before their email was linked)
-  if (existingEmail !== targetEmail) {
-    const { data: dupes } = await supabase
-      .from('users')
-      .select('id, role')
-      .eq('email', targetEmail)
-      .neq('id', admin.id);
+  // Step 1: ALWAYS delete any stale pending_role/customer duplicate that has
+  // the target email (created when admin tried logging in before email was linked).
+  // Run this check regardless of whether admin email already matches.
+  const { data: dupes } = await supabase
+    .from('users')
+    .select('id, role')
+    .eq('email', targetEmail)
+    .neq('id', admin.id);
 
-    if (dupes?.length) {
-      for (const dupe of dupes) {
-        if (dupe.role === 'pending_role' || dupe.role === 'customer') {
-          await supabase.from('users').delete().eq('id', dupe.id);
-          console.log(`[adminSeed] 🗑️ Removed stale duplicate user (${dupe.role}) with email ${maskEmail(targetEmail)}`);
-        }
+  if (dupes?.length) {
+    for (const dupe of dupes) {
+      if (dupe.role === 'pending_role' || dupe.role === 'customer') {
+        await supabase.from('users').delete().eq('id', dupe.id);
+        console.log(`[adminSeed] 🗑️ Removed stale duplicate user (${dupe.role}) with email ${maskEmail(targetEmail)}`);
       }
     }
   }
