@@ -39,6 +39,47 @@ const maskEmail = e => {
 // Strip HTML tags from user inputs — prevents XSS in admin emails
 const sanitize = s => typeof s === 'string' ? s.replace(/<[^>]*>/g, '').trim().slice(0, 2000) : s;
 
+// ── Revenue split ─────────────────────────────────────────────────────────────
+// PETclub takes 30%; provider earns 70%. Gateway fees are absorbed from our 30%.
+// All computation is server-side only — clients never receive platform_fee.
+const PLATFORM_RATE = 0.30;
+const PROVIDER_RATE = 0.70;
+
+function computeSplit(totalAmount, currency = 'INR') {
+  const amt = parseFloat(totalAmount);
+  if (!amt || isNaN(amt) || amt <= 0) return null;
+  // Gateway fee absorbed by PETclub (comes out of our 30%, never from provider's cut)
+  const gatewayFee = currency === 'USD'
+    ? +(amt * 0.029 + 0.30).toFixed(2)   // Stripe: 2.9% + $0.30
+    : +(amt * 0.02  + 0.03).toFixed(2);  // Razorpay: ~2% + ₹3 (in rupees)
+  return {
+    total_amount:      +amt.toFixed(2),
+    platform_fee:      +(amt * PLATFORM_RATE).toFixed(2),
+    provider_earnings: +(amt * PROVIDER_RATE).toFixed(2),
+    gateway_fee:       gatewayFee,
+  };
+}
+
+// Role-based field stripping — never send platform economics to providers/customers
+function stripFinancials(booking, role) {
+  const b = { ...booking };
+  if (role === 'professional') {
+    // Provider sees their cut + payout status; nothing else
+    delete b.total_amount;
+    delete b.platform_fee;
+    delete b.gateway_fee;
+  } else if (role === 'customer') {
+    // Customer sees what they paid; internal split is hidden
+    delete b.platform_fee;
+    delete b.provider_earnings;
+    delete b.gateway_fee;
+    delete b.payout_status;
+    delete b.payout_reference;
+  }
+  // admin: full data — no deletions
+  return b;
+}
+
 // ── Services ───────────────────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
@@ -1342,6 +1383,32 @@ app.post('/api/professionals/payout', auth, async (req, res) => {
   res.json({ success: true, payout: data });
 });
 
+// Pro: Earnings summary — only provider_earnings, never total_amount or platform_fee
+app.get('/api/professionals/earnings', auth, async (req, res) => {
+  try {
+    if (req.user.role !== 'professional') return res.status(403).json({ error: 'Forbidden' });
+    const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
+    if (!prof) return res.json({ success: true, earnings: { total: 0, paid: 0, pending: 0, bookings: [] } });
+
+    const { data } = await supabase
+      .from('bookings')
+      .select('id, service_name, scheduled_at, status, provider_earnings, payout_status, currency')
+      .eq('professional_id', prof.id)
+      .in('status', ['upcoming', 'completed'])
+      .order('scheduled_at', { ascending: false });
+
+    const bookings = data || [];
+    const completed = bookings.filter(b => b.status === 'completed');
+    const total   = +completed.reduce((s, b) => s + parseFloat(b.provider_earnings || 0), 0).toFixed(2);
+    const paid    = +completed.filter(b => b.payout_status === 'paid').reduce((s, b) => s + parseFloat(b.provider_earnings || 0), 0).toFixed(2);
+    const pending = +(total - paid).toFixed(2);
+
+    res.json({ success: true, earnings: { total, paid, pending, bookings } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ══════════════════════════════════════════════════════
 //  BOOKING ROUTES
 // ══════════════════════════════════════════════════════
@@ -1356,7 +1423,9 @@ app.get('/api/bookings', auth, async (req, res) => {
     // Admin: include customer + professional name/phone for live tracking panel
     q = supabase.from('bookings').select('*, pets(name,species), users!customer_id(name,phone)');
   const { data } = await q.order('scheduled_at', { ascending: false });
-  res.json({ success: true, bookings: data });
+  // Field-level security: strip financial fields by role before sending
+  const bookings = (data || []).map(b => stripFinancials(b, req.user.role));
+  res.json({ success: true, bookings });
 });
 
 app.post('/api/bookings', auth, async (req, res) => {
@@ -1375,6 +1444,10 @@ app.post('/api/bookings', auth, async (req, res) => {
         error: 'Please select your address from the dropdown suggestions to verify it. This ensures we dispatch the nearest professional to you.',
       });
     }
+    // Derive currency from phone prefix — same logic as frontend
+    const customerCurrency = req.user.phone?.startsWith('+91') ? 'INR' : 'USD';
+    const split = computeSplit(amount, customerCurrency);
+
     const { data: booking } = await supabase.from('bookings').insert({
       customer_id: req.user.id, status: 'upcoming',
       assignment_status: 'searching',
@@ -1382,6 +1455,13 @@ app.post('/api/bookings', auth, async (req, res) => {
       pet_id: pet_id || null, scheduled_at: scheduled_at || null,
       city: city || null, address: address || null, notes: notes || null,
       amount: amount || null,
+      // Revenue split columns (null when no amount provided)
+      total_amount:      split?.total_amount      ?? null,
+      platform_fee:      split?.platform_fee      ?? null,
+      provider_earnings: split?.provider_earnings ?? null,
+      gateway_fee:       split?.gateway_fee       ?? null,
+      currency:          customerCurrency,
+      payout_status:     'pending',
     }).select().single();
     // Store GPS coords separately (graceful: requires GPS migration to have run)
     if (booking && addressLat && addressLng) {
@@ -1520,12 +1600,12 @@ app.get('/api/bookings/incoming', auth, async (req, res) => {
       .eq('status', 'offered')
       .gt('response_deadline', new Date().toISOString());
 
-    const bookings = (assignments || []).map(a => ({
+    const bookings = (assignments || []).map(a => stripFinancials({
       ...(a.bookings || {}),
       assignment_id: a.id,
       response_deadline: a.response_deadline,
       offered_at: a.offered_at,
-    }));
+    }, 'professional'));
     res.json({ success: true, bookings });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -1837,10 +1917,15 @@ app.get('/api/admin/stats', auth, adminOnly, async (req, res) => {
   const [u, p, b, l] = await Promise.all([
     supabase.from('users').select('id', { count: 'exact' }),
     supabase.from('professional_profiles').select('id', { count: 'exact' }).eq('verification_status', 'approved'),
-    supabase.from('bookings').select('amount').eq('status', 'completed'),
+    supabase.from('bookings').select('total_amount, platform_fee, provider_earnings, gateway_fee, amount').eq('status', 'completed'),
     supabase.from('website_leads').select('id', { count: 'exact' }),
   ]);
-  res.json({ success: true, stats: { users: u.count, verified_pros: p.count, revenue: b.data?.reduce((s,x)=>s+parseFloat(x.amount||0),0), leads: l.count } });
+  const completedBookings = b.data || [];
+  // Use total_amount when available (new bookings); fall back to legacy amount column
+  const revenue         = +completedBookings.reduce((s, x) => s + parseFloat(x.total_amount    || x.amount || 0), 0).toFixed(2);
+  const platform_net    = +completedBookings.reduce((s, x) => s + parseFloat((x.platform_fee   || 0) - (x.gateway_fee || 0)), 0).toFixed(2);
+  const provider_total  = +completedBookings.reduce((s, x) => s + parseFloat(x.provider_earnings || 0), 0).toFixed(2);
+  res.json({ success: true, stats: { users: u.count, verified_pros: p.count, revenue, platform_net, provider_total, leads: l.count } });
 });
 
 app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
@@ -2177,11 +2262,24 @@ app.post('/api/payments/verify', auth, async (req, res) => {
     if (expected !== razorpay_signature)
       return res.status(400).json({ error: 'Payment signature mismatch — possible tamper attempt' });
 
-    // Mark booking as paid
+    // Compute authoritative split from the confirmed payment amount
+    // This overwrites the estimate stored at booking-creation time with the
+    // real paid amount, then locks it — historical splits must never change.
+    const { data: bk } = await supabase.from('bookings').select('amount, currency').eq('id', bookingId).single();
+    const split = bk?.amount ? computeSplit(bk.amount, bk.currency || 'INR') : {};
+
+    // Mark booking as paid + persist final revenue split
     await supabase.from('bookings').update({
       payment_status: 'paid',
       razorpay_payment_id,
       razorpay_order_id,
+      payout_status: 'pending',
+      ...(split ? {
+        total_amount:      split.total_amount,
+        platform_fee:      split.platform_fee,
+        provider_earnings: split.provider_earnings,
+        gateway_fee:       split.gateway_fee,
+      } : {}),
     }).eq('id', bookingId).eq('customer_id', req.user.id);
 
     // Log payment
@@ -2393,6 +2491,14 @@ async function runStartupMigrations() {
     `ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS pet_types   JSONB`,
     // Pets: health notes visible to assigned professionals
     `ALTER TABLE pets ADD COLUMN IF NOT EXISTS health_notes TEXT`,
+    // Bookings: revenue split (30/70) + payment/payout tracking
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS total_amount      NUMERIC(10,2)`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS platform_fee      NUMERIC(10,2)`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS provider_earnings NUMERIC(10,2)`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS gateway_fee       NUMERIC(10,2)`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS currency          TEXT DEFAULT 'INR'`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payout_status     TEXT DEFAULT 'pending'`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payout_reference  TEXT`,
   ];
   for (const sql of migrations) {
     // PostgREST can't run DDL, but Supabase service-role key can call
