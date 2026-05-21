@@ -2404,8 +2404,53 @@ async function runStartupMigrations() {
   }
 }
 
+// ── Startup: link ADMIN_EMAIL to the admin user record ────────────────────────
+// Ensures the admin can log in via email OTP by making sure the admin user's
+// email field in Supabase matches the ADMIN_EMAIL env var.
+// Runs once at startup; safe to repeat — only patches a NULL/mismatched email.
+async function seedAdminEmail() {
+  const adminEmail = process.env.ADMIN_EMAIL;
+  if (!adminEmail) return; // nothing to do without ADMIN_EMAIL env var
+
+  // Find the admin user (role = 'admin')
+  const { data: admins, error } = await supabase
+    .from('users')
+    .select('id, email')
+    .eq('role', 'admin')
+    .limit(1);
+
+  if (error || !admins?.length) {
+    console.warn('[adminSeed] No admin user found in Supabase — skipping email link');
+    return;
+  }
+
+  const admin = admins[0];
+  const existingEmail = (admin.email || '').toLowerCase().trim();
+  const targetEmail   = adminEmail.toLowerCase().trim();
+
+  if (existingEmail === targetEmail) {
+    // Already linked — nothing to do
+    console.log(`[adminSeed] Admin email already linked: ${maskEmail(adminEmail)}`);
+    return;
+  }
+
+  // Link the admin email (only patches if null or different)
+  const { error: updateErr } = await supabase
+    .from('users')
+    .update({ email: adminEmail.toLowerCase().trim() })
+    .eq('id', admin.id);
+
+  if (updateErr) {
+    console.warn('[adminSeed] Could not link admin email:', updateErr.message);
+  } else {
+    console.log(`[adminSeed] ✅ Admin email linked → ${maskEmail(adminEmail)}`);
+  }
+}
+
 app.listen(PORT, async () => {
   console.log(`🐾 PETclub API → http://localhost:${PORT}`);
   // Run migrations in background — won't block startup
   runStartupMigrations().catch(e => console.warn('[startup migration]', e.message));
+  // Link admin email so email OTP login finds the right account
+  seedAdminEmail().catch(e => console.warn('[adminSeed]', e.message));
 });
