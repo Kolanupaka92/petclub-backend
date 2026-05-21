@@ -1331,7 +1331,8 @@ app.get('/api/bookings', auth, async (req, res) => {
     const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
     q = supabase.from('bookings').select('*, pets(name,species,breed,health_notes), users!customer_id(name,phone)').eq('professional_id', prof?.id);
   } else
-    q = supabase.from('bookings').select('*');
+    // Admin: include customer + professional name/phone for live tracking panel
+    q = supabase.from('bookings').select('*, pets(name,species), users!customer_id(name,phone)');
   const { data } = await q.order('scheduled_at', { ascending: false });
   res.json({ success: true, bookings: data });
 });
