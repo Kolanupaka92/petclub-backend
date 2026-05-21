@@ -98,6 +98,7 @@ jobs:
           service:    ${{ env.CLOUD_RUN_SERVICE }}
           region:     ${{ env.CLOUD_RUN_REGION }}
           image:      ${{ env.IMAGE }}:${{ github.sha }}
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
 
       # ── 8. Health check ──────────────────────────────────────
       - name: Verify deployment
