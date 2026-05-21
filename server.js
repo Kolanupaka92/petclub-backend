@@ -2407,12 +2407,16 @@ async function runStartupMigrations() {
 // ── Startup: link ADMIN_EMAIL to the admin user record ────────────────────────
 // Ensures the admin can log in via email OTP by making sure the admin user's
 // email field in Supabase matches the ADMIN_EMAIL env var.
-// Runs once at startup; safe to repeat — only patches a NULL/mismatched email.
+// Also cleans up any stale pending_role duplicate that may have been created
+// when someone tried to log in with the admin email before it was linked.
+// Runs once at startup; safe to repeat — idempotent.
 async function seedAdminEmail() {
   const adminEmail = process.env.ADMIN_EMAIL;
   if (!adminEmail) return; // nothing to do without ADMIN_EMAIL env var
 
-  // Find the admin user (role = 'admin')
+  const targetEmail = adminEmail.toLowerCase().trim();
+
+  // Find the real admin user (role = 'admin')
   const { data: admins, error } = await supabase
     .from('users')
     .select('id, email')
@@ -2426,7 +2430,25 @@ async function seedAdminEmail() {
 
   const admin = admins[0];
   const existingEmail = (admin.email || '').toLowerCase().trim();
-  const targetEmail   = adminEmail.toLowerCase().trim();
+
+  // Step 1: Delete any stale pending_role duplicate that has the target email
+  // (created when the admin tried to log in before their email was linked)
+  if (existingEmail !== targetEmail) {
+    const { data: dupes } = await supabase
+      .from('users')
+      .select('id, role')
+      .eq('email', targetEmail)
+      .neq('id', admin.id);
+
+    if (dupes?.length) {
+      for (const dupe of dupes) {
+        if (dupe.role === 'pending_role' || dupe.role === 'customer') {
+          await supabase.from('users').delete().eq('id', dupe.id);
+          console.log(`[adminSeed] 🗑️ Removed stale duplicate user (${dupe.role}) with email ${maskEmail(targetEmail)}`);
+        }
+      }
+    }
+  }
 
   if (existingEmail === targetEmail) {
     // Already linked — nothing to do
@@ -2434,10 +2456,10 @@ async function seedAdminEmail() {
     return;
   }
 
-  // Link the admin email (only patches if null or different)
+  // Step 2: Link the admin email
   const { error: updateErr } = await supabase
     .from('users')
-    .update({ email: adminEmail.toLowerCase().trim() })
+    .update({ email: targetEmail })
     .eq('id', admin.id);
 
   if (updateErr) {
