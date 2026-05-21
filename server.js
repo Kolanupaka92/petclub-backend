@@ -1081,9 +1081,11 @@ app.put('/api/professionals/me', auth, async (req, res) => {
   const addressLng = typeof req.body.address_lng === 'number' ? req.body.address_lng : null;
   if (name !== undefined || email !== undefined)
     await supabase.from('users').update({ name, email }).eq('id', req.user.id);
+  const pet_types = req.body.pet_types;
   const updatePayload = {
     city, area, address, bio, experience,
     services: Array.isArray(services) ? JSON.stringify(services) : services,
+    pet_types: Array.isArray(pet_types) ? JSON.stringify(pet_types) : pet_types,
     service_areas, langs, price_basic, price_full, price_custom,
     certification, license_number, clinic_name,
   };
@@ -2205,9 +2207,10 @@ async function runStartupMigrations() {
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS ten_min_notified         BOOLEAN DEFAULT FALSE`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS address_lat              DOUBLE PRECISION`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS address_lng              DOUBLE PRECISION`,
-    // Professional profiles: GPS address for 70km radius dispatch
+    // Professional profiles: GPS address for 70km radius dispatch + pet type specializations
     `ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS address_lat DOUBLE PRECISION`,
     `ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS address_lng DOUBLE PRECISION`,
+    `ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS pet_types   JSONB`,
     // Pets: health notes visible to assigned professionals
     `ALTER TABLE pets ADD COLUMN IF NOT EXISTS health_notes TEXT`,
   ];
