@@ -1093,11 +1093,44 @@ app.put('/api/professionals/me', auth, async (req, res) => {
   res.json({ success: true, profile: data });
 });
 
-// Toggle online/offline availability
+// Toggle online/offline availability — with admin email notification
 app.put('/api/professionals/availability', auth, async (req, res) => {
   const { is_available } = req.body;
   if (typeof is_available !== 'boolean') return res.status(400).json({ error: 'is_available must be true or false' });
-  await supabase.from('professional_profiles').update({ is_available }).eq('user_id', req.user.id);
+
+  const { data: prof } = await supabase
+    .from('professional_profiles')
+    .update({ is_available })
+    .eq('user_id', req.user.id)
+    .select('sub_role, city, users(name, phone)')
+    .single();
+
+  // Notify admin of status change
+  const adminEmail = process.env.ADMIN_EMAIL;
+  if (adminEmail && prof) {
+    const proName  = prof.users?.name || 'Unknown';
+    const proPhone = prof.users?.phone || '—';
+    const subRole  = prof.sub_role || 'Professional';
+    const status   = is_available ? '🟢 ONLINE' : '⏸ OFFLINE';
+    const city     = prof.city || '—';
+
+    sendEmail(adminEmail, `PETclub: ${subRole} ${proName} is now ${status}`,
+      `<div style="font-family:sans-serif;max-width:520px;margin:auto;padding:24px">
+        <h2 style="color:#f97316">🐾 PETclub — Professional Status Change</h2>
+        <table style="width:100%;border-collapse:collapse;margin-top:16px">
+          <tr><td style="padding:8px;color:#6b7280;font-size:13px">Name</td><td style="padding:8px;font-weight:600">${proName}</td></tr>
+          <tr><td style="padding:8px;color:#6b7280;font-size:13px">Phone</td><td style="padding:8px;font-weight:600">${proPhone}</td></tr>
+          <tr><td style="padding:8px;color:#6b7280;font-size:13px">Role</td><td style="padding:8px;font-weight:600">${subRole}</td></tr>
+          <tr><td style="padding:8px;color:#6b7280;font-size:13px">City</td><td style="padding:8px;font-weight:600">${city}</td></tr>
+          <tr><td style="padding:8px;color:#6b7280;font-size:13px">New Status</td>
+            <td style="padding:8px;font-weight:700;color:${is_available ? '#16a34a' : '#6b7280'}">${status}</td></tr>
+          <tr><td style="padding:8px;color:#6b7280;font-size:13px">Time</td><td style="padding:8px">${new Date().toLocaleString('en-IN')}</td></tr>
+        </table>
+        <p style="color:#94a3b8;font-size:11px;text-align:center;margin-top:20px">PETclub Admin Notification</p>
+      </div>`
+    ).catch(e => console.error('[Availability] Admin email failed:', e.message));
+  }
+
   res.json({ success: true, is_available, message: is_available ? 'You are now Online 🟢' : 'You are now Offline ⏸' });
 });
 
@@ -1468,6 +1501,55 @@ app.get('/api/bookings/:id/track', async (req, res) => {
   });
 });
 
+// ── Haversine straight-line distance in km ──────────────────
+const haversineKm = (lat1, lon1, lat2, lon2) => {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLon = (lon2 - lon1) * Math.PI / 180;
+  const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+};
+const TEN_MIN_KM = 8; // ~10 min at avg 50 km/h road speed
+
+// Professional taps "On My Way" — POST /api/bookings/:id/on-my-way
+app.post('/api/bookings/:id/on-my-way', auth, async (req, res) => {
+  try {
+    const { data: proProfile } = await supabase.from('professional_profiles').select('id, sub_role, users(name, phone, fcm_token)').eq('user_id', req.user.id).single();
+    if (!proProfile) return res.status(403).json({ error: 'Not a professional' });
+
+    const { data: booking } = await supabase
+      .from('bookings')
+      .select('id, professional_profile_id, assignment_status, customer_id, service_name, service_type, users!customer_id(name, phone, email, fcm_token)')
+      .eq('id', req.params.id)
+      .eq('professional_profile_id', proProfile.id)
+      .single();
+
+    if (!booking) return res.status(403).json({ error: 'Booking not found or not yours' });
+    if (!['confirmed'].includes(booking.assignment_status)) {
+      return res.status(400).json({ error: 'Booking must be confirmed before starting journey' });
+    }
+
+    await supabase.from('bookings').update({ assignment_status: 'on_the_way' }).eq('id', req.params.id);
+
+    const proName = proProfile.users?.name || 'Your professional';
+    const svcType = booking.service_type || 'professional';
+
+    // Notify customer via SMS
+    if (booking.users?.phone) {
+      sendSMS(booking.users.phone, `🐾 PETclub: ${proName} (${svcType}) is on the way to you! Open the app to track them live.`).catch(() => {});
+    }
+    // Notify customer via FCM push
+    if (booking.users?.fcm_token) {
+      sendPushNotification(booking.users.fcm_token, '🚗 On the Way!', `${proName} is heading to you now. Track live in the app.`).catch(() => {});
+    }
+
+    console.log(`[OnMyWay] Booking ${req.params.id} — ${proName} started journey`);
+    res.json({ success: true, message: 'Journey started! Customer has been notified.' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Professional sends GPS — POST /api/bookings/:id/location { lat, lng }
 app.post('/api/bookings/:id/location', auth, async (req, res) => {
   try {
@@ -1479,7 +1561,7 @@ app.post('/api/bookings/:id/location', auth, async (req, res) => {
     // Verify booking is assigned to this professional
     const { data: proProfile } = await supabase
       .from('professional_profiles')
-      .select('id')
+      .select('id, sub_role, users(name, fcm_token)')
       .eq('user_id', req.user.id)
       .single();
 
@@ -1487,7 +1569,7 @@ app.post('/api/bookings/:id/location', auth, async (req, res) => {
 
     const { data: booking } = await supabase
       .from('bookings')
-      .select('id, professional_profile_id, assignment_status')
+      .select('id, professional_profile_id, assignment_status, address_lat, address_lng, ten_min_notified, customer_id, service_type, users!customer_id(name, phone, fcm_token)')
       .eq('id', bookingId)
       .eq('professional_profile_id', proProfile.id)
       .single();
@@ -1504,16 +1586,41 @@ app.post('/api/bookings/:id/location', auth, async (req, res) => {
       pro_location_updated_at: new Date().toISOString(),
     }).eq('id', bookingId);
 
+    // ── 10-minute proximity alert ────────────────────────────
+    if (!booking.ten_min_notified && booking.address_lat && booking.address_lng) {
+      const distKm = haversineKm(lat, lng, booking.address_lat, booking.address_lng);
+      if (distKm <= TEN_MIN_KM) {
+        // Mark as notified first to prevent duplicate sends
+        await supabase.from('bookings').update({ ten_min_notified: true }).eq('id', bookingId);
+
+        const proName  = proProfile.users?.name || 'Your professional';
+        const svcType  = booking.service_type || 'professional';
+        const custPhone = booking.users?.phone;
+        const custFcm   = booking.users?.fcm_token;
+
+        if (custPhone) {
+          sendSMS(custPhone, `🐾 PETclub: ${proName} (${svcType}) will arrive in about 10 minutes! Get ready 🐾`).catch(() => {});
+        }
+        if (custFcm) {
+          sendPushNotification(custFcm, '⏱️ 10 Minutes Away!', `${proName} will arrive in about 10 minutes. Get ready!`).catch(() => {});
+        }
+        console.log(`[ProximityAlert] Booking ${bookingId} — ${proName} is ${distKm.toFixed(1)}km from customer, 10-min alert sent`);
+      }
+    }
+
     // Push to all subscribed SSE clients
     const clients = trackingClients.get(bookingId);
-    const payload = JSON.stringify({ lat, lng, t: Date.now() });
+    const distKm = (booking.address_lat && booking.address_lng)
+      ? haversineKm(lat, lng, booking.address_lat, booking.address_lng)
+      : null;
+    const payload = JSON.stringify({ lat, lng, t: Date.now(), distKm: distKm ? +distKm.toFixed(2) : null });
     let pushed = 0;
     clients?.forEach(client => {
       try { client.write(`data: ${payload}\n\n`); pushed++; }
       catch { clients.delete(client); }
     });
 
-    res.json({ ok: true, pushed });
+    res.json({ ok: true, pushed, distKm: distKm ? +distKm.toFixed(2) : null });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2022,6 +2129,9 @@ async function runStartupMigrations() {
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_lat                  DOUBLE PRECISION`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_lng                  DOUBLE PRECISION`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_location_updated_at  TIMESTAMPTZ`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS ten_min_notified         BOOLEAN DEFAULT FALSE`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS address_lat              DOUBLE PRECISION`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS address_lng              DOUBLE PRECISION`,
   ];
   for (const sql of migrations) {
     // PostgREST can't run DDL, but Supabase service-role key can call
