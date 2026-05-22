@@ -24,10 +24,15 @@ const app = express();
 app.set('trust proxy', 1); // Trust Cloud Run reverse proxy — needed for rate-limit & real IP
 const PORT = process.env.PORT || 5000;
 const IS_PROD = process.env.NODE_ENV === 'production' || !process.env.ALLOW_DEV_TOOLS;
-const JWT_SECRET = process.env.JWT_SECRET;
-const WEB_APP_URL  = process.env.WEB_APP_URL  || 'https://app.mypetclub.app';
-const WEBSITE_URL  = process.env.WEBSITE_URL  || 'https://mypetclub.app';
+const JWT_SECRET    = process.env.JWT_SECRET;
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '30d';  // centralised — change via env var, not code
+const WEB_APP_URL   = process.env.WEB_APP_URL   || 'https://app.mypetclub.app';
+const WEBSITE_URL   = process.env.WEBSITE_URL   || 'https://mypetclub.app';
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@mypetclub.app';
+// Warn (don't crash) if optional-but-important vars use hardcoded fallbacks
+if (!process.env.WEB_APP_URL)   console.warn('[Config] WEB_APP_URL not set — falling back to https://app.mypetclub.app');
+if (!process.env.WEBSITE_URL)   console.warn('[Config] WEBSITE_URL not set — falling back to https://mypetclub.app');
+if (!process.env.SUPPORT_EMAIL) console.warn('[Config] SUPPORT_EMAIL not set — falling back to support@mypetclub.app');
 
 // ── Security helpers ───────────────────────────────────────
 // Mask phone/email in logs — never log full PII
@@ -43,16 +48,22 @@ const sanitize = s => typeof s === 'string' ? s.replace(/<[^>]*>/g, '').trim().s
 // ── Revenue split ─────────────────────────────────────────────────────────────
 // PETclub takes 30%; provider earns 70%. Gateway fees are absorbed from our 30%.
 // All computation is server-side only — clients never receive platform_fee.
-const PLATFORM_RATE = 0.30;
-const PROVIDER_RATE = 0.70;
+// Override via env vars — no code change needed for business model adjustments.
+const PLATFORM_RATE   = parseFloat(process.env.PLATFORM_RATE)        || 0.30;
+const PROVIDER_RATE   = parseFloat(process.env.PROVIDER_RATE)        || 0.70;
+// Gateway fee rates (absorbed by PETclub, never charged to provider)
+const GW_PCT_USD      = parseFloat(process.env.GATEWAY_FEE_PCT_USD)  || 0.029;   // 2.9%
+const GW_FLAT_USD     = parseFloat(process.env.GATEWAY_FEE_FLAT_USD) || 0.30;    // $0.30
+const GW_PCT_INR      = parseFloat(process.env.GATEWAY_FEE_PCT_INR)  || 0.02;    // 2%
+const GW_FLAT_INR     = parseFloat(process.env.GATEWAY_FEE_FLAT_INR) || 0.03;    // ₹0.03
 
 function computeSplit(totalAmount, currency = 'INR') {
   const amt = parseFloat(totalAmount);
   if (!amt || isNaN(amt) || amt <= 0) return null;
   // Gateway fee absorbed by PETclub (comes out of our 30%, never from provider's cut)
   const gatewayFee = currency === 'USD'
-    ? +(amt * 0.029 + 0.30).toFixed(2)   // Stripe: 2.9% + $0.30
-    : +(amt * 0.02  + 0.03).toFixed(2);  // Razorpay: ~2% + ₹3 (in rupees)
+    ? +(amt * GW_PCT_USD + GW_FLAT_USD).toFixed(2)
+    : +(amt * GW_PCT_INR + GW_FLAT_INR).toFixed(2);
   return {
     total_amount:      +amt.toFixed(2),
     platform_fee:      +(amt * PLATFORM_RATE).toFixed(2),
@@ -201,6 +212,16 @@ const sendPush = async (fcmToken, title, body, data = {}) => {
     console.log(`[FCM] Push sent → ${fcmToken.slice(0, 20)}…`);
   } catch (e) { console.warn('[FCM] Send failed:', e.message); }
 };
+
+// ── SMS stub — SMS provider not yet wired (Twilio / Vonage / MSG91 pending) ──
+// When ready: install the provider SDK, set credentials as env vars, and replace
+// the console.warn below with the actual send call.
+const sendSMS = async (phone, message) => {
+  console.warn(`[SMS stub] Provider not configured. To: ${maskPhone(phone)} | Msg: ${message.slice(0, 80)}`);
+};
+
+// ── FCM push alias — normalises call-site signature differences ───────────────
+const sendPushNotification = async (fcmToken, title, body) => sendPush(fcmToken, title, body);
 
 // attachments: nodemailer attachment array [{ filename, content (Buffer), contentType }]
 const sendEmail = async (to, subject, html, attachments = []) => {
@@ -372,7 +393,7 @@ setInterval(async () => {
 const RESPONSE_TIMEOUT_MINS = parseInt(process.env.BOOKING_RESPONSE_TIMEOUT_MINS) || 5;
 
 // Round-robin: find next eligible professional (not already tried for this booking)
-const DISPATCH_RADIUS_KM = 70; // Max dispatch radius — within ~1h drive of customer
+const DISPATCH_RADIUS_KM = parseFloat(process.env.DISPATCH_RADIUS_KM) || 70; // Max dispatch radius
 
 const findNextPro = async (city, subRole, excludeProIds = [], bookingLat = null, bookingLng = null) => {
   let q = supabase
@@ -601,7 +622,7 @@ app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
       subRole = prof?.sub_role || null;
     }
 
-    const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     console.log(`[FirebaseVerify] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
     res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
   } catch (err) {
@@ -704,7 +725,7 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
       subRole = prof?.sub_role || null;
     }
 
-    const token = jwt.sign({ id: user.id, phone: user.phone || null, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign({ id: user.id, phone: user.phone || null, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     console.log(`[EmailOTP] ${isNew ? 'New' : 'Returning'} user: ${maskEmail(email)}`);
     res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
   } catch (err) {
@@ -795,7 +816,7 @@ app.post('/api/users/set-role', auth, async (req, res) => {
     }
 
     const { data: user } = await supabase.from('users').select('*').eq('id', req.user.id).single();
-    const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: '30d' });
+    const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     const verificationStatus = role === 'professional' ? 'pending' : null;
     // subRole already defined above from req.body
 
@@ -984,9 +1005,13 @@ app.post('/api/contact/send-link', async (req, res) => {
 // ══════════════════════════════════════════════════════
 //  ADMIN: CREATE FIRST ADMIN (one-time, requires secret)
 // ══════════════════════════════════════════════════════
-app.post('/api/admin/make-admin', async (req, res) => {
+// Bootstrap-only: promote a phone number to admin role.
+// Rate-limited (authLimit) to prevent brute-force of ADMIN_SECRET.
+// After initial setup, disable by removing ADMIN_SECRET from env vars.
+app.post('/api/admin/make-admin', authLimit, async (req, res) => {
   try {
     const { phone, countryCode = '91', secret } = req.body;
+    if (!process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Bootstrap endpoint disabled — ADMIN_SECRET not set' });
     if (!secret || secret !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Invalid secret' });
     const fullPhone = `+${countryCode}${phone}`;
     const { data: user } = await supabase.from('users').select('*').eq('phone', fullPhone).single();
@@ -1065,12 +1090,40 @@ app.get('/api/pets', auth, async (req, res) => {
 });
 
 app.post('/api/pets', auth, async (req, res) => {
-  const { data } = await supabase.from('pets').insert({ owner_id: req.user.id, ...req.body }).select().single();
+  // Allowlist: never accept owner_id, id, or any computed field from the client
+  const { name, species, breed, age, gender, dob, weight, health_notes, photo_url } = req.body;
+  if (!name || !species) return res.status(400).json({ error: 'Pet name and species are required' });
+  const { data, error } = await supabase.from('pets').insert({
+    owner_id:     req.user.id,
+    name:         sanitize(name),
+    species:      sanitize(species),
+    breed:        sanitize(breed)        || null,
+    age:          age != null ? parseInt(age) : null,
+    gender:       gender                 || null,
+    dob:          dob                    || null,
+    weight:       weight != null ? parseFloat(weight) : null,
+    health_notes: sanitize(health_notes) || null,
+    photo_url:    photo_url              || null,
+  }).select().single();
+  if (error) return res.status(400).json({ error: error.message });
   res.json({ success: true, pet: data });
 });
 
 app.put('/api/pets/:id', auth, async (req, res) => {
-  const { data } = await supabase.from('pets').update(req.body).eq('id', req.params.id).eq('owner_id', req.user.id).select().single();
+  const { name, species, breed, age, gender, dob, weight, health_notes, photo_url } = req.body;
+  const updates = {};
+  if (name         !== undefined) updates.name         = sanitize(name);
+  if (species      !== undefined) updates.species      = sanitize(species);
+  if (breed        !== undefined) updates.breed        = sanitize(breed) || null;
+  if (age          !== undefined) updates.age          = age != null ? parseInt(age) : null;
+  if (gender       !== undefined) updates.gender       = gender || null;
+  if (dob          !== undefined) updates.dob          = dob || null;
+  if (weight       !== undefined) updates.weight       = weight != null ? parseFloat(weight) : null;
+  if (health_notes !== undefined) updates.health_notes = sanitize(health_notes) || null;
+  if (photo_url    !== undefined) updates.photo_url    = photo_url || null;
+  const { data, error } = await supabase.from('pets').update(updates)
+    .eq('id', req.params.id).eq('owner_id', req.user.id).select().single();
+  if (error) return res.status(400).json({ error: error.message });
   res.json({ success: true, pet: data });
 });
 
@@ -1088,8 +1141,12 @@ app.get('/api/pets/:petId/records/:type', auth, async (req, res) => {
 
 app.post('/api/pets/:petId/records/:type', auth, async (req, res) => {
   const tbl = TABLES[req.params.type];
-  if (!tbl) return res.status(400).json({ error: 'Invalid type' });
-  const { data } = await supabase.from(tbl).insert({ pet_id: req.params.petId, ...req.body }).select().single();
+  if (!tbl) return res.status(400).json({ error: 'Invalid type. Use: grooming, training, food, vet' });
+  // Remove any client-supplied pet_id — always use the authenticated route parameter
+  const { pet_id: _ignored, id: _id, ...safeBody } = req.body;
+  const { data, error } = await supabase.from(tbl)
+    .insert({ pet_id: req.params.petId, ...safeBody }).select().single();
+  if (error) return res.status(400).json({ error: error.message });
   res.json({ success: true, record: data });
 });
 
@@ -1224,7 +1281,21 @@ app.put('/api/professionals/availability', auth, async (req, res) => {
 });
 
 app.post('/api/professionals/apply', auth, async (req, res) => {
-  const { data } = await supabase.from('professional_profiles').upsert({ user_id: req.user.id, verification_status: 'pending', ...req.body }, { onConflict: 'user_id' }).select().single();
+  // Allowlist: never accept verification_status or is_available from client
+  const { sub_role, city, address, bio, experience } = req.body;
+  if (sub_role && !['Groomer', 'Trainer', 'Vet'].includes(sub_role))
+    return res.status(400).json({ error: 'sub_role must be Groomer, Trainer, or Vet' });
+  const { data, error } = await supabase.from('professional_profiles').upsert({
+    user_id:             req.user.id,
+    verification_status: 'pending',   // always pending — never accept from client
+    is_available:        false,        // always offline until approved
+    sub_role:            sub_role    || null,
+    city:                sanitize(city)       || null,
+    address:             sanitize(address)    || null,
+    bio:                 sanitize(bio)        || null,
+    experience:          sanitize(experience) || null,
+  }, { onConflict: 'user_id' }).select().single();
+  if (error) return res.status(400).json({ error: error.message });
   await supabase.from('users').update({ role: 'professional' }).eq('id', req.user.id);
   res.json({ success: true, profile: data });
 });
@@ -1232,7 +1303,14 @@ app.post('/api/professionals/apply', auth, async (req, res) => {
 app.post('/api/professionals/upload-id', auth, async (req, res) => {
   const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
   if (!prof) return res.status(404).json({ error: 'Apply as professional first' });
-  const { data } = await supabase.from('id_documents').upsert({ prof_id: prof.id, ...req.body }, { onConflict: 'prof_id' }).select().single();
+  const { doc_type, doc_number, cert_type, cert_number } = req.body;
+  const { data } = await supabase.from('id_documents').upsert({
+    prof_id:     prof.id,
+    doc_type:    sanitize(doc_type)    || null,
+    doc_number:  sanitize(doc_number)  || null,
+    cert_type:   sanitize(cert_type)   || null,
+    cert_number: sanitize(cert_number) || null,
+  }, { onConflict: 'prof_id' }).select().single();
   res.json({ success: true, document: data });
 });
 
@@ -1379,8 +1457,20 @@ app.post('/api/users/upload-id-photo', auth, async (req, res) => {
 });
 
 app.post('/api/professionals/payout', auth, async (req, res) => {
+  if (req.user.role !== 'professional') return res.status(403).json({ error: 'Professionals only' });
   const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
-  const { data } = await supabase.from('payout_details').upsert({ prof_id: prof.id, ...req.body }, { onConflict: 'prof_id' }).select().single();
+  if (!prof) return res.status(404).json({ error: 'Professional profile not found' });
+  // Allowlist payout fields — never accept prof_id or computed fields from client
+  const { bank_name, account_number, account_holder, ifsc_code, upi_id, payment_type } = req.body;
+  const { data } = await supabase.from('payout_details').upsert({
+    prof_id:        prof.id,
+    bank_name:      sanitize(bank_name)       || null,
+    account_number: sanitize(account_number)  || null,
+    account_holder: sanitize(account_holder)  || null,
+    ifsc_code:      sanitize(ifsc_code)       || null,
+    upi_id:         sanitize(upi_id)          || null,
+    payment_type:   payment_type              || null,
+  }, { onConflict: 'prof_id' }).select().single();
   res.json({ success: true, payout: data });
 });
 
@@ -1511,6 +1601,11 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
     if (prof && booking.professional_id === prof.id) authorized = true;
   }
   if (!authorized) return res.status(403).json({ error: 'Not authorized to update this booking' });
+
+  // Whitelist allowed statuses — prevents state-machine manipulation from client
+  const VALID_BOOKING_STATUSES = ['upcoming', 'in_progress', 'completed', 'cancelled'];
+  if (!VALID_BOOKING_STATUSES.includes(req.body.status))
+    return res.status(400).json({ error: `Invalid status. Allowed: ${VALID_BOOKING_STATUSES.join(', ')}` });
 
   const { data } = await supabase.from('bookings').update({ status: req.body.status }).eq('id', req.params.id).select().single();
   res.json({ success: true, booking: data });
@@ -1654,14 +1749,15 @@ app.get('/api/bookings/:id/track', async (req, res) => {
 
   const bookingId = req.params.id;
 
-  // Verify booking belongs to this customer
+  // Verify booking belongs to this customer (customer_id, not user_id — see schema)
   const { data: booking } = await supabase
     .from('bookings')
-    .select('id, user_id, pro_lat, pro_lng, assignment_status')
+    .select('id, customer_id, pro_lat, pro_lng, assignment_status')
     .eq('id', bookingId)
     .single();
 
-  if (!booking || booking.user_id !== userId) return res.status(403).json({ error: 'Booking not found' });
+  if (!booking) return res.status(404).json({ error: 'Booking not found' });
+  if (booking.customer_id !== userId) return res.status(403).json({ error: 'Not your booking' });
 
   // SSE handshake
   res.setHeader('Content-Type',  'text/event-stream');
@@ -1697,7 +1793,7 @@ const haversineKm = (lat1, lon1, lat2, lon2) => {
   const a = Math.sin(dLat/2)**2 + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)**2;
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
 };
-const TEN_MIN_KM = 8; // ~10 min at avg 50 km/h road speed
+const TEN_MIN_KM = parseFloat(process.env.PROXIMITY_ALERT_KM) || 8; // ~10 min at avg 50 km/h road speed
 
 // Professional taps "On My Way" — POST /api/bookings/:id/on-my-way
 app.post('/api/bookings/:id/on-my-way', auth, async (req, res) => {
@@ -1819,11 +1915,25 @@ app.get('/api/bookings/:id/tracking', auth, async (req, res) => {
   try {
     const { data: booking } = await supabase
       .from('bookings')
-      .select('pro_lat, pro_lng, pro_location_updated_at, assignment_status')
+      .select('customer_id, professional_id, pro_lat, pro_lng, pro_location_updated_at, assignment_status')
       .eq('id', req.params.id)
       .single();
     if (!booking) return res.status(404).json({ error: 'Not found' });
-    res.json(booking);
+
+    // Ownership check — customer, assigned professional, or admin only
+    let proProfileId = null;
+    if (req.user.role === 'professional') {
+      const { data: pp } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
+      proProfileId = pp?.id || null;
+    }
+    const isOwner = req.user.role === 'admin'
+      || booking.customer_id === req.user.id
+      || (proProfileId && booking.professional_id === proProfileId);
+    if (!isOwner) return res.status(403).json({ error: 'Access denied' });
+
+    // Strip internal FK fields from response
+    const { customer_id, professional_id, ...safeData } = booking;
+    res.json(safeData);
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2403,7 +2513,7 @@ const searchNominatim = async (q) => {
   const url = `https://nominatim.openstreetmap.org/search`
     + `?q=${encodeURIComponent(q)}&format=jsonv2&addressdetails=1&limit=6&accept-language=en`;
   const d = await fetch(url, {
-    headers: { 'Accept-Language': 'en', 'User-Agent': 'PETclub/1.0 ksk.dev87@gmail.com' },
+    headers: { 'Accept-Language': 'en', 'User-Agent': `PETclub/1.0 ${process.env.NOMINATIM_CONTACT || SUPPORT_EMAIL}` },
   }).then(r => r.json());
   return (d || []).map((f, i) => {
     const a = f.address || {};
@@ -2425,7 +2535,7 @@ const reverseNominatim = async (lat, lng) => {
   const url = `https://nominatim.openstreetmap.org/reverse`
     + `?lat=${lat}&lon=${lng}&format=jsonv2&addressdetails=1&accept-language=en`;
   const d = await fetch(url, {
-    headers: { 'Accept-Language': 'en', 'User-Agent': 'PETclub/1.0 ksk.dev87@gmail.com' },
+    headers: { 'Accept-Language': 'en', 'User-Agent': `PETclub/1.0 ${process.env.NOMINATIM_CONTACT || SUPPORT_EMAIL}` },
   }).then(r => r.json());
   const a = d.address || {};
   return {
@@ -2493,25 +2603,37 @@ app.get('/api/reverse-geocode', auth, async (req, res) => {
 
 // ══════════════════════════════════════════════════════
 //  HEALTH CHECK
+//  Public: status + version only (no internal config)
+//  Authenticated (X-Health-Secret header): full service map
+//  CI/CD: curl -H "X-Health-Secret: $HEALTH_SECRET" $URL/api/health
 // ══════════════════════════════════════════════════════
-app.get('/api/health', (req, res) => res.json({
-  status: '🐾 PETclub API running',
-  version: API_VERSION,
-  time: new Date(),
-  config: {
-    booking_response_timeout_mins: RESPONSE_TIMEOUT_MINS,
-    web_app_url: WEB_APP_URL,
-    website_url: WEBSITE_URL,
-  },
-  services: {
-    supabase:      '✅',
-    zoho_smtp:     process.env.ZOHO_SMTP_USER ? '✅' : '⚠️ not configured',
-    firebase_auth: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
-    razorpay:      razorpay ? '✅ live' : '⏳ pending (set env vars)',
-    fcm:           firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
-    mappls_geo:    process.env.MAPPLS_STATIC_KEY ? '✅ configured' : '⚠️ not set — using Nominatim fallback',
-  },
-}));
+app.get('/api/health', (req, res) => {
+  const authenticated = process.env.HEALTH_SECRET
+    && req.headers['x-health-secret'] === process.env.HEALTH_SECRET;
+  const base = {
+    status:  '🐾 PETclub API running',
+    version: API_VERSION,
+    time:    new Date(),
+  };
+  if (!authenticated) return res.json(base);
+  // Full response for CI/CD and ops tooling only
+  res.json({
+    ...base,
+    config: {
+      booking_response_timeout_mins: RESPONSE_TIMEOUT_MINS,
+      web_app_url: WEB_APP_URL,
+      website_url: WEBSITE_URL,
+    },
+    services: {
+      supabase:      '✅',
+      zoho_smtp:     process.env.ZOHO_SMTP_USER ? '✅' : '⚠️ not configured',
+      firebase_auth: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
+      razorpay:      razorpay ? '✅ live' : '⏳ pending (set env vars)',
+      fcm:           firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
+      mappls_geo:    process.env.MAPPLS_STATIC_KEY ? '✅ configured' : '⚠️ not set — using Nominatim fallback',
+    },
+  });
+});
 // ══════════════════════════════════════════════════════
 //  ADMIN: DB Audit — scan every table for stale/orphan rows
 // ══════════════════════════════════════════════════════

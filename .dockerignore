@@ -1,10 +1,31 @@
 node_modules
-npm-debug.log
+npm-debug.log*
+*.log
+
+# Never copy secrets into Docker image layer
 .env
 .env.*
+.env.local
+.env.development
+.env.production
+
+# Git history
 .git
 .gitignore
-README.md
-*.md
+
+# Editor / OS
 .DS_Store
+.vscode
+*.swp
+*.swo
 Thumbs.db
+
+# Test & coverage
+coverage/
+.nyc_output/
+
+# CI/CD config (not needed at runtime)
+.github/
+
+# Dev-only scripts
+scripts/

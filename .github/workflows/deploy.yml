@@ -101,12 +101,16 @@ jobs:
           project_id: ${{ secrets.GCP_PROJECT_ID }}
 
       # ── 8. Health check ──────────────────────────────────────
+      # Pass X-Health-Secret so the response includes service details.
+      # Add HEALTH_SECRET to GitHub Secrets to enable the full response.
       - name: Verify deployment
         run: |
           URL="${{ steps.deploy.outputs.url }}"
           echo "Deployed to: ${URL}"
           for i in 1 2 3; do
-            STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${URL}/api/health")
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "X-Health-Secret: ${{ secrets.HEALTH_SECRET }}" \
+              "${URL}/api/health")
             echo "Health check attempt $i: HTTP $STATUS"
             [ "$STATUS" = "200" ] && { echo "✅ Health check passed"; exit 0; }
             sleep 10
