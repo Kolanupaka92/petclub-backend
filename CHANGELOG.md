@@ -1,0 +1,48 @@
+# 1.0.0 (2026-05-22)
+
+
+### Bug Fixes
+
+* add localhost origins to CORS allowed list for dev testing ([081f1d6](https://github.com/Kolanupaka92/petclub-backend/commit/081f1d63170e0646c2d7031069ee7416b5156756))
+* add POST alias for admin user edit (proxy-safe against PATCH blocking) ([d8ca316](https://github.com/Kolanupaka92/petclub-backend/commit/d8ca316cd44f9e2fa68f5b0d4e6e56d4bd873f8c))
+* **adminSeed:** always purge stale duplicate users regardless of email match state ([15e42ef](https://github.com/Kolanupaka92/petclub-backend/commit/15e42ef89248bf1df0a278f1447fa7ca1280940f))
+* **adminSeed:** delete stale pending_role duplicate before linking admin email ([09f9cf5](https://github.com/Kolanupaka92/petclub-backend/commit/09f9cf516abc1102eee7ea6f2b830ad5470ee73a))
+* **admin:** wrap payment_logs query in Promise.resolve() for .catch() ([2744d15](https://github.com/Kolanupaka92/petclub-backend/commit/2744d15e6972b73d3c85706f88ec0f85e0d44c85))
+* **audit:** replace hardcoded support email in HTML template, expand .env.example ([6bca9ee](https://github.com/Kolanupaka92/petclub-backend/commit/6bca9ee7aad67fe0f4becb925c0cf69d34c86207))
+* await email OTP for India (+91) and surface delivery errors ([7d52db4](https://github.com/Kolanupaka92/petclub-backend/commit/7d52db402e22d28cffe4d2a4a760e77fb5f00deb))
+* backend email check uses .pop() for TLD, never flags .com ([eefd3fa](https://github.com/Kolanupaka92/petclub-backend/commit/eefd3fad2c7ca2a1e7858535cf708c4b6f32e0af))
+* backend email TLD typo block catches .conm .cmo .ocm variants ([7f05ac9](https://github.com/Kolanupaka92/petclub-backend/commit/7f05ac9c4c16ae3a71aaba6c34ca5326d54b216c))
+* **ci:** skip Cloud Run deploy on semantic-release version-bump commits ([9451e17](https://github.com/Kolanupaka92/petclub-backend/commit/9451e177e8ae1507f91bd10e98b1e1ae18303564))
+* **deps:** regenerate package-lock.json to include semantic-release packages ([2c7e3b0](https://github.com/Kolanupaka92/petclub-backend/commit/2c7e3b0393874769fb115d93f6914aedf6500bf9))
+* email typo block + GPS coords on profile update (PUT /api/users/me) ([f25f9a4](https://github.com/Kolanupaka92/petclub-backend/commit/f25f9a4ec12a579cf0f09ec3c613fd63aa4b2bdb))
+* infer country and city from phone/request in set-role ([89fe25d](https://github.com/Kolanupaka92/petclub-backend/commit/89fe25de9f8e6466d1e75106ed36b9c98cb5ac85))
+* remove .env from tracking, add .env.example ([b9880b0](https://github.com/Kolanupaka92/petclub-backend/commit/b9880b08d9c95739749c786cacf15933feb5aa09))
+* replace broken App Store/Play Store links with working web app URL ([e503ead](https://github.com/Kolanupaka92/petclub-backend/commit/e503ead275c0d154d393391decabb3ddad9ebc55))
+* replace Supabase PromiseLike .catch() chains with proper try/catch ([dd8e8de](https://github.com/Kolanupaka92/petclub-backend/commit/dd8e8de1a7748710852c4bce5614a5905f1f7605))
+* **security:** comprehensive audit — eliminate all critical vulnerabilities ([a581782](https://github.com/Kolanupaka92/petclub-backend/commit/a5817823d9ff6375199e1ce7ad66229aab78b59f))
+* seed ADMIN_EMAIL onto admin user record at startup ([ba1c3ae](https://github.com/Kolanupaka92/petclub-backend/commit/ba1c3aefcf487fe5ab5a65a64d54cdc860a9de17))
+* update all email addresses to mypetclub.app domain ([430f346](https://github.com/Kolanupaka92/petclub-backend/commit/430f346e3be5f66948088074d3b75e147f88fe2f))
+* use Mappls Static Key directly (no OAuth2 token exchange needed) ([567aaef](https://github.com/Kolanupaka92/petclub-backend/commit/567aaefc15043c53e3042dda5390aa84cace8cf4))
+
+
+### Features
+
+* 30/70 revenue split — DB columns, secure API, earnings endpoint ([96fc048](https://github.com/Kolanupaka92/petclub-backend/commit/96fc048bc099264e37b90d566255958bff3d7ba4))
+* 70km GPS radius dispatch, pet health notes in pro notifications, admin email on ID upload ([c2ed5ae](https://github.com/Kolanupaka92/petclub-backend/commit/c2ed5ae1a9f6ea627d0c7a264bea5568764b0a15))
+* add welcome email on user registration (set-role endpoint) ([fd4d505](https://github.com/Kolanupaka92/petclub-backend/commit/fd4d505ffe973bbb6d73a94a3f503bebe66b7b1f))
+* admin bookings query includes customer name/phone for live tracking panel ([cd19ff9](https://github.com/Kolanupaka92/petclub-backend/commit/cd19ff9405b8e3b46069ff50a87d56f6b5adb5a6))
+* admin OTP lookup endpoint for testing ([7feed6c](https://github.com/Kolanupaka92/petclub-backend/commit/7feed6c774f8d878ad5c2d19762d532eec147df2))
+* **admin:** add DB audit + cleanup endpoints ([e8773ed](https://github.com/Kolanupaka92/petclub-backend/commit/e8773ed832c9e6b58ccb180cdbf4663a4fc32bd6))
+* **admin:** add DELETE /api/admin/users/suspended/purge-all endpoint ([e7f01be](https://github.com/Kolanupaka92/petclub-backend/commit/e7f01bef076de7711bd874e7e6ac2f4d54c5b3c1))
+* email OTP fallback, ID photo upload endpoint, pet creation on signup ([6bb6abb](https://github.com/Kolanupaka92/petclub-backend/commit/6bb6abb9e4d06bf8d8f049cd1fc02b53308e0fd6))
+* Gmail SMTP — send OTP to any user email address ([bc6a98a](https://github.com/Kolanupaka92/petclub-backend/commit/bc6a98a0187cec2d1bffc04d193c1bef71f08a43))
+* Location Gateway — routes geocoding by country (Phase 1) ([8f61685](https://github.com/Kolanupaka92/petclub-backend/commit/8f61685cf1c5352dabb685b2e89a16e200d62468))
+* On My Way endpoint, 10-min proximity alert, availability email, admin user edit ([caceb26](https://github.com/Kolanupaka92/petclub-backend/commit/caceb261cb16589970e46d546bb6954ff6a6e734))
+* OTP always sent to user's own email + admin copy ([1d8b50d](https://github.com/Kolanupaka92/petclub-backend/commit/1d8b50dc5db14bf9d2b77c70cd8745b0fb3628e6))
+* Pet Food & Boarding inquiry emails + admin notification ([864ca6b](https://github.com/Kolanupaka92/petclub-backend/commit/864ca6b7c00c6dcf92da1aec6ab36c01bda382e9))
+* pet_types specialization field for professionals, pet_types migration ([616a51c](https://github.com/Kolanupaka92/petclub-backend/commit/616a51cb8a269aca5e758c35eee925d5a1b17f22))
+* PETclub backend API v1 - Express + Supabase + Twilio ([feb37f7](https://github.com/Kolanupaka92/petclub-backend/commit/feb37f7da4979158918ec91fceb602f63f813a65))
+* **release:** add semantic-release CI/CD and version in health endpoint ([5ede8cf](https://github.com/Kolanupaka92/petclub-backend/commit/5ede8cf4b3f739c1d275cc34cb3ab632fc23c06b))
+* replace Resend with Zoho SMTP (nodemailer) for all transactional email ([ab2e351](https://github.com/Kolanupaka92/petclub-backend/commit/ab2e3513b920b26d9362fb83731a243230428ebb))
+* save GPS coordinates for addresses in profiles and bookings ([0ed7530](https://github.com/Kolanupaka92/petclub-backend/commit/0ed7530931bfb48e00687cfbc77488a65965de73))
+* TESTING_RELAY_EMAIL - relay all OTPs to admin during beta ([837328a](https://github.com/Kolanupaka92/petclub-backend/commit/837328a50ae588f5addb2ce08686c4395801e0ae))
