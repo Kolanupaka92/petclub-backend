@@ -2547,7 +2547,7 @@ app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
       supabase.from('otp_tokens').select('id', { count: 'exact', head: true }).lt('expires_at', now.toISOString()),
       supabase.from('website_leads').select('id', { count: 'exact', head: true }),
       supabase.from('admin_logs').select('id', { count: 'exact', head: true }),
-      supabase.from('payment_logs').select('id', { count: 'exact', head: true }).catch(() => ({ count: 0 })),
+      Promise.resolve(supabase.from('payment_logs').select('id', { count: 'exact', head: true })).catch(() => ({ count: 0 })),
     ]);
 
     // 2. Orphaned profiles (user_id missing from users)
