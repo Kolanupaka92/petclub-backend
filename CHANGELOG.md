@@ -1,3 +1,10 @@
+## [1.1.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.1.0...v1.1.1) (2026-05-22)
+
+
+### Bug Fixes
+
+* **auth:** friendlier Twilio trial-account error — direct users to Email OTP ([9dd7da4](https://github.com/Kolanupaka92/petclub-backend/commit/9dd7da4121f521fd68d60cae7d72411ff62b2762))
+
 # [1.1.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.0.2...v1.1.0) (2026-05-22)
 
 
