@@ -2794,10 +2794,12 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
       report.stale_leads = error ? `error: ${error.message}` : (count || 0);
     }
 
-    await supabase.from('admin_logs').insert({
-      admin_id: req.user.id, action: 'db_cleanup', target_type: 'system',
-      notes: `Cleaned: ${JSON.stringify(report)}`,
-    }).catch(() => {});
+    try {
+      await supabase.from('admin_logs').insert({
+        admin_id: req.user.id, action: 'db_cleanup', target_type: 'system',
+        notes: `Cleaned: ${JSON.stringify(report)}`,
+      });
+    } catch {} // non-critical audit log — cleanup already completed
 
     res.json({ success: true, cleaned: report });
   } catch (e) {
