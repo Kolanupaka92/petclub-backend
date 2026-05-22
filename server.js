@@ -213,11 +213,31 @@ const sendPush = async (fcmToken, title, body, data = {}) => {
   } catch (e) { console.warn('[FCM] Send failed:', e.message); }
 };
 
-// ── SMS stub — SMS provider not yet wired (Twilio / Vonage / MSG91 pending) ──
-// When ready: install the provider SDK, set credentials as env vars, and replace
-// the console.warn below with the actual send call.
+// ── SMS via Twilio ────────────────────────────────────────────────────────────
+const _twilioSid   = process.env.TWILIO_ACCOUNT_SID;
+const _twilioToken = process.env.TWILIO_AUTH_TOKEN;
+const _twilioFrom  = process.env.TWILIO_PHONE_NUMBER;
+const _twilioReady = Boolean(_twilioSid && _twilioToken && _twilioFrom);
+let _twilioClient  = null;
+if (_twilioReady) {
+  try {
+    const twilio = require('twilio');
+    _twilioClient = twilio(_twilioSid, _twilioToken);
+    console.info('[Twilio] SMS client initialised — from:', _twilioFrom);
+  } catch (e) {
+    console.error('[Twilio] Failed to init client:', e.message);
+  }
+} else {
+  console.warn('[Twilio] TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER not set — SMS disabled');
+}
+
 const sendSMS = async (phone, message) => {
-  console.warn(`[SMS stub] Provider not configured. To: ${maskPhone(phone)} | Msg: ${message.slice(0, 80)}`);
+  if (!_twilioClient) {
+    console.warn(`[SMS disabled] To: ${maskPhone(phone)} | Msg: ${message.slice(0, 80)}`);
+    return;
+  }
+  await _twilioClient.messages.create({ body: message, from: _twilioFrom, to: phone });
+  console.info(`[SMS] Sent to ${maskPhone(phone)}`);
 };
 
 // ── FCM push alias — normalises call-site signature differences ───────────────
@@ -731,6 +751,96 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
   } catch (err) {
     console.error('[EmailOTP] Verify error:', err.message);
     res.status(500).json({ error: 'Verification failed.' });
+  }
+});
+
+// ══════════════════════════════════════════════════════
+//  AUTH: PHONE OTP via Twilio SMS (replaces Firebase reCAPTCHA)
+//  POST /api/auth/send-phone-otp   { phone: '+91XXXXXXXXXX' }
+//  POST /api/auth/verify-phone-otp { phone, otp }
+// ══════════════════════════════════════════════════════
+app.post('/api/auth/send-phone-otp', otpLimit, async (req, res) => {
+  try {
+    const { phone } = req.body;
+    if (!phone || !/^\+[1-9]\d{6,14}$/.test(phone))
+      return res.status(400).json({ error: 'Valid E.164 phone number required (e.g. +14155552671)' });
+
+    if (!_twilioClient)
+      return res.status(503).json({ error: 'SMS service not configured. Please use Email OTP to sign in.' });
+
+    const otp  = genOTP();
+    const expires = new Date(Date.now() + 10 * 60000).toISOString();
+
+    await supabase.from('otp_tokens').upsert(
+      { phone: phone, otp, expires_at: expires, verified: false },
+      { onConflict: 'phone' }
+    );
+
+    await sendSMS(phone, `Your PETclub OTP is: ${otp}  Valid 10 min. Do not share.`);
+    console.log(`[PhoneOTP] Sent to ${maskPhone(phone)}`);
+    res.json({ success: true, message: `OTP sent to ${phone}` });
+  } catch (err) {
+    console.error('[PhoneOTP] Send error:', err.message);
+    // Surface Twilio-specific errors clearly
+    if (err.code === 21211 || (err.message || '').includes('not a valid phone number'))
+      return res.status(400).json({ error: 'Invalid phone number. Check the country code and digits.' });
+    if (err.code === 21608 || (err.message || '').includes('unverified'))
+      return res.status(400).json({ error: 'This number is not verified in our trial account. Contact support.' });
+    res.status(500).json({ error: 'Failed to send SMS. Try Email OTP instead.' });
+  }
+});
+
+app.post('/api/auth/verify-phone-otp', authLimit, async (req, res) => {
+  try {
+    const { phone, otp } = req.body;
+    if (!phone || !otp) return res.status(400).json({ error: 'Phone and OTP required' });
+
+    const { data: rec } = await supabase.from('otp_tokens').select('*').eq('phone', phone).single();
+    if (!rec)           return res.status(400).json({ error: 'OTP not found. Request a new one.' });
+    if (rec.verified)   return res.status(400).json({ error: 'OTP already used.' });
+    if (new Date() > new Date(rec.expires_at)) return res.status(400).json({ error: 'OTP expired. Request a new one.' });
+    if (rec.otp !== otp) return res.status(400).json({ error: 'Incorrect OTP. Check your SMS and try again.' });
+
+    await supabase.from('otp_tokens').update({ verified: true }).eq('phone', phone);
+
+    let { data: user } = await supabase.from('users').select('*').eq('phone', phone).single();
+    const isNew = !user;
+    if (!user) {
+      const { data: nu, error: insertErr } = await supabase
+        .from('users')
+        .insert({ phone, role: 'pending_role', is_active: true })
+        .select().single();
+      if (insertErr) {
+        console.error('[PhoneOTP] Insert failed:', insertErr.message);
+        return res.status(500).json({ error: 'Failed to create account. Try again.' });
+      }
+      user = nu;
+      const adminEmail = process.env.ADMIN_EMAIL;
+      if (adminEmail) {
+        sendEmail(adminEmail, `🐾 New PETclub Signup (Phone) — ${maskPhone(phone)}`,
+          `<p style="font-family:Arial,sans-serif">New user signed up via phone OTP: <strong>${phone}</strong></p>`
+        ).catch(() => {});
+      }
+    }
+
+    if (user.is_active === false)
+      return res.status(403).json({ error: `Your account has been suspended. Contact ${SUPPORT_EMAIL}` });
+
+    let verificationStatus = null;
+    let subRole = null;
+    if (user.role === 'professional') {
+      const { data: prof } = await supabase
+        .from('professional_profiles').select('verification_status, sub_role').eq('user_id', user.id).single();
+      verificationStatus = prof?.verification_status || 'pending';
+      subRole = prof?.sub_role || null;
+    }
+
+    const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    console.log(`[PhoneOTP] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
+    res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
+  } catch (err) {
+    console.error('[PhoneOTP] Verify error:', err.message);
+    res.status(500).json({ error: 'Verification failed. Please try again.' });
   }
 });
 
