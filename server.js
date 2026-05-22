@@ -2139,6 +2139,44 @@ app.put('/api/admin/users/:id/suspend', auth, adminOnly, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════
+//  ADMIN: Purge ALL suspended users in one shot
+//  Deletes every non-admin user where is_active = false.
+// ══════════════════════════════════════════════════════
+app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, res) => {
+  try {
+    const { data: suspended } = await supabase
+      .from('users')
+      .select('id, name, phone, email, role')
+      .eq('is_active', false)
+      .neq('role', 'admin');
+
+    if (!suspended?.length) return res.json({ success: true, deleted: 0, message: 'No suspended users found.' });
+
+    const ids = suspended.map(u => u.id);
+
+    await supabase.from('professional_profiles').delete().in('user_id', ids);
+    await supabase.from('customer_profiles').delete().in('user_id', ids).catch(() => {});
+    await supabase.from('pets').delete().in('owner_id', ids).catch(() => {});
+    await supabase.from('otp_tokens').delete().in('phone', suspended.map(u => u.phone)).catch(() => {});
+    await supabase.from('admin_logs').delete().in('target_id', ids);
+    await supabase.from('users').delete().in('id', ids);
+
+    await supabase.from('admin_logs').insert({
+      admin_id: req.user.id,
+      action: 'purge_all_suspended',
+      target_type: 'user',
+      notes: `Purged ${ids.length} suspended users: ${suspended.map(u => u.phone).join(', ')}`,
+    }).catch(() => {});
+
+    console.log(`[PurgeAll] Admin ${req.user.id} deleted ${ids.length} suspended users`);
+    res.json({ success: true, deleted: ids.length });
+  } catch (e) {
+    console.error('[PurgeAll] Error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════
 //  ADMIN: Hard-delete a user immediately
 // ══════════════════════════════════════════════════════
 app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
