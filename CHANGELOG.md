@@ -1,3 +1,10 @@
+## [1.0.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.0.0...v1.0.1) (2026-05-22)
+
+
+### Bug Fixes
+
+* **admin:** wrap admin_logs insert in try/catch — Supabase v2 builder has no .catch() ([e5e8b9c](https://github.com/Kolanupaka92/petclub-backend/commit/e5e8b9c5d49158deba8412fe7b7f7150b37e1edc))
+
 # 1.0.0 (2026-05-22)
 
 
