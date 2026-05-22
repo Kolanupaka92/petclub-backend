@@ -3,6 +3,7 @@
 //  Stack: Node.js + Express + Firebase Auth + Nodemailer (Zoho SMTP) + Supabase + JWT
 // ═══════════════════════════════════════════════════════════
 require('dotenv').config();
+const { version: API_VERSION } = require('./package.json');
 const express = require('express');
 const helmet  = require('helmet');
 const cors    = require('cors');
@@ -2495,6 +2496,7 @@ app.get('/api/reverse-geocode', auth, async (req, res) => {
 // ══════════════════════════════════════════════════════
 app.get('/api/health', (req, res) => res.json({
   status: '🐾 PETclub API running',
+  version: API_VERSION,
   time: new Date(),
   config: {
     booking_response_timeout_mins: RESPONSE_TIMEOUT_MINS,

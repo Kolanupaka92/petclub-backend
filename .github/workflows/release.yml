@@ -1,0 +1,78 @@
+# ══════════════════════════════════════════════════════════════════
+#  PETclub Backend — Semantic Release
+#  Triggered: every push to main that isn't a release commit itself
+#
+#  What it does:
+#    1. Analyses conventional commits since the last release tag
+#    2. Bumps version in package.json (feat → minor, fix → patch)
+#    3. Generates / updates CHANGELOG.md
+#    4. Commits package.json + CHANGELOG.md back to main with [skip ci]
+#    5. Creates a GitHub Release with auto-generated release notes
+#
+#  Conventional commit cheat-sheet:
+#    feat: <msg>       → minor bump  (1.x.0)
+#    fix: <msg>        → patch bump  (1.0.x)
+#    perf: / refactor: → patch bump
+#    chore: / docs:    → no release
+#    BREAKING CHANGE:  → major bump  (x.0.0)
+#
+#  Note: The [skip ci] tag on the release commit prevents the
+#  deploy.yml (Cloud Run) from triggering on the version-bump commit.
+#  The actual code is already deployed by deploy.yml running on the
+#  original feature/fix commit.
+#
+#  Required GitHub Secrets — none extra (GITHUB_TOKEN is auto-provided)
+#  Required GitHub repo permission: Settings → Actions → Workflow permissions
+#    → "Read and write permissions"
+# ══════════════════════════════════════════════════════════════════
+
+name: Release Backend
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: release-backend
+  cancel-in-progress: false
+
+permissions:
+  contents: write        # push version commit + create GitHub Release
+  issues: write
+  pull-requests: write
+  id-token: write
+
+jobs:
+  release:
+    name: Semantic Release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # Skip the release commit itself
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+
+    steps:
+      # ── 1. Full history checkout ─────────────────────────────────
+      - name: Checkout (full history)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 2. Node.js ───────────────────────────────────────────────
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+
+      # ── 3. Install deps (includes semantic-release devDependencies) ─
+      - name: Install dependencies
+        run: npm ci
+
+      # ── 4. Run semantic-release ──────────────────────────────────
+      - name: Semantic Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: npx semantic-release
