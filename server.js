@@ -1607,7 +1607,12 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
   if (!VALID_BOOKING_STATUSES.includes(req.body.status))
     return res.status(400).json({ error: `Invalid status. Allowed: ${VALID_BOOKING_STATUSES.join(', ')}` });
 
-  const { data } = await supabase.from('bookings').update({ status: req.body.status }).eq('id', req.params.id).select().single();
+  // Keep assignment_status in sync with the operational status transitions
+  const assignmentStatusMap = { in_progress: 'in_progress', completed: 'completed', cancelled: 'cancelled' };
+  const updatePayload = { status: req.body.status };
+  if (assignmentStatusMap[req.body.status]) updatePayload.assignment_status = assignmentStatusMap[req.body.status];
+
+  const { data } = await supabase.from('bookings').update(updatePayload).eq('id', req.params.id).select().single();
   res.json({ success: true, booking: data });
 });
 
@@ -1669,7 +1674,7 @@ app.post('/api/bookings/:id/respond', auth, async (req, res) => {
       const { data: pet } = await supabase.from('pets').select('name').eq('id', bk.pet_id).single();
       petName = pet?.name || 'Pet';
     }
-    const nextPro = await findNextPro(bk?.city || '', bk?.service_type || '', excludeIds);
+    const nextPro = await findNextPro(bk?.city || '', bk?.service_type || '', excludeIds, bk?.address_lat, bk?.address_lng);
     if (nextPro) {
       await offerBookingToPro(req.params.id, nextPro, { ...bk, pet_name: petName });
       return res.json({ success: true, message: 'Passed to next available professional' });
@@ -1803,9 +1808,9 @@ app.post('/api/bookings/:id/on-my-way', auth, async (req, res) => {
 
     const { data: booking } = await supabase
       .from('bookings')
-      .select('id, professional_profile_id, assignment_status, customer_id, service_name, service_type, users!customer_id(name, phone, email, fcm_token)')
+      .select('id, professional_id, assignment_status, customer_id, service_name, service_type, users!customer_id(name, phone, email, fcm_token)')
       .eq('id', req.params.id)
-      .eq('professional_profile_id', proProfile.id)
+      .eq('professional_id', proProfile.id)
       .single();
 
     if (!booking) return res.status(403).json({ error: 'Booking not found or not yours' });
@@ -1853,9 +1858,9 @@ app.post('/api/bookings/:id/location', auth, async (req, res) => {
 
     const { data: booking } = await supabase
       .from('bookings')
-      .select('id, professional_profile_id, assignment_status, address_lat, address_lng, ten_min_notified, customer_id, service_type, users!customer_id(name, phone, fcm_token)')
+      .select('id, professional_id, assignment_status, address_lat, address_lng, ten_min_notified, customer_id, service_type, users!customer_id(name, phone, fcm_token)')
       .eq('id', bookingId)
-      .eq('professional_profile_id', proProfile.id)
+      .eq('professional_id', proProfile.id)
       .single();
 
     if (!booking) return res.status(403).json({ error: 'Booking not found or not yours' });
