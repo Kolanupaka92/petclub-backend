@@ -50,6 +50,8 @@ jobs:
     name: Build & Deploy
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Skip the semantic-release version-bump commit — code is already deployed
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
 
     steps:
       # ── 1. Checkout ──────────────────────────────────────────
