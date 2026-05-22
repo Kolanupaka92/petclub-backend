@@ -1,3 +1,10 @@
+# [1.1.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.0.2...v1.1.0) (2026-05-22)
+
+
+### Features
+
+* replace Firebase phone auth with backend Twilio SMS OTP ([4b2b02b](https://github.com/Kolanupaka92/petclub-backend/commit/4b2b02b03925cc80dd89748ba4a43ba86e258d4e))
+
 ## [1.0.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.0.1...v1.0.2) (2026-05-22)
 
 
