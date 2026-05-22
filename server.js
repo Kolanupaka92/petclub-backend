@@ -2510,6 +2510,178 @@ app.get('/api/health', (req, res) => res.json({
     mappls_geo:    process.env.MAPPLS_STATIC_KEY ? '✅ configured' : '⚠️ not set — using Nominatim fallback',
   },
 }));
+// ══════════════════════════════════════════════════════
+//  ADMIN: DB Audit — scan every table for stale/orphan rows
+// ══════════════════════════════════════════════════════
+app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
+  try {
+    const now = new Date();
+    const stale7d  = new Date(now - 7  * 86400e3).toISOString();
+    const stale30d = new Date(now - 30 * 86400e3).toISOString();
+
+    // 1. Counts per table
+    const [
+      { count: totalUsers },
+      { count: activeUsers },
+      { count: suspendedUsers },
+      { count: pendingRoleUsers },
+      { count: totalPros },
+      { count: pendingPros },
+      { count: totalCusts },
+      { count: totalPets },
+      { count: totalBookings },
+      { count: staleOtps },
+      { count: totalLeads },
+      { count: totalLogs },
+      { count: totalPaymentLogs },
+    ] = await Promise.all([
+      supabase.from('users').select('id', { count: 'exact', head: true }),
+      supabase.from('users').select('id', { count: 'exact', head: true }).eq('is_active', true),
+      supabase.from('users').select('id', { count: 'exact', head: true }).eq('is_active', false).neq('role', 'admin'),
+      supabase.from('users').select('id', { count: 'exact', head: true }).eq('role', 'pending_role'),
+      supabase.from('professional_profiles').select('id', { count: 'exact', head: true }),
+      supabase.from('professional_profiles').select('id', { count: 'exact', head: true }).eq('verification_status', 'pending'),
+      supabase.from('customer_profiles').select('id', { count: 'exact', head: true }),
+      supabase.from('pets').select('id', { count: 'exact', head: true }),
+      supabase.from('bookings').select('id', { count: 'exact', head: true }),
+      supabase.from('otp_tokens').select('id', { count: 'exact', head: true }).lt('expires_at', now.toISOString()),
+      supabase.from('website_leads').select('id', { count: 'exact', head: true }),
+      supabase.from('admin_logs').select('id', { count: 'exact', head: true }),
+      supabase.from('payment_logs').select('id', { count: 'exact', head: true }).catch(() => ({ count: 0 })),
+    ]);
+
+    // 2. Orphaned profiles (user_id missing from users)
+    const { data: allProfProfiles } = await supabase.from('professional_profiles').select('user_id');
+    const { data: allCustProfiles  } = await supabase.from('customer_profiles').select('user_id');
+    const { data: allPets          } = await supabase.from('pets').select('owner_id');
+    const { data: allUsers         } = await supabase.from('users').select('id');
+    const userIdSet = new Set((allUsers || []).map(u => u.id));
+    const orphanProfProfiles = (allProfProfiles || []).filter(p => !userIdSet.has(p.user_id)).length;
+    const orphanCustProfiles = (allCustProfiles || []).filter(p => !userIdSet.has(p.user_id)).length;
+    const orphanPets         = (allPets         || []).filter(p => !userIdSet.has(p.owner_id)).length;
+
+    // 3. Stale pending_role users (signed up but never completed profile, >7 days old)
+    const { data: stalePendingUsers } = await supabase
+      .from('users').select('id, phone, created_at')
+      .eq('role', 'pending_role').lt('created_at', stale7d);
+
+    // 4. Bookings in stale states
+    const { count: cancelledBookings } = await supabase
+      .from('bookings').select('id', { count: 'exact', head: true }).eq('status', 'cancelled');
+    const { count: testBookings } = await supabase
+      .from('bookings').select('id', { count: 'exact', head: true })
+      .eq('status', 'upcoming').lt('service_date', stale30d);
+
+    // 5. Website leads older than 30 days
+    const { count: staleLeads } = await supabase
+      .from('website_leads').select('id', { count: 'exact', head: true }).lt('created_at', stale30d);
+
+    res.json({
+      success: true,
+      audit: {
+        users:            { total: totalUsers, active: activeUsers, suspended: suspendedUsers, pending_role: pendingRoleUsers },
+        professionals:    { total: totalPros, pending_verification: pendingPros },
+        customers:        { total: totalCusts },
+        pets:             { total: totalPets },
+        bookings:         { total: totalBookings, cancelled: cancelledBookings, stale_upcoming: testBookings },
+        orphans:          { professional_profiles: orphanProfProfiles, customer_profiles: orphanCustProfiles, pets: orphanPets },
+        stale_pending_users: { count: stalePendingUsers?.length || 0, ids: stalePendingUsers?.map(u => u.id) || [] },
+        otp_tokens:       { expired: staleOtps },
+        website_leads:    { total: totalLeads, older_than_30d: staleLeads },
+        admin_logs:       { total: totalLogs },
+        payment_logs:     { total: totalPaymentLogs },
+      },
+    });
+  } catch (e) {
+    console.error('[DB Audit]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ══════════════════════════════════════════════════════
+//  ADMIN: DB Cleanup — remove confirmed stale/orphan rows
+//  Accepts { targets: [...] } — array of what to clean:
+//  "expired_otps", "orphan_profiles", "stale_pending_users",
+//  "cancelled_bookings", "stale_leads"
+// ══════════════════════════════════════════════════════
+app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
+  const { targets = [] } = req.body;
+  const report = {};
+  const now = new Date();
+  const stale7d  = new Date(now - 7  * 86400e3).toISOString();
+  const stale30d = new Date(now - 30 * 86400e3).toISOString();
+
+  try {
+    // Expired OTP tokens
+    if (targets.includes('expired_otps')) {
+      const { error, count } = await supabase.from('otp_tokens')
+        .delete({ count: 'exact' }).lt('expires_at', now.toISOString());
+      report.expired_otps = error ? `error: ${error.message}` : (count || 0);
+    }
+
+    // Orphaned professional_profiles (no matching user)
+    if (targets.includes('orphan_profiles')) {
+      const { data: allUsers } = await supabase.from('users').select('id');
+      const userIds = (allUsers || []).map(u => u.id);
+      const { data: profProfiles } = await supabase.from('professional_profiles').select('user_id');
+      const { data: custProfiles  } = await supabase.from('customer_profiles').select('user_id');
+      const { data: allPets       } = await supabase.from('pets').select('id, owner_id');
+      const userIdSet = new Set(userIds);
+
+      const orphanProfIds = (profProfiles || []).filter(p => !userIdSet.has(p.user_id)).map(p => p.user_id);
+      const orphanCustIds = (custProfiles  || []).filter(p => !userIdSet.has(p.user_id)).map(p => p.user_id);
+      const orphanPetIds  = (allPets       || []).filter(p => !userIdSet.has(p.owner_id)).map(p => p.id);
+
+      let deleted = 0;
+      if (orphanProfIds.length) { await supabase.from('professional_profiles').delete().in('user_id', orphanProfIds); deleted += orphanProfIds.length; }
+      if (orphanCustIds.length) { await supabase.from('customer_profiles').delete().in('user_id', orphanCustIds).catch(() => {}); deleted += orphanCustIds.length; }
+      if (orphanPetIds.length)  { await supabase.from('pets').delete().in('id', orphanPetIds).catch(() => {}); deleted += orphanPetIds.length; }
+      report.orphan_profiles = deleted;
+    }
+
+    // Stale pending_role users (never completed signup, >7 days)
+    if (targets.includes('stale_pending_users')) {
+      const { data: stale } = await supabase.from('users').select('id, phone')
+        .eq('role', 'pending_role').lt('created_at', stale7d);
+      if (stale?.length) {
+        const ids   = stale.map(u => u.id);
+        const phones = stale.map(u => u.phone);
+        await supabase.from('professional_profiles').delete().in('user_id', ids).catch(() => {});
+        await supabase.from('customer_profiles').delete().in('user_id', ids).catch(() => {});
+        await supabase.from('pets').delete().in('owner_id', ids).catch(() => {});
+        await supabase.from('otp_tokens').delete().in('phone', phones).catch(() => {});
+        await supabase.from('admin_logs').delete().in('target_id', ids).catch(() => {});
+        await supabase.from('users').delete().in('id', ids);
+      }
+      report.stale_pending_users = stale?.length || 0;
+    }
+
+    // Cancelled bookings
+    if (targets.includes('cancelled_bookings')) {
+      const { error, count } = await supabase.from('bookings')
+        .delete({ count: 'exact' }).eq('status', 'cancelled');
+      report.cancelled_bookings = error ? `error: ${error.message}` : (count || 0);
+    }
+
+    // Website leads older than 30 days
+    if (targets.includes('stale_leads')) {
+      const { error, count } = await supabase.from('website_leads')
+        .delete({ count: 'exact' }).lt('created_at', stale30d);
+      report.stale_leads = error ? `error: ${error.message}` : (count || 0);
+    }
+
+    await supabase.from('admin_logs').insert({
+      admin_id: req.user.id, action: 'db_cleanup', target_type: 'system',
+      notes: `Cleaned: ${JSON.stringify(report)}`,
+    }).catch(() => {});
+
+    res.json({ success: true, cleaned: report });
+  } catch (e) {
+    console.error('[DB Cleanup]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 app.use((err, req, res, next) => { console.error(err); res.status(500).json({ error: 'Server error' }); });
 
