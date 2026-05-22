@@ -924,7 +924,7 @@ app.post('/api/contact/send-link', async (req, res) => {
               <p style="color:#1e293b;font-size:14px;margin:0;line-height:1.7;white-space:pre-wrap;">${message || '(No details provided)'}</p>
             </div>
             <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:16px;margin-bottom:24px;text-align:center;">
-              <p style="color:#c2410c;font-size:14px;margin:0;font-weight:600">⏱ Response within 24 hours<br/>📧 Reach us anytime: <a href="mailto:support@mypetclub.app" style="color:#f97316;">support@mypetclub.app</a></p>
+              <p style="color:#c2410c;font-size:14px;margin:0;font-weight:600">⏱ Response within 24 hours<br/>📧 Reach us anytime: <a href="mailto:${SUPPORT_EMAIL}" style="color:#f97316;">${SUPPORT_EMAIL}</a></p>
             </div>
             <div style="text-align:center;">
               <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:14px 32px;border-radius:14px;text-decoration:none;font-weight:800;font-size:15px;">Explore PETclub App →</a>
