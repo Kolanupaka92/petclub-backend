@@ -785,7 +785,7 @@ app.post('/api/auth/send-phone-otp', otpLimit, async (req, res) => {
     if (err.code === 21211 || (err.message || '').includes('not a valid phone number'))
       return res.status(400).json({ error: 'Invalid phone number. Check the country code and digits.' });
     if (err.code === 21608 || (err.message || '').includes('unverified'))
-      return res.status(400).json({ error: 'This number is not verified in our trial account. Contact support.' });
+      return res.status(400).json({ error: 'SMS is not yet available for this number. Please use Email OTP to sign in.' });
     res.status(500).json({ error: 'Failed to send SMS. Try Email OTP instead.' });
   }
 });
