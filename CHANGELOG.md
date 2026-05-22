@@ -1,3 +1,10 @@
+## [1.0.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.0.1...v1.0.2) (2026-05-22)
+
+
+### Bug Fixes
+
+* complete E2E QA — tracking, dispatch, status sync ([0348d21](https://github.com/Kolanupaka92/petclub-backend/commit/0348d213349a1ddc089b9266dca71862d0c5199b))
+
 ## [1.0.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.0.0...v1.0.1) (2026-05-22)
 
 
