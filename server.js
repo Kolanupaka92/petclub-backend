@@ -2964,6 +2964,280 @@ async function seedAdminEmail() {
   }
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// 🧪  TEST SEED — /api/test/seed-active-provider
+//
+// DEV ONLY — blocked in production (ALLOW_DEV_TOOLS must be set to bypass).
+// Creates/upserts a mock Groomer, approves their profile, and forces an
+// "on_the_way" trip so TrackingMapMappls renders with real live-tracking data.
+//
+// POST /api/test/seed-active-provider
+//   body (optional): { bookingId: "<uuid>" }   — defaults to latest test-customer booking
+//   Returns: { ok, seed: { provider, booking, instructions } }
+//
+// DELETE /api/test/seed-active-provider       — teardown / clean up seed data
+// ═══════════════════════════════════════════════════════════════════════
+
+const SEED_PROVIDER_EMAIL = 'test-provider@mailinator.com';
+const SEED_PROVIDER_PHONE = '+919000009001';   // +91 → Mappls map engine
+const SEED_PROVIDER_NAME  = 'Sai Groomer (Test)';
+// Default test-customer ID — user created during E2E customer registration
+const SEED_CUSTOMER_ID    = 'b8a8947c-226f-4bc4-ab79-6deec8b11c03';
+
+app.post('/api/test/seed-active-provider', async (req, res) => {
+  if (IS_PROD) {
+    return res.status(403).json({
+      error: 'Seed endpoints are disabled in production. Set ALLOW_DEV_TOOLS=true in your local .env to use this.',
+    });
+  }
+
+  try {
+    // ── 1. Upsert mock provider user ──────────────────────────────────
+    let { data: providerUser } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', SEED_PROVIDER_EMAIL)
+      .maybeSingle();
+
+    if (!providerUser) {
+      const { data: newUser, error: userErr } = await supabase
+        .from('users')
+        .insert({
+          phone:     SEED_PROVIDER_PHONE,
+          name:      SEED_PROVIDER_NAME,
+          email:     SEED_PROVIDER_EMAIL,
+          role:      'provider',
+          is_active: true,
+        })
+        .select('id')
+        .single();
+      if (userErr) throw new Error('Failed to create provider user: ' + userErr.message);
+      providerUser = newUser;
+      console.log('[seed] Created provider user:', providerUser.id);
+    } else {
+      await supabase.from('users').update({
+        phone:     SEED_PROVIDER_PHONE,
+        name:      SEED_PROVIDER_NAME,
+        role:      'provider',
+        is_active: true,
+      }).eq('id', providerUser.id);
+      console.log('[seed] Updated existing provider user:', providerUser.id);
+    }
+
+    // ── 2. Upsert professional profile (approved groomer) ─────────────
+    // Home base: Koramangala Sector 6 — pin 560095
+    const PROFILE_LAT = 12.9279;
+    const PROFILE_LNG = 77.6100;
+
+    let { data: profile } = await supabase
+      .from('professional_profiles')
+      .select('id')
+      .eq('user_id', providerUser.id)
+      .maybeSingle();
+
+    if (!profile) {
+      const { data: newProf, error: profErr } = await supabase
+        .from('professional_profiles')
+        .insert({
+          user_id:             providerUser.id,
+          sub_role:            'groomer',
+          city:                'Bengaluru',
+          area:                'Koramangala',
+          services:            ['bath_brush', 'haircut', 'nail_trim'],
+          experience:          '5 years',
+          bio:                 'Test groomer seeded for E2E map tracking tests.',
+          service_areas:       'Koramangala, BTM Layout, HSR Layout',
+          verification_status: 'approved',
+          is_available:        true,
+          rating:              4.8,
+          total_reviews:       12,
+          address_lat:         PROFILE_LAT,
+          address_lng:         PROFILE_LNG,
+          address_postal_code: '560095',
+          address_city:        'Bengaluru',
+          address_state:       'Karnataka',
+        })
+        .select('id')
+        .single();
+      if (profErr) throw new Error('Failed to create professional profile: ' + profErr.message);
+      profile = newProf;
+      console.log('[seed] Created professional profile:', profile.id);
+    } else {
+      await supabase.from('professional_profiles').update({
+        sub_role:            'groomer',
+        verification_status: 'approved',
+        is_available:        true,
+        address_lat:         PROFILE_LAT,
+        address_lng:         PROFILE_LNG,
+        address_postal_code: '560095',
+        address_city:        'Bengaluru',
+        address_state:       'Karnataka',
+      }).eq('id', profile.id);
+      console.log('[seed] Updated existing professional profile:', profile.id);
+    }
+
+    // ── 3. Resolve target booking ─────────────────────────────────────
+    const { bookingId } = req.body || {};
+    let targetBooking;
+
+    if (bookingId) {
+      const { data: bk } = await supabase
+        .from('bookings')
+        .select('id, customer_id, address_lat, address_lng, service_type, service_name')
+        .eq('id', bookingId)
+        .maybeSingle();
+      targetBooking = bk;
+    }
+
+    if (!targetBooking) {
+      // Default: most-recent open booking for the E2E test customer
+      const { data: bk } = await supabase
+        .from('bookings')
+        .select('id, customer_id, address_lat, address_lng, service_type, service_name')
+        .eq('customer_id', SEED_CUSTOMER_ID)
+        .not('assignment_status', 'in', '("completed","cancelled")')
+        .order('created_at', { ascending: false })
+        .limit(1)
+        .maybeSingle();
+      targetBooking = bk;
+    }
+
+    if (!targetBooking) {
+      return res.status(404).json({
+        error: 'No eligible booking found. Create a booking via the customer flow first, or pass bookingId in the request body.',
+      });
+    }
+
+    // Pro start position: ~1.8 km west of customer pin (realistic en-route offset)
+    const custLat = targetBooking.address_lat ?? 12.9357;
+    const custLng = targetBooking.address_lng ?? 77.6241;
+    const proStartLat = +(custLat - 0.006).toFixed(6);   // ~660m south
+    const proStartLng = +(custLng - 0.014).toFixed(6);   // ~1.2km west  → combined ~1.6km
+
+    // ── 4. Force booking into "on_the_way" active state ──────────────
+    await supabase.from('bookings').update({
+      professional_id:         profile.id,
+      assignment_status:       'on_the_way',
+      status:                  'upcoming',
+      pro_lat:                 proStartLat,
+      pro_lng:                 proStartLng,
+      pro_location_updated_at: new Date().toISOString(),
+    }).eq('id', targetBooking.id);
+
+    // Insert/upsert a booking_assignments row so the state is fully consistent
+    // (status='confirmed' matches what a normal accept flow would have left)
+    await supabase.from('booking_assignments').upsert({
+      booking_id:        targetBooking.id,
+      professional_id:   profile.id,
+      status:            'confirmed',
+      offered_at:        new Date().toISOString(),
+      responded_at:      new Date().toISOString(),
+    }, { onConflict: 'booking_id, professional_id', ignoreDuplicates: false });
+
+    console.log(`[seed] Booking ${targetBooking.id} → on_the_way, pro @ (${proStartLat}, ${proStartLng})`);
+
+    // ── 5. Issue a 24-hour provider JWT ──────────────────────────────
+    const providerToken = jwt.sign(
+      { id: providerUser.id, role: 'provider', phone: SEED_PROVIDER_PHONE },
+      JWT_SECRET,
+      { expiresIn: '24h' },
+    );
+
+    // ── 6. Return seed manifest ───────────────────────────────────────
+    return res.json({
+      ok:   true,
+      seed: {
+        provider: {
+          id:           providerUser.id,
+          email:        SEED_PROVIDER_EMAIL,
+          phone:        SEED_PROVIDER_PHONE,
+          name:         SEED_PROVIDER_NAME,
+          role:         'provider',
+          profile_id:   profile.id,
+          sub_role:     'groomer',
+          verification: 'approved',
+          location: { lat: proStartLat, lng: proStartLng },
+          token:        providerToken,
+        },
+        booking: {
+          id:                targetBooking.id,
+          customer_id:       targetBooking.customer_id,
+          professional_id:   profile.id,
+          assignment_status: 'on_the_way',
+          service_name:      targetBooking.service_name,
+          customer_pin:      { lat: custLat, lng: custLng },
+          pro_start:         { lat: proStartLat, lng: proStartLng },
+        },
+        instructions: [
+          '─── How to run TrackingMapMappls E2E test ───',
+          '1. Open the customer app (app.mypetclub.app) and log in as petclub-cust2@mailinator.com',
+          '2. Go to My Bookings — the booking should show assignment_status = on_the_way',
+          '3. Tap the booking → the Mappls map opens with an animated pro marker ~1.6 km away',
+          '4. Simulate pro movement (call this repeatedly to animate the marker):',
+          `   curl -X PATCH https://api.mypetclub.app/api/bookings/${targetBooking.id}/location \\`,
+          `        -H "Authorization: Bearer <provider_token>" \\`,
+          `        -H "Content-Type: application/json" \\`,
+          `        -d '{"lat":${(proStartLat + 0.002).toFixed(6)},"lng":${(proStartLng + 0.003).toFixed(6)}}'`,
+          '5. When done: DELETE /api/test/seed-active-provider  (tears everything down)',
+          '',
+          'Pro JWT (valid 24h — use as Authorization: Bearer <token>):',
+          providerToken,
+        ],
+      },
+    });
+  } catch (err) {
+    console.error('[seed-active-provider] Error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ── Teardown: remove all seed data ────────────────────────────────────
+app.delete('/api/test/seed-active-provider', async (req, res) => {
+  if (IS_PROD) {
+    return res.status(403).json({ error: 'Seed endpoints are disabled in production.' });
+  }
+  try {
+    const { data: user } = await supabase
+      .from('users')
+      .select('id')
+      .eq('email', SEED_PROVIDER_EMAIL)
+      .maybeSingle();
+
+    if (!user) return res.json({ ok: true, message: 'Nothing to clean up — seed provider not found.' });
+
+    const { data: profile } = await supabase
+      .from('professional_profiles')
+      .select('id')
+      .eq('user_id', user.id)
+      .maybeSingle();
+
+    if (profile) {
+      // Reset bookings that were assigned to this seed pro
+      await supabase.from('bookings').update({
+        professional_id:         null,
+        assignment_status:       'no_pros_available',
+        pro_lat:                 null,
+        pro_lng:                 null,
+        pro_location_updated_at: null,
+      }).eq('professional_id', profile.id);
+
+      // Remove assignment rows
+      await supabase.from('booking_assignments').delete().eq('professional_id', profile.id);
+      // Remove professional profile
+      await supabase.from('professional_profiles').delete().eq('id', profile.id);
+    }
+
+    // Remove user
+    await supabase.from('users').delete().eq('id', user.id);
+
+    console.log('[seed] Teardown complete — seed provider removed.');
+    return res.json({ ok: true, message: 'Seed provider cleaned up successfully.' });
+  } catch (err) {
+    console.error('[seed-active-provider teardown] Error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 app.listen(PORT, async () => {
   console.log(`🐾 PETclub API → http://localhost:${PORT}`);
   // Run migrations in background — won't block startup
