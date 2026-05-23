@@ -1,3 +1,10 @@
+# [1.5.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.4.0...v1.5.0) (2026-05-23)
+
+
+### Features
+
+* add POST /api/test/seed-active-provider (dev-only map test seed) ([4e85831](https://github.com/Kolanupaka92/petclub-backend/commit/4e85831111845eca26a1baf6d4ba74b996829744))
+
 # [1.4.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.3.0...v1.4.0) (2026-05-23)
 
 
