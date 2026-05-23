@@ -1,3 +1,10 @@
+# [1.2.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.1.1...v1.2.0) (2026-05-23)
+
+
+### Features
+
+* **email:** centralized email service + 5 branded HTML templates ([07874e8](https://github.com/Kolanupaka92/petclub-backend/commit/07874e8a467f1598d285d049fff41822d65fd99e)), closes [#f97316](https://github.com/Kolanupaka92/petclub-backend/issues/f97316)
+
 ## [1.1.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.1.0...v1.1.1) (2026-05-22)
 
 
