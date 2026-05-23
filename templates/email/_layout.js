@@ -62,13 +62,11 @@ ${preheader ? `<!-- Hidden preheader — shown in inbox preview before the email
             <table role="presentation" cellpadding="0" cellspacing="0" border="0">
               <tr>
                 <td align="center">
-                  <!--
-                    Logo image — uncomment and set src to your CDN-hosted white logo.
-                    <img src="https://cdn.mypetclub.app/email/logo-white.png"
-                         alt="PETclub" width="130" height="auto"
-                         style="display:block;border:0;max-width:130px;outline:none;-ms-interpolation-mode:bicubic;">
-                  -->
-                  <div style="font-size:40px;line-height:1;margin-bottom:10px;mso-line-height-rule:exactly;">🐾</div>
+                  <!-- Paw-print icon — hosted on Vercel CDN, 2× for retina -->
+                  <img src="https://app.mypetclub.app/email-logo.png"
+                       alt="PETclub"
+                       width="52" height="52"
+                       style="display:block;border:0;border-radius:12px;outline:none;-ms-interpolation-mode:bicubic;margin:0 auto 12px;">
                   <h1 style="margin:0 0 6px;color:#ffffff;font-size:30px;font-weight:800;letter-spacing:-0.5px;line-height:1.1;mso-line-height-rule:exactly;">PETclub</h1>
                   <p style="margin:0;color:rgba(255,255,255,0.82);font-size:13px;font-weight:400;letter-spacing:0.4px;line-height:1;">For pets, with love</p>
                 </td>
