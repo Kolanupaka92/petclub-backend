@@ -10,7 +10,8 @@ const cors    = require('cors');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
-const emailService = require('./services/emailService');
+const emailService   = require('./services/emailService');
+const pricingCatalog = require('./services/pricingCatalog');
 
 // ── Startup secret guard — refuse to boot without critical secrets ─────────
 const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
@@ -1219,6 +1220,28 @@ app.post('/api/pets/:petId/records/:type', auth, async (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════
+//  SERVICE CATALOG — public pricing for customers
+// ══════════════════════════════════════════════════════
+// Returns the full service catalog with tiered prices.
+// Accessible to authenticated customers only (never to SPs).
+app.get('/api/services/catalog', auth, (req, res) => {
+  if (req.user.role === 'professional') {
+    return res.status(403).json({ error: 'Service pricing is not available to providers.' });
+  }
+  const {
+    PLATFORM_DISCOUNT, GROOMING_PACKAGES, GROOMING_ADDONS,
+    PET_SIZES, TRAINING_PACKAGES, VET_SERVICES,
+  } = pricingCatalog;
+  res.json({
+    success: true,
+    platform_discount: PLATFORM_DISCOUNT,
+    grooming: { packages: GROOMING_PACKAGES, addons: GROOMING_ADDONS, pet_sizes: PET_SIZES },
+    training: { packages: TRAINING_PACKAGES },
+    vet:      { services: VET_SERVICES, note: 'Pricing quoted on-site after initial assessment.' },
+  });
+});
+
+// ══════════════════════════════════════════════════════
 //  PROFESSIONAL ROUTES
 // ══════════════════════════════════════════════════════
 app.get('/api/professionals', async (req, res) => {
@@ -1595,7 +1618,8 @@ app.get('/api/bookings', auth, async (req, res) => {
 app.post('/api/bookings', auth, async (req, res) => {
   try {
     processTimedOutAssignments().catch(console.error); // background cleanup
-    const { service_type, city, pet_id, service_name, scheduled_at, address, notes, amount } = req.body;
+    const { service_type, city, pet_id, service_name, scheduled_at, address, notes } = req.body;
+    const { pet_size, addons } = req.body;
     const addressLat = typeof req.body.lat === 'number' ? req.body.lat : null;
     const addressLng = typeof req.body.lng === 'number' ? req.body.lng : null;
 
@@ -1608,9 +1632,18 @@ app.post('/api/bookings', auth, async (req, res) => {
         error: 'Please select your address from the dropdown suggestions to verify it. This ensures we dispatch the nearest professional to you.',
       });
     }
+
+    // ── Pricing — server-side calculation (tamper-proof) ──────────────────────
+    // Always recalculate from the catalog; never trust client-supplied amount.
+    const pricingResult = pricingCatalog.calculateAmount({
+      serviceType: service_type, serviceName: service_name,
+      petSize: pet_size, addons: Array.isArray(addons) ? addons : [],
+    });
+    const resolvedAmount = pricingResult ? pricingResult.total : null;
+
     // Derive currency from phone prefix — same logic as frontend
     const customerCurrency = req.user.phone?.startsWith('+91') ? 'INR' : 'USD';
-    const split = computeSplit(amount, customerCurrency);
+    const split = computeSplit(resolvedAmount, customerCurrency);
 
     const { data: booking } = await supabase.from('bookings').insert({
       customer_id: req.user.id, status: 'upcoming',
@@ -1618,7 +1651,7 @@ app.post('/api/bookings', auth, async (req, res) => {
       service_type: service_type || null, service_name: service_name || null,
       pet_id: pet_id || null, scheduled_at: scheduled_at || null,
       city: city || null, address: address || null, notes: notes || null,
-      amount: amount || null,
+      amount: resolvedAmount,
       // Revenue split columns (null when no amount provided)
       total_amount:      split?.total_amount      ?? null,
       platform_fee:      split?.platform_fee      ?? null,
