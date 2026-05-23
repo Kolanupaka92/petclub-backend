@@ -1,3 +1,11 @@
+## [1.6.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.6.1...v1.6.2) (2026-05-23)
+
+
+### Bug Fixes
+
+* **admin:** cascade FK deletes in purge-all-suspended + single-user delete ([0947e55](https://github.com/Kolanupaka92/petclub-backend/commit/0947e558f14e3cff20507d948575efd03ef2c33c))
+* **admin:** remove .catch() from Supabase query chains (not supported in v2) ([8043462](https://github.com/Kolanupaka92/petclub-backend/commit/8043462cfeae4b2040fe3018fc269620ba42166c))
+
 ## [1.6.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.6.0...v1.6.1) (2026-05-23)
 
 
