@@ -1,3 +1,10 @@
+# [1.3.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.2.0...v1.3.0) (2026-05-23)
+
+
+### Features
+
+* **email:** replace emoji fallback with hosted paw-print logo ([25e3e60](https://github.com/Kolanupaka92/petclub-backend/commit/25e3e604e344cdb4656dab542e378604e880fcd4))
+
 # [1.2.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.1.1...v1.2.0) (2026-05-23)
 
 
