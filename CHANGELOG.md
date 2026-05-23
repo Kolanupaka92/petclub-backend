@@ -1,3 +1,10 @@
+# [1.8.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.7.0...v1.8.0) (2026-05-23)
+
+
+### Features
+
+* **admin:** real service health pings in /api/admin/health ([15867f2](https://github.com/Kolanupaka92/petclub-backend/commit/15867f2e49ba594a647498c6263b36bfee01a332))
+
 # [1.7.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.6.3...v1.7.0) (2026-05-23)
 
 
