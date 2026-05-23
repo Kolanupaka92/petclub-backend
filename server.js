@@ -2900,6 +2900,10 @@ app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
     const { count: testBookings } = await supabase
       .from('bookings').select('id', { count: 'exact', head: true })
       .eq('status', 'upcoming').lt('service_date', stale30d);
+    const { count: noProBookings } = await supabase
+      .from('bookings').select('id', { count: 'exact', head: true })
+      .eq('assignment_status', 'no_pros_available').eq('status', 'upcoming')
+      .lt('created_at', stale7d);
 
     // 5. Website leads older than 30 days
     const { count: staleLeads } = await supabase
@@ -2912,7 +2916,7 @@ app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
         professionals:    { total: totalPros, pending_verification: pendingPros },
         customers:        { total: totalCusts },
         pets:             { total: totalPets },
-        bookings:         { total: totalBookings, cancelled: cancelledBookings, stale_upcoming: testBookings },
+        bookings:         { total: totalBookings, cancelled: cancelledBookings, stale_upcoming: testBookings, no_pros_available: noProBookings },
         orphans:          { professional_profiles: orphanProfProfiles, customer_profiles: orphanCustProfiles, pets: orphanPets },
         stale_pending_users: { count: stalePendingUsers?.length || 0, ids: stalePendingUsers?.map(u => u.id) || [] },
         otp_tokens:       { expired: staleOtps },
@@ -2990,6 +2994,16 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
       const { error, count } = await supabase.from('bookings')
         .delete({ count: 'exact' }).eq('status', 'cancelled');
       report.cancelled_bookings = error ? `error: ${error.message}` : (count || 0);
+    }
+
+    // Stale no_pros_available bookings (status=upcoming but no pro found — older than 7 days)
+    if (targets.includes('no_pros_available')) {
+      const { error, count } = await supabase.from('bookings')
+        .delete({ count: 'exact' })
+        .eq('assignment_status', 'no_pros_available')
+        .eq('status', 'upcoming')
+        .lt('created_at', stale7d);
+      report.no_pros_available = error ? `error: ${error.message}` : (count || 0);
     }
 
     // Website leads older than 30 days
