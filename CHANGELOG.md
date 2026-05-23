@@ -1,3 +1,10 @@
+## [1.8.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.8.1...v1.8.2) (2026-05-23)
+
+
+### Bug Fixes
+
+* remove !user_id hint from nested professional_profiles->users join ([cb6c605](https://github.com/Kolanupaka92/petclub-backend/commit/cb6c605347debacef9e9b9c8645a01c9fc4999c7))
+
 ## [1.8.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.8.0...v1.8.1) (2026-05-23)
 
 
