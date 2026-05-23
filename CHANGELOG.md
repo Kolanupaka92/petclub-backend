@@ -1,3 +1,10 @@
+## [1.9.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.9.0...v1.9.1) (2026-05-23)
+
+
+### Bug Fixes
+
+* **admin:** use correct column scheduled_at in db-audit stale_upcoming query ([ab93e52](https://github.com/Kolanupaka92/petclub-backend/commit/ab93e52d3a11e9fdf24c4e8d0df4a7742e36ac06))
+
 # [1.9.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.8.3...v1.9.0) (2026-05-23)
 
 
