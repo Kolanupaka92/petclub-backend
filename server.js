@@ -1754,9 +1754,23 @@ app.get('/api/bookings', auth, async (req, res) => {
   res.json({ success: true, bookings });
 });
 
+// Current Terms & Privacy Policy version — bump this string whenever T&C are updated.
+// All bookings store which version the user agreed to at the time they booked.
+const TERMS_VERSION = 'v1';
+
 app.post('/api/bookings', auth, async (req, res) => {
   try {
     processTimedOutAssignments().catch(console.error); // background cleanup
+
+    // ── Clickwrap consent guard ────────────────────────────────────────────────
+    // The client MUST send terms_accepted: true.  This is validated server-side
+    // so browser "Inspect Element" tricks that bypass the checkbox are rejected.
+    if (!req.body.terms_accepted) {
+      return res.status(400).json({
+        error: 'You must accept the Terms of Service and Privacy Policy to book.',
+      });
+    }
+
     const { service_type, city, pet_id, service_name, scheduled_at, address, notes } = req.body;
     const { pet_size, addons } = req.body;
     const addressLat = typeof req.body.lat === 'number' ? req.body.lat : null;
@@ -1815,6 +1829,9 @@ app.post('/api/bookings', auth, async (req, res) => {
       gateway_fee:       split?.gateway_fee       ?? null,
       currency:          customerCurrency,
       payout_status:     'pending',
+      // Clickwrap consent audit trail — server-side timestamp, not client-supplied
+      terms_version:     TERMS_VERSION,
+      terms_accepted_at: new Date().toISOString(),
     }).select().single();
     // Store GPS coords separately (graceful: requires GPS migration to have run)
     if (booking && addressLat && addressLng) {
