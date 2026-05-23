@@ -101,79 +101,87 @@ async function awardPoints(supabase, userId, points, type, description, bookingI
 
 /**
  * Redeem 1,000 credits for a free service coupon.
- * Fails if user has fewer than REDEMPTION_THRESHOLD credits.
+ *
+ * Uses an atomic Postgres RPC function (redeem_loyalty_credits) that wraps
+ * the entire operation in a single DB transaction with a row-level lock:
+ *   BEGIN → lock user row → check balance → check existing coupons
+ *         → deduct 1000 → insert coupon → log transaction → COMMIT
+ * Any failure causes a full rollback — no partial state, no double-spend.
+ *
+ * Prerequisite: run supabase-loyalty-hardening.sql to create the function.
  *
  * @param {object} supabase
  * @param {string} userId
  * @returns {Promise<{ success: boolean, couponCode?: string, expiresAt?: string, error?: string }>}
  */
 async function redeemCredits(supabase, userId) {
-  // Get current balance
-  const { data: user, error: fetchErr } = await supabase
-    .from('users').select('loyalty_points').eq('id', userId).single();
-  if (fetchErr) return { success: false, error: 'Could not fetch loyalty balance' };
-
-  const balance = user.loyalty_points || 0;
-  if (balance < REDEMPTION_THRESHOLD) {
-    return { success: false, error: `Insufficient credits. You have ${balance} — need ${REDEMPTION_THRESHOLD}.` };
-  }
-
-  // Check for existing unused coupons (don't stack)
-  const { data: existingCoupons } = await supabase
-    .from('loyalty_coupons')
-    .select('code, expires_at')
-    .eq('user_id', userId)
-    .eq('is_used', false)
-    .gt('expires_at', new Date().toISOString());
-  if (existingCoupons?.length > 0) {
-    return {
-      success: false,
-      error:   `You already have an active coupon: ${existingCoupons[0].code}. Use it before redeeming again.`,
-      existingCode: existingCoupons[0].code,
-    };
-  }
-
-  // Generate coupon
   const code      = generateCouponCode();
   const expiresAt = new Date(Date.now() + COUPON_VALIDITY_DAYS * 86400_000).toISOString();
 
-  const { error: couponErr } = await supabase.from('loyalty_coupons').insert({
-    code,
-    user_id:      userId,
-    service_name: REDEMPTION_SERVICE,
-    discount_pct: 100,
-    expires_at:   expiresAt,
-  });
-  if (couponErr) return { success: false, error: 'Could not generate coupon' };
-
-  // Deduct credits
-  const newBalance = balance - REDEMPTION_THRESHOLD;
-  const { error: updateErr } = await supabase
-    .from('users').update({ loyalty_points: newBalance }).eq('id', userId);
-  if (updateErr) return { success: false, error: 'Credit deduction failed' };
-
-  // Log redemption transaction
-  await supabase.from('loyalty_transactions').insert({
-    user_id:     userId,
-    points:      -REDEMPTION_THRESHOLD,
-    type:        'redemption',
-    description: `Redeemed for free ${REDEMPTION_SERVICE}`,
-    coupon_code: code,
+  // Invoke the atomic Postgres function — all-or-nothing transaction
+  const { data, error } = await supabase.rpc('redeem_loyalty_credits', {
+    p_user_id:    userId,
+    p_coupon_code: code,
+    p_service:    REDEMPTION_SERVICE,
+    p_expires_at: expiresAt,
   });
 
-  console.log(`[Loyalty] Redeemed ${REDEMPTION_THRESHOLD} pts → user ${userId} | coupon: ${code} | new balance: ${newBalance}`);
-  return { success: true, couponCode: code, expiresAt, newBalance, serviceName: REDEMPTION_SERVICE };
+  if (error) {
+    console.error('[Loyalty] redeemCredits RPC error:', error.message);
+    return { success: false, error: 'Redemption failed. Please try again.' };
+  }
+
+  // RPC returns a JSON object
+  const result = typeof data === 'string' ? JSON.parse(data) : data;
+  if (!result?.success) {
+    return {
+      success:      false,
+      error:        result?.error || 'Redemption failed',
+      existingCode: result?.existing_code,
+    };
+  }
+
+  console.log(`[Loyalty] Redeemed ${REDEMPTION_THRESHOLD} pts → user ${userId} | coupon: ${code} | new balance: ${result.new_balance}`);
+  return {
+    success:     true,
+    couponCode:  code,
+    expiresAt,
+    newBalance:  result.new_balance,
+    serviceName: REDEMPTION_SERVICE,
+  };
+}
+
+/**
+ * Check whether a review_bonus has already been awarded for a given booking.
+ * Used to enforce Fix 2: one review bonus per booking, at DB level backed
+ * by the loyalty_txn_review_bonus_once unique index.
+ *
+ * @param {object} supabase
+ * @param {string} userId
+ * @param {string} bookingId
+ * @returns {Promise<boolean>}
+ */
+async function hasEarnedReviewBonus(supabase, userId, bookingId) {
+  const { data } = await supabase
+    .from('loyalty_transactions')
+    .select('id')
+    .eq('user_id', userId)
+    .eq('booking_id', bookingId)
+    .eq('type', 'review_bonus')
+    .limit(1);
+  return (data?.length ?? 0) > 0;
 }
 
 /**
  * Get a user's loyalty summary: balance, progress, transactions, active coupons.
+ * Also returns pending_points — credits locked in unconfirmed payments (post-Razorpay).
  *
  * @param {object} supabase
  * @param {string} userId
  * @returns {Promise<object>}
  */
 async function getLoyaltySummary(supabase, userId) {
-  const [userRes, txnRes, couponRes] = await Promise.all([
+  const [userRes, txnRes, couponRes, pendingRes] = await Promise.all([
     supabase.from('users').select('loyalty_points, referral_code').eq('id', userId).single(),
     supabase.from('loyalty_transactions')
       .select('id, points, type, description, booking_id, coupon_code, created_at')
@@ -185,13 +193,27 @@ async function getLoyaltySummary(supabase, userId) {
       .eq('user_id', userId)
       .order('created_at', { ascending: false })
       .limit(5),
+    // Fix 5: pending points — bookings paid but webhook not yet confirmed
+    // payment_status 'pending' means Razorpay captured but webhook hasn't fired yet
+    supabase.from('bookings')
+      .select('amount')
+      .eq('customer_id', userId)
+      .eq('status', 'upcoming')
+      .eq('payment_status', 'pending')
+      .not('amount', 'is', null),
   ]);
 
   const balance      = userRes.data?.loyalty_points || 0;
   const referralCode = userRes.data?.referral_code  || null;
 
+  // Calculate pending credits from unconfirmed payments
+  const pendingPoints = (pendingRes.data || []).reduce((sum, b) => {
+    return sum + Math.floor((b.amount || 0) * CREDITS_PER_RUPEE);
+  }, 0);
+
   return {
     balance,
+    pending_points: pendingPoints,           // Fix 5: shown in UI as locked
     threshold:      REDEMPTION_THRESHOLD,
     progress_pct:   Math.min(100, Math.round((balance / REDEMPTION_THRESHOLD) * 100)),
     credits_needed: Math.max(0, REDEMPTION_THRESHOLD - balance),
@@ -243,6 +265,7 @@ module.exports = {
   REDEMPTION_SERVICE,
   creditsFromAmount,
   awardPoints,
+  hasEarnedReviewBonus,
   redeemCredits,
   getLoyaltySummary,
   validateCoupon,

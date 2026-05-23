@@ -1689,13 +1689,27 @@ app.post('/api/bookings', auth, async (req, res) => {
       });
     }
 
+    // ── Loyalty coupon validation (Fix 3 + Fix 4) ─────────────────────────────
+    // If customer applies a coupon code, validate it server-side.
+    // Fix 4: expiry checked via WHERE expires_at > NOW() inside validateCoupon.
+    const couponCode = req.body.coupon_code?.trim()?.toUpperCase() || null;
+    let isLoyaltyRedemption = false;
+    if (couponCode) {
+      const couponCheck = await loyalty.validateCoupon(supabase, couponCode, req.user.id);
+      if (!couponCheck.valid) {
+        return res.status(400).json({ error: couponCheck.error });
+      }
+      isLoyaltyRedemption = true;
+    }
+
     // ── Pricing — server-side calculation (tamper-proof) ──────────────────────
     // Always recalculate from the catalog; never trust client-supplied amount.
+    // When a valid loyalty coupon is applied → final amount = 0 (free service).
     const pricingResult = pricingCatalog.calculateAmount({
       serviceType: service_type, serviceName: service_name,
       petSize: pet_size, addons: Array.isArray(addons) ? addons : [],
     });
-    const resolvedAmount = pricingResult ? pricingResult.total : null;
+    const resolvedAmount = isLoyaltyRedemption ? 0 : (pricingResult ? pricingResult.total : null);
 
     // Derive currency from phone prefix — same logic as frontend
     const customerCurrency = req.user.phone?.startsWith('+91') ? 'INR' : 'USD';
@@ -1708,7 +1722,10 @@ app.post('/api/bookings', auth, async (req, res) => {
       pet_id: pet_id || null, scheduled_at: scheduled_at || null,
       city: city || null, address: address || null, notes: notes || null,
       amount: resolvedAmount,
-      // Revenue split columns (null when no amount provided)
+      // Fix 3: accounting flags — let admin know this was a loyalty-redeemed job
+      is_loyalty_redemption: isLoyaltyRedemption,
+      coupon_code_used:      couponCode,
+      // Revenue split columns (null when no amount provided or loyalty free)
       total_amount:      split?.total_amount      ?? null,
       platform_fee:      split?.platform_fee      ?? null,
       provider_earnings: split?.provider_earnings ?? null,
@@ -1725,6 +1742,11 @@ app.post('/api/bookings', auth, async (req, res) => {
     }
     if (!booking) return res.status(500).json({ error: 'Failed to create booking' });
 
+    // Fix 3+4: Mark coupon as used now that booking exists
+    if (couponCode && isLoyaltyRedemption) {
+      loyalty.markCouponUsed(supabase, couponCode, booking.id)
+        .catch(e => console.error('[Loyalty] markCouponUsed failed:', e.message));
+    }
 
     // Auto-assign round-robin (GPS radius if available, city fallback)
     if (service_type && ['Groomer', 'Trainer', 'Vet'].includes(service_type)) {
@@ -2147,13 +2169,21 @@ app.post('/api/bookings/:id/rate', auth, async (req, res) => {
         await supabase.from('professional_profiles').update({ rating: parseFloat(avg), total_reviews: allRatings.length }).eq('user_id', profUserId);
       }
     }
-    // Award +50 loyalty credits for leaving a review (fire-and-forget)
-    loyalty.awardPoints(
-      supabase, req.user.id,
-      loyalty.REVIEW_BONUS, 'review_bonus',
-      `Review bonus for booking ${req.params.id}`,
-      req.params.id,
-    ).catch(e => console.error('[Loyalty] review bonus award failed:', e.message));
+    // Award +50 loyalty credits for leaving a review.
+    // Fix 2 — dedup guard: check that no review_bonus has been awarded for this
+    // booking_id before awarding. The DB unique index (loyalty_txn_review_bonus_once)
+    // also enforces this at the database level as a hard constraint.
+    loyalty.hasEarnedReviewBonus(supabase, req.user.id, req.params.id).then(alreadyEarned => {
+      if (!alreadyEarned) {
+        return loyalty.awardPoints(
+          supabase, req.user.id,
+          loyalty.REVIEW_BONUS, 'review_bonus',
+          `Review bonus for booking ${req.params.id}`,
+          req.params.id,
+        );
+      }
+      console.log(`[Loyalty] Review bonus skipped — already awarded for booking ${req.params.id}`);
+    }).catch(e => console.error('[Loyalty] review bonus award failed:', e.message));
 
     res.json({ success: true, message: 'Thank you for your feedback! 🌟', loyalty_bonus: loyalty.REVIEW_BONUS });
   } catch (err) {
