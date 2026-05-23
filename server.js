@@ -1574,14 +1574,19 @@ app.get('/api/professionals/earnings', auth, async (req, res) => {
 app.get('/api/bookings', auth, async (req, res) => {
   let q;
   if (req.user.role === 'customer')
-    q = supabase.from('bookings').select('*, pets(name,species,health_notes), professional_profiles(sub_role, users(name,phone))').eq('customer_id', req.user.id);
+    // Use explicit FK hints to avoid PostgREST relationship ambiguity
+    q = supabase.from('bookings').select('*, pets!pet_id(name,species,health_notes), professional_profiles!professional_id(sub_role, users!user_id(name,phone))').eq('customer_id', req.user.id);
   else if (req.user.role === 'professional') {
     const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
-    q = supabase.from('bookings').select('*, pets(name,species,breed,health_notes), users!customer_id(name,phone)').eq('professional_id', prof?.id);
+    q = supabase.from('bookings').select('*, pets!pet_id(name,species,breed,health_notes), users!customer_id(name,phone)').eq('professional_id', prof?.id);
   } else
     // Admin: include customer + professional name/phone for live tracking panel
-    q = supabase.from('bookings').select('*, pets(name,species), users!customer_id(name,phone)');
-  const { data } = await q.order('scheduled_at', { ascending: false });
+    q = supabase.from('bookings').select('*, pets!pet_id(name,species), users!customer_id(name,phone)');
+  const { data, error } = await q.order('scheduled_at', { ascending: false });
+  if (error) {
+    console.error('[GET /bookings] Supabase query error:', error.message, error.details || '');
+    return res.status(500).json({ error: 'Failed to load bookings. Please try again.' });
+  }
   // Field-level security: strip financial fields by role before sending
   const bookings = (data || []).map(b => stripFinancials(b, req.user.role));
   res.json({ success: true, bookings });
