@@ -177,6 +177,21 @@ const sendAccountSuspendedEmail = (to, { name, reason } = {}) =>
 const sendRawEmail = (to, subject, html, attachments = []) =>
   _send(to, subject, html, { replyTo: REPLY_TO_ADMIN, attachments });
 
+/**
+ * pingSmtp — lightweight connectivity check used by /api/admin/health.
+ * Resolves true if the SMTP server is reachable and credentials are accepted.
+ * Resolves false if SMTP is not configured or the connection fails.
+ */
+async function pingSmtp() {
+  if (!SMTP_READY) return false;
+  try {
+    await transporter.verify();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 module.exports = {
   sendOtpEmail,
   sendWelcomeEmail,
@@ -184,4 +199,5 @@ module.exports = {
   sendProviderVerificationEmail,
   sendAccountSuspendedEmail,
   sendRawEmail,
+  pingSmtp,
 };

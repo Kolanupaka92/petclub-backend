@@ -2770,7 +2770,45 @@ app.get('/api/health', (req, res) => {
 //  ADMIN: Full platform health — powers the Platform Status widget
 //  Uses JWT admin auth so no secret header is needed in the browser.
 // ══════════════════════════════════════════════════════
-app.get('/api/admin/health', auth, adminOnly, (req, res) => {
+app.get('/api/admin/health', auth, adminOnly, async (req, res) => {
+  // Run all service pings in parallel — 5 s timeout each so the endpoint
+  // never hangs longer than ~5 s even if one provider is completely down.
+  const ping = (promise, timeoutMs = 5000) =>
+    Promise.race([
+      promise,
+      new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), timeoutMs)),
+    ]);
+
+  const [supOk, fbOk, smtpOk, twilioOk, razOk] = await Promise.all([
+    // Supabase — lightweight SELECT 1
+    ping(supabase.from('users').select('id', { count: 'exact', head: true }))
+      .then(({ error }) => !error)
+      .catch(() => false),
+
+    // Firebase Admin SDK — list 1 user (minimal scoped call)
+    firebaseAdmin
+      ? ping(firebaseAdmin.auth().listUsers(1)).then(() => true).catch(() => false)
+      : Promise.resolve(null), // null = not configured
+
+    // Zoho SMTP — nodemailer verify (tests TCP + auth handshake)
+    ping(emailService.pingSmtp()).catch(() => false),
+
+    // Twilio — fetch own account (1 API call)
+    _twilioClient
+      ? ping(_twilioClient.api.accounts(_twilioSid).fetch()).then(() => true).catch(() => false)
+      : Promise.resolve(null), // null = not configured
+
+    // Razorpay — fetch order list with count:1
+    razorpay
+      ? ping(razorpay.orders.all({ count: 1 })).then(() => true).catch(() => false)
+      : Promise.resolve(null), // null = not configured (awaiting LLC)
+  ]);
+
+  const svc = (ok, label, pendingMsg) => {
+    if (ok === null) return pendingMsg || '⏳ pending';
+    return ok ? `✅` : `⚠️ ${label} unreachable`;
+  };
+
   res.json({
     status:  '🐾 PETclub API running',
     version: API_VERSION,
@@ -2781,12 +2819,12 @@ app.get('/api/admin/health', auth, adminOnly, (req, res) => {
       website_url: WEBSITE_URL,
     },
     services: {
-      supabase:      '✅',
-      twilio_sms:    _twilioReady ? '✅ configured' : '⚠️ not configured (email fallback active)',
-      zoho_smtp:     process.env.ZOHO_SMTP_USER ? '✅' : '⚠️ not configured',
-      firebase_auth: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
-      razorpay:      razorpay ? '✅ live' : '⏳ pending (set env vars)',
-      fcm:           firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
+      supabase:      svc(supOk,    'Supabase'),
+      twilio_sms:    svc(twilioOk, 'Twilio',   '⚠️ not configured (email fallback active)'),
+      zoho_smtp:     svc(smtpOk,   'Zoho SMTP','⚠️ not configured'),
+      firebase_auth: svc(fbOk,     'Firebase', '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)'),
+      razorpay:      svc(razOk,    'Razorpay', '⏳ pending (set RAZORPAY env vars)'),
+      fcm:           svc(fbOk,     'Firebase', '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)'),
       mappls_geo:    process.env.MAPPLS_STATIC_KEY ? '✅ configured' : '⚠️ not set — using Nominatim fallback',
     },
   });
