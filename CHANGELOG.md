@@ -1,3 +1,10 @@
+## [1.11.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.11.0...v1.11.1) (2026-05-23)
+
+
+### Bug Fixes
+
+* **loyalty:** harden loyalty system — 5 bulletproof fixes ([181da4e](https://github.com/Kolanupaka92/petclub-backend/commit/181da4eb6256611a581de20634392c6cb445b4ef))
+
 # [1.11.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.10.0...v1.11.0) (2026-05-23)
 
 
