@@ -1,3 +1,10 @@
+# [1.7.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.6.3...v1.7.0) (2026-05-23)
+
+
+### Features
+
+* **admin:** add /api/admin/health endpoint for Platform Status widget ([53f571b](https://github.com/Kolanupaka92/petclub-backend/commit/53f571b8fe4ff3e72182907f10b9a37be0116b4c))
+
 ## [1.6.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.6.2...v1.6.3) (2026-05-23)
 
 
