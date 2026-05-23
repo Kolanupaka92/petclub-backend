@@ -1,3 +1,10 @@
+# [1.10.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.9.1...v1.10.0) (2026-05-23)
+
+
+### Features
+
+* **pricing:** add centralized pricing catalog and server-side amount calculation ([6cf50c6](https://github.com/Kolanupaka92/petclub-backend/commit/6cf50c6df6acdb0953f265d7e8baa320fbc11134))
+
 ## [1.9.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.9.0...v1.9.1) (2026-05-23)
 
 
