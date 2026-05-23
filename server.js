@@ -2767,6 +2767,32 @@ app.get('/api/health', (req, res) => {
   });
 });
 // ══════════════════════════════════════════════════════
+//  ADMIN: Full platform health — powers the Platform Status widget
+//  Uses JWT admin auth so no secret header is needed in the browser.
+// ══════════════════════════════════════════════════════
+app.get('/api/admin/health', auth, adminOnly, (req, res) => {
+  res.json({
+    status:  '🐾 PETclub API running',
+    version: API_VERSION,
+    time:    new Date(),
+    config: {
+      booking_response_timeout_mins: RESPONSE_TIMEOUT_MINS,
+      web_app_url: WEB_APP_URL,
+      website_url: WEBSITE_URL,
+    },
+    services: {
+      supabase:      '✅',
+      twilio_sms:    _twilioReady ? '✅ configured' : '⚠️ not configured (email fallback active)',
+      zoho_smtp:     process.env.ZOHO_SMTP_USER ? '✅' : '⚠️ not configured',
+      firebase_auth: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
+      razorpay:      razorpay ? '✅ live' : '⏳ pending (set env vars)',
+      fcm:           firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
+      mappls_geo:    process.env.MAPPLS_STATIC_KEY ? '✅ configured' : '⚠️ not set — using Nominatim fallback',
+    },
+  });
+});
+
+// ══════════════════════════════════════════════════════
 //  ADMIN: DB Audit — scan every table for stale/orphan rows
 // ══════════════════════════════════════════════════════
 app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
