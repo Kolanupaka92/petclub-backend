@@ -12,6 +12,7 @@ const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
 const emailService   = require('./services/emailService');
 const pricingCatalog = require('./services/pricingCatalog');
+const loyalty        = require('./services/loyaltyService');
 
 // ── Startup secret guard — refuse to boot without critical secrets ─────────
 const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
@@ -1242,6 +1243,61 @@ app.get('/api/services/catalog', auth, (req, res) => {
 });
 
 // ══════════════════════════════════════════════════════
+//  LOYALTY — Credits earn, redeem, and coupon system
+// ══════════════════════════════════════════════════════
+
+// GET /api/loyalty — balance, progress, transactions, active coupons
+app.get('/api/loyalty', auth, async (req, res) => {
+  try {
+    const summary = await loyalty.getLoyaltySummary(supabase, req.user.id);
+    res.json({ success: true, ...summary });
+  } catch (e) {
+    console.error('[Loyalty] getLoyaltySummary error:', e.message);
+    res.status(500).json({ error: 'Could not load loyalty data' });
+  }
+});
+
+// POST /api/loyalty/redeem — redeem 1,000 credits for a free service coupon
+app.post('/api/loyalty/redeem', auth, async (req, res) => {
+  if (req.user.role === 'professional') {
+    return res.status(403).json({ error: 'Loyalty credits are for customers only.' });
+  }
+  try {
+    const result = await loyalty.redeemCredits(supabase, req.user.id);
+    if (!result.success) return res.status(400).json({ error: result.error, existingCode: result.existingCode });
+    res.json({
+      success:     true,
+      couponCode:  result.couponCode,
+      expiresAt:   result.expiresAt,
+      newBalance:  result.newBalance,
+      serviceName: result.serviceName,
+      message:     `Your coupon ${result.couponCode} is valid for a free ${result.serviceName}. Expires in 6 months.`,
+    });
+  } catch (e) {
+    console.error('[Loyalty] redeemCredits error:', e.message);
+    res.status(500).json({ error: 'Redemption failed. Please try again.' });
+  }
+});
+
+// POST /api/loyalty/validate-coupon — check coupon before booking (customer only)
+app.post('/api/loyalty/validate-coupon', auth, async (req, res) => {
+  const { code } = req.body;
+  if (!code) return res.status(400).json({ error: 'Coupon code required' });
+  const result = await loyalty.validateCoupon(supabase, code, req.user.id);
+  if (!result.valid) return res.status(400).json({ error: result.error });
+  res.json({ success: true, coupon: { service_name: result.coupon.service_name, discount_pct: result.coupon.discount_pct, expires_at: result.coupon.expires_at } });
+});
+
+// POST /api/admin/loyalty/award — manual award (admin only)
+app.post('/api/admin/loyalty/award', auth, adminOnly, async (req, res) => {
+  const { userId, points, type = 'admin_award', description } = req.body;
+  if (!userId || !points) return res.status(400).json({ error: 'userId and points required' });
+  const result = await loyalty.awardPoints(supabase, userId, points, type, description || 'Admin award');
+  if (!result.success) return res.status(500).json({ error: result.error });
+  res.json({ success: true, newBalance: result.newBalance, awarded: result.awarded });
+});
+
+// ══════════════════════════════════════════════════════
 //  PROFESSIONAL ROUTES
 // ══════════════════════════════════════════════════════
 app.get('/api/professionals', async (req, res) => {
@@ -2091,7 +2147,15 @@ app.post('/api/bookings/:id/rate', auth, async (req, res) => {
         await supabase.from('professional_profiles').update({ rating: parseFloat(avg), total_reviews: allRatings.length }).eq('user_id', profUserId);
       }
     }
-    res.json({ success: true, message: 'Thank you for your feedback! 🌟' });
+    // Award +50 loyalty credits for leaving a review (fire-and-forget)
+    loyalty.awardPoints(
+      supabase, req.user.id,
+      loyalty.REVIEW_BONUS, 'review_bonus',
+      `Review bonus for booking ${req.params.id}`,
+      req.params.id,
+    ).catch(e => console.error('[Loyalty] review bonus award failed:', e.message));
+
+    res.json({ success: true, message: 'Thank you for your feedback! 🌟', loyalty_bonus: loyalty.REVIEW_BONUS });
   } catch (err) {
     console.error('Rate booking error:', err.message);
     res.status(500).json({ error: 'Failed to submit rating' });
