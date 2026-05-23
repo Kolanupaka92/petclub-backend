@@ -1,3 +1,10 @@
+# [1.4.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.3.0...v1.4.0) (2026-05-23)
+
+
+### Features
+
+* **email:** route transactional emails via Zoho Groups ([33e834e](https://github.com/Kolanupaka92/petclub-backend/commit/33e834e66ace4c0873a86d2697381ed399321937))
+
 # [1.3.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.2.0...v1.3.0) (2026-05-23)
 
 
