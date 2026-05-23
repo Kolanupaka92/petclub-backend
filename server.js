@@ -2319,12 +2319,35 @@ app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, 
 
     const ids = suspended.map(u => u.id);
 
-    await supabase.from('professional_profiles').delete().in('user_id', ids);
+    // ── Step 1: get professional_profile IDs so we can cascade their children ──
+    const { data: profProfiles } = await supabase
+      .from('professional_profiles')
+      .select('id')
+      .in('user_id', ids);
+    const profIds = (profProfiles || []).map(p => p.id);
+
+    // ── Step 2: delete every table that has a FK → professional_profiles.id ──
+    if (profIds.length) {
+      await supabase.from('booking_assignments').delete().in('professional_id', profIds).catch(() => {});
+      await supabase.from('bookings').delete().in('professional_id', profIds).catch(() => {});
+      await supabase.from('id_documents').delete().in('prof_id', profIds).catch(() => {});
+      await supabase.from('payout_details').delete().in('prof_id', profIds).catch(() => {});
+    }
+
+    // ── Step 3: delete every table that has a FK → users.id ──
+    await supabase.from('bookings').delete().in('customer_id', ids).catch(() => {});
+    await supabase.from('reviews').delete().in('reviewer_id', ids).catch(() => {});
+    await supabase.from('reviews').delete().in('reviewee_id', ids).catch(() => {});
+    await supabase.from('payment_logs').delete().in('user_id', ids).catch(() => {});
+    await supabase.from('professional_profiles').delete().in('user_id', ids).catch(() => {});
     await supabase.from('customer_profiles').delete().in('user_id', ids).catch(() => {});
     await supabase.from('pets').delete().in('owner_id', ids).catch(() => {});
     await supabase.from('otp_tokens').delete().in('phone', suspended.map(u => u.phone)).catch(() => {});
-    await supabase.from('admin_logs').delete().in('target_id', ids);
-    await supabase.from('users').delete().in('id', ids);
+    await supabase.from('admin_logs').delete().in('target_id', ids).catch(() => {});
+
+    // ── Step 4: now it's safe to delete the users themselves ──
+    const { error: delErr } = await supabase.from('users').delete().in('id', ids);
+    if (delErr) throw new Error(delErr.message);
 
     await supabase.from('admin_logs').insert({
       admin_id: req.user.id,
@@ -2349,11 +2372,27 @@ app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
     const { data: u } = await supabase.from('users').select('id, name, phone, email, role').eq('id', req.params.id).single();
     if (!u) return res.status(404).json({ error: 'User not found' });
 
-    await supabase.from('professional_profiles').delete().eq('user_id', u.id);
+    // Cascade: resolve professional_profile FK children first
+    const { data: profRow } = await supabase
+      .from('professional_profiles')
+      .select('id')
+      .eq('user_id', u.id)
+      .maybeSingle();
+    if (profRow?.id) {
+      await supabase.from('booking_assignments').delete().eq('professional_id', profRow.id).catch(() => {});
+      await supabase.from('bookings').delete().eq('professional_id', profRow.id).catch(() => {});
+      await supabase.from('id_documents').delete().eq('prof_id', profRow.id).catch(() => {});
+      await supabase.from('payout_details').delete().eq('prof_id', profRow.id).catch(() => {});
+    }
+    await supabase.from('bookings').delete().eq('customer_id', u.id).catch(() => {});
+    await supabase.from('reviews').delete().eq('reviewer_id', u.id).catch(() => {});
+    await supabase.from('reviews').delete().eq('reviewee_id', u.id).catch(() => {});
+    await supabase.from('payment_logs').delete().eq('user_id', u.id).catch(() => {});
+    await supabase.from('professional_profiles').delete().eq('user_id', u.id).catch(() => {});
     await supabase.from('customer_profiles').delete().eq('user_id', u.id).catch(() => {});
     await supabase.from('pets').delete().eq('owner_id', u.id).catch(() => {});
     await supabase.from('otp_tokens').delete().eq('phone', u.phone).catch(() => {});
-    await supabase.from('admin_logs').delete().eq('target_id', u.id);
+    await supabase.from('admin_logs').delete().eq('target_id', u.id).catch(() => {});
     await supabase.from('users').delete().eq('id', u.id);
 
     await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: 'delete_user', target_id: u.id, target_type: 'user', notes: `Manual delete: ${u.name || u.phone}` }).catch(() => {});
