@@ -1575,7 +1575,7 @@ app.get('/api/bookings', auth, async (req, res) => {
   let q;
   if (req.user.role === 'customer')
     // Use explicit FK hints to avoid PostgREST relationship ambiguity
-    q = supabase.from('bookings').select('*, pets!pet_id(name,species,health_notes), professional_profiles!professional_id(sub_role, users!user_id(name,phone))').eq('customer_id', req.user.id);
+    q = supabase.from('bookings').select('*, pets!pet_id(name,species,health_notes), professional_profiles!professional_id(sub_role, users(name,phone))').eq('customer_id', req.user.id);
   else if (req.user.role === 'professional') {
     const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
     q = supabase.from('bookings').select('*, pets!pet_id(name,species,breed,health_notes), users!customer_id(name,phone)').eq('professional_id', prof?.id);
