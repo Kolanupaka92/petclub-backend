@@ -2899,7 +2899,7 @@ app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
       .from('bookings').select('id', { count: 'exact', head: true }).eq('status', 'cancelled');
     const { count: testBookings } = await supabase
       .from('bookings').select('id', { count: 'exact', head: true })
-      .eq('status', 'upcoming').lt('service_date', stale30d);
+      .eq('status', 'upcoming').lt('scheduled_at', stale30d);
     const { count: noProBookings } = await supabase
       .from('bookings').select('id', { count: 'exact', head: true })
       .eq('assignment_status', 'no_pros_available').eq('status', 'upcoming')
