@@ -3585,10 +3585,15 @@ app.delete('/api/test/seed-active-provider', async (req, res) => {
   }
 });
 
-app.listen(PORT, async () => {
-  console.log(`🐾 PETclub API → http://localhost:${PORT}`);
-  // Run migrations in background — won't block startup
-  runStartupMigrations().catch(e => console.warn('[startup migration]', e.message));
-  // Link admin email so email OTP login finds the right account
-  seedAdminEmail().catch(e => console.warn('[adminSeed]', e.message));
-});
+// Export app for integration tests (require.main guard prevents double-listen)
+if (require.main !== module) {
+  module.exports = { app };
+} else {
+  app.listen(PORT, async () => {
+    console.log(`🐾 PETclub API → http://localhost:${PORT}`);
+    // Run migrations in background — won't block startup
+    runStartupMigrations().catch(e => console.warn('[startup migration]', e.message));
+    // Link admin email so email OTP login finds the right account
+    seedAdminEmail().catch(e => console.warn('[adminSeed]', e.message));
+  });
+}
