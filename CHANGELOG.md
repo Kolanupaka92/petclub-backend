@@ -1,3 +1,10 @@
+## [1.8.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.8.0...v1.8.1) (2026-05-23)
+
+
+### Bug Fixes
+
+* add FK hints to GET /bookings PostgREST query + log errors ([ce67e1e](https://github.com/Kolanupaka92/petclub-backend/commit/ce67e1e93035c10290f99ecc208349b4f3fd1c9c))
+
 # [1.8.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.7.0...v1.8.0) (2026-05-23)
 
 
