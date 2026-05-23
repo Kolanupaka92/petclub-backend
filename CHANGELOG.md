@@ -1,3 +1,10 @@
+## [1.8.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.8.2...v1.8.3) (2026-05-23)
+
+
+### Bug Fixes
+
+* **reviews:** use correct DB column name 'comment' and add error handling ([043259e](https://github.com/Kolanupaka92/petclub-backend/commit/043259edcbe521ea5b077bf7cf1e5dccf7098920))
+
 ## [1.8.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.8.1...v1.8.2) (2026-05-23)
 
 
