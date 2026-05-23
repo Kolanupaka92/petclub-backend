@@ -1,3 +1,10 @@
+# [1.9.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.8.3...v1.9.0) (2026-05-23)
+
+
+### Features
+
+* **admin:** add no_pros_available cleanup target + audit count ([5d96a03](https://github.com/Kolanupaka92/petclub-backend/commit/5d96a03998fe0055a4a37a9cd478cca4ae2c8a6b))
+
 ## [1.8.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.8.2...v1.8.3) (2026-05-23)
 
 
