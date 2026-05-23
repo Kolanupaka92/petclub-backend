@@ -1,3 +1,10 @@
+# [1.6.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.5.0...v1.6.0) (2026-05-23)
+
+
+### Features
+
+* add POST /api/test/move-seed-provider (live GPS simulation) ([21ea199](https://github.com/Kolanupaka92/petclub-backend/commit/21ea199bdfdf309c9678445631bff896b599b49c))
+
 # [1.5.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.4.0...v1.5.0) (2026-05-23)
 
 
