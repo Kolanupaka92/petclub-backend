@@ -2327,23 +2327,24 @@ app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, 
     const profIds = (profProfiles || []).map(p => p.id);
 
     // ── Step 2: delete every table that has a FK → professional_profiles.id ──
+    // Supabase v2 returns { data, error } — never throws, so no .catch() needed
     if (profIds.length) {
-      await supabase.from('booking_assignments').delete().in('professional_id', profIds).catch(() => {});
-      await supabase.from('bookings').delete().in('professional_id', profIds).catch(() => {});
-      await supabase.from('id_documents').delete().in('prof_id', profIds).catch(() => {});
-      await supabase.from('payout_details').delete().in('prof_id', profIds).catch(() => {});
+      await supabase.from('booking_assignments').delete().in('professional_id', profIds);
+      await supabase.from('bookings').delete().in('professional_id', profIds);
+      await supabase.from('id_documents').delete().in('prof_id', profIds);
+      await supabase.from('payout_details').delete().in('prof_id', profIds);
     }
 
     // ── Step 3: delete every table that has a FK → users.id ──
-    await supabase.from('bookings').delete().in('customer_id', ids).catch(() => {});
-    await supabase.from('reviews').delete().in('reviewer_id', ids).catch(() => {});
-    await supabase.from('reviews').delete().in('reviewee_id', ids).catch(() => {});
-    await supabase.from('payment_logs').delete().in('user_id', ids).catch(() => {});
-    await supabase.from('professional_profiles').delete().in('user_id', ids).catch(() => {});
-    await supabase.from('customer_profiles').delete().in('user_id', ids).catch(() => {});
-    await supabase.from('pets').delete().in('owner_id', ids).catch(() => {});
-    await supabase.from('otp_tokens').delete().in('phone', suspended.map(u => u.phone)).catch(() => {});
-    await supabase.from('admin_logs').delete().in('target_id', ids).catch(() => {});
+    await supabase.from('bookings').delete().in('customer_id', ids);
+    await supabase.from('reviews').delete().in('reviewer_id', ids);
+    await supabase.from('reviews').delete().in('reviewee_id', ids);
+    await supabase.from('payment_logs').delete().in('user_id', ids);
+    await supabase.from('professional_profiles').delete().in('user_id', ids);
+    await supabase.from('customer_profiles').delete().in('user_id', ids);
+    await supabase.from('pets').delete().in('owner_id', ids);
+    await supabase.from('otp_tokens').delete().in('phone', suspended.map(u => u.phone));
+    await supabase.from('admin_logs').delete().in('target_id', ids);
 
     // ── Step 4: now it's safe to delete the users themselves ──
     const { error: delErr } = await supabase.from('users').delete().in('id', ids);
@@ -2354,7 +2355,7 @@ app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, 
       action: 'purge_all_suspended',
       target_type: 'user',
       notes: `Purged ${ids.length} suspended users: ${suspended.map(u => u.phone).join(', ')}`,
-    }).catch(() => {});
+    });
 
     console.log(`[PurgeAll] Admin ${req.user.id} deleted ${ids.length} suspended users`);
     res.json({ success: true, deleted: ids.length });
@@ -2379,23 +2380,23 @@ app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
       .eq('user_id', u.id)
       .maybeSingle();
     if (profRow?.id) {
-      await supabase.from('booking_assignments').delete().eq('professional_id', profRow.id).catch(() => {});
-      await supabase.from('bookings').delete().eq('professional_id', profRow.id).catch(() => {});
-      await supabase.from('id_documents').delete().eq('prof_id', profRow.id).catch(() => {});
-      await supabase.from('payout_details').delete().eq('prof_id', profRow.id).catch(() => {});
+      await supabase.from('booking_assignments').delete().eq('professional_id', profRow.id);
+      await supabase.from('bookings').delete().eq('professional_id', profRow.id);
+      await supabase.from('id_documents').delete().eq('prof_id', profRow.id);
+      await supabase.from('payout_details').delete().eq('prof_id', profRow.id);
     }
-    await supabase.from('bookings').delete().eq('customer_id', u.id).catch(() => {});
-    await supabase.from('reviews').delete().eq('reviewer_id', u.id).catch(() => {});
-    await supabase.from('reviews').delete().eq('reviewee_id', u.id).catch(() => {});
-    await supabase.from('payment_logs').delete().eq('user_id', u.id).catch(() => {});
-    await supabase.from('professional_profiles').delete().eq('user_id', u.id).catch(() => {});
-    await supabase.from('customer_profiles').delete().eq('user_id', u.id).catch(() => {});
-    await supabase.from('pets').delete().eq('owner_id', u.id).catch(() => {});
-    await supabase.from('otp_tokens').delete().eq('phone', u.phone).catch(() => {});
-    await supabase.from('admin_logs').delete().eq('target_id', u.id).catch(() => {});
+    await supabase.from('bookings').delete().eq('customer_id', u.id);
+    await supabase.from('reviews').delete().eq('reviewer_id', u.id);
+    await supabase.from('reviews').delete().eq('reviewee_id', u.id);
+    await supabase.from('payment_logs').delete().eq('user_id', u.id);
+    await supabase.from('professional_profiles').delete().eq('user_id', u.id);
+    await supabase.from('customer_profiles').delete().eq('user_id', u.id);
+    await supabase.from('pets').delete().eq('owner_id', u.id);
+    await supabase.from('otp_tokens').delete().eq('phone', u.phone);
+    await supabase.from('admin_logs').delete().eq('target_id', u.id);
     await supabase.from('users').delete().eq('id', u.id);
 
-    await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: 'delete_user', target_id: u.id, target_type: 'user', notes: `Manual delete: ${u.name || u.phone}` }).catch(() => {});
+    await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: 'delete_user', target_id: u.id, target_type: 'user', notes: `Manual delete: ${u.name || u.phone}` });
     console.log(`[AdminDelete] User ${u.id} (${u.phone}) deleted by admin ${req.user.id}`);
 
     // Notify admin email about manual deletion
