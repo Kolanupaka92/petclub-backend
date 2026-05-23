@@ -728,7 +728,7 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
 // ══════════════════════════════════════════════════════
 app.post('/api/auth/send-phone-otp', otpLimit, async (req, res) => {
   try {
-    const { phone } = req.body;
+    const { phone, email: fallbackEmail } = req.body;
     if (!phone || !/^\+[1-9]\d{6,14}$/.test(phone))
       return res.status(400).json({ error: 'Valid E.164 phone number required (e.g. +14155552671)' });
 
@@ -743,17 +743,55 @@ app.post('/api/auth/send-phone-otp', otpLimit, async (req, res) => {
       { onConflict: 'phone' }
     );
 
-    await sendSMS(phone, `Your PETclub OTP is: ${otp}  Valid 10 min. Do not share.`);
-    console.log(`[PhoneOTP] Sent to ${maskPhone(phone)}`);
-    res.json({ success: true, message: `OTP sent to ${phone}` });
+    // ── Try SMS first, fall back to email if SMS fails ──────────────────────
+    try {
+      await sendSMS(phone, `Your PETclub OTP is: ${otp}  Valid 10 min. Do not share.`);
+      console.log(`[PhoneOTP] SMS sent to ${maskPhone(phone)}`);
+      return res.json({ success: true, via: 'sms', message: `OTP sent via SMS to ${phone}` });
+    } catch (smsErr) {
+      console.warn(`[PhoneOTP] SMS failed (${smsErr.code || smsErr.message}) — trying email fallback`);
+
+      // Resolve email: use request-provided email, or look up from existing user record
+      let deliveryEmail = fallbackEmail;
+      if (!deliveryEmail) {
+        const { data: existing } = await supabase.from('users').select('email').eq('phone', phone).maybeSingle();
+        deliveryEmail = existing?.email || null;
+      }
+
+      if (deliveryEmail && /^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(deliveryEmail)) {
+        try {
+          await emailService.sendRawEmail(
+            deliveryEmail,
+            `🔐 Your PETclub OTP Code`,
+            `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
+              <div style="font-size:40px;text-align:center;margin-bottom:12px">🔐</div>
+              <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">Your PETclub OTP</h2>
+              <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">SMS delivery failed — your OTP has been sent to this email instead.</p>
+              <div style="background:#fff7ed;border:2px solid #fed7aa;border-radius:14px;padding:24px;text-align:center">
+                <span style="font-size:36px;font-weight:900;letter-spacing:10px;color:#ea580c;font-family:monospace">${otp}</span>
+              </div>
+              <p style="color:#94a3b8;font-size:12px;text-align:center;margin-top:20px">Valid for 10 minutes · Do not share</p>
+              <hr style="border:none;border-top:1px solid #f1f5f9;margin:20px 0"/>
+              <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub · ${new Date().toLocaleString('en-IN')}</p>
+            </div>`
+          );
+          console.log(`[PhoneOTP] Email fallback sent to ${deliveryEmail} for ${maskPhone(phone)}`);
+          return res.json({ success: true, via: 'email', email: deliveryEmail, message: `SMS unavailable — OTP sent to ${deliveryEmail}` });
+        } catch (emailErr) {
+          console.error('[PhoneOTP] Email fallback also failed:', emailErr.message);
+        }
+      }
+
+      // Both SMS and email failed — surface the original SMS error
+      if (smsErr.code === 21211 || (smsErr.message || '').includes('not a valid phone number'))
+        return res.status(400).json({ error: 'Invalid phone number. Check the country code and digits.' });
+      if (smsErr.code === 21608 || (smsErr.message || '').includes('unverified'))
+        return res.status(400).json({ error: 'This number is not yet reachable via SMS. Please use Email OTP to sign in.' });
+      return res.status(500).json({ error: 'Failed to send OTP via SMS or email. Please use Email OTP to sign in.' });
+    }
   } catch (err) {
-    console.error('[PhoneOTP] Send error:', err.message);
-    // Surface Twilio-specific errors clearly
-    if (err.code === 21211 || (err.message || '').includes('not a valid phone number'))
-      return res.status(400).json({ error: 'Invalid phone number. Check the country code and digits.' });
-    if (err.code === 21608 || (err.message || '').includes('unverified'))
-      return res.status(400).json({ error: 'SMS is not yet available for this number. Please use Email OTP to sign in.' });
-    res.status(500).json({ error: 'Failed to send SMS. Try Email OTP instead.' });
+    console.error('[PhoneOTP] Unexpected error:', err.message);
+    res.status(500).json({ error: 'Failed to send OTP. Try Email OTP instead.' });
   }
 });
 
