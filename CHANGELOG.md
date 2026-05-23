@@ -1,3 +1,10 @@
+# [1.11.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.10.0...v1.11.0) (2026-05-23)
+
+
+### Features
+
+* **loyalty:** add loyalty credits system — earn, redeem, and coupon logic ([e2f1be1](https://github.com/Kolanupaka92/petclub-backend/commit/e2f1be122e977e9c1f1eae9f90587cffee3e7807))
+
 # [1.10.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.9.1...v1.10.0) (2026-05-23)
 
 
