@@ -1,3 +1,10 @@
+## [1.6.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.6.2...v1.6.3) (2026-05-23)
+
+
+### Bug Fixes
+
+* **auth:** email fallback when Twilio SMS fails in send-phone-otp ([bf364c7](https://github.com/Kolanupaka92/petclub-backend/commit/bf364c7ee8d818cabe6377f7eeb9edf602cec439))
+
 ## [1.6.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.6.1...v1.6.2) (2026-05-23)
 
 
