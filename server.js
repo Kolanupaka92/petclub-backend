@@ -9,8 +9,8 @@ const helmet  = require('helmet');
 const cors    = require('cors');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
 const { createClient } = require('@supabase/supabase-js');
+const emailService = require('./services/emailService');
 
 // ── Startup secret guard — refuse to boot without critical secrets ─────────
 const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
@@ -95,19 +95,11 @@ function stripFinancials(booking, role) {
 // ── Services ───────────────────────────────────────────
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-// ── Zoho SMTP transporter ─────────────────────────────
-// Env vars required: ZOHO_SMTP_USER, ZOHO_SMTP_PASS
-// ZOHO_SMTP_USER  = set in Cloud Run env vars
-// ZOHO_SMTP_FROM  = set in Cloud Run env vars (optional — falls back to SUPPORT_EMAIL)
-const zohoTransporter = nodemailer.createTransport({
-  host: 'smtppro.zoho.com',
-  port: 587,
-  secure: false,   // STARTTLS on 587
-  auth: {
-    user: process.env.ZOHO_SMTP_USER,
-    pass: process.env.ZOHO_SMTP_PASS,
-  },
-});
+// ── Email — delegated to services/emailService.js ─────────────────────────
+// SMTP config and all template rendering live in that module.
+// Use emailService.sendRawEmail() for admin-internal notifications,
+// or the named helpers (sendOtpEmail, sendWelcomeEmail, etc.) for
+// user-facing transactional emails.
 
 // ── Razorpay (India payment gateway) — live once RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET set ──
 let razorpay = null;
@@ -243,21 +235,9 @@ const sendSMS = async (phone, message) => {
 // ── FCM push alias — normalises call-site signature differences ───────────────
 const sendPushNotification = async (fcmToken, title, body) => sendPush(fcmToken, title, body);
 
-// attachments: nodemailer attachment array [{ filename, content (Buffer), contentType }]
-const sendEmail = async (to, subject, html, attachments = []) => {
-  if (!process.env.ZOHO_SMTP_USER || !process.env.ZOHO_SMTP_PASS) {
-    console.warn(`[Email skipped — ZOHO_SMTP_USER/PASS not set] to=${to}`);
-    return;
-  }
-  const from = process.env.ZOHO_SMTP_FROM
-    ? `PETclub <${process.env.ZOHO_SMTP_FROM}>`
-    : `PETclub <${SUPPORT_EMAIL}>`;
-  const mailOpts = { from, to, subject, html };
-  if (attachments.length) mailOpts.attachments = attachments;
-  const result = await zohoTransporter.sendMail(mailOpts);
-  console.log(`[Zoho SMTP] Email sent to ${to} (msgId: ${result.messageId})`);
-  return result;
-};
+// Backward-compatible alias — all existing admin/internal sendEmail(to, subject, html)
+// callsites continue to work unchanged. New user-facing emails use named helpers below.
+const sendEmail = emailService.sendRawEmail;
 
 // ══════════════════════════════════════════════════════
 //  STORAGE: init id-documents bucket on startup
@@ -669,20 +649,7 @@ app.post('/api/auth/send-email-otp', otpLimit, async (req, res) => {
       { onConflict: 'phone' }
     );
 
-    const otpHtml = `
-      <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:420px;margin:0 auto;text-align:center;padding:40px 20px;background:#fff;border-radius:20px;box-shadow:0 4px 24px rgba(0,0,0,0.06);">
-        <div style="font-size:52px;margin-bottom:12px">🐾</div>
-        <h2 style="color:#1e293b;font-size:22px;margin:0 0 6px">Your PETclub OTP</h2>
-        <p style="color:#64748b;font-size:14px;margin:0 0 28px">Use this code to sign in to your account</p>
-        <div style="background:#fff7ed;border:2px solid #f97316;border-radius:16px;padding:28px 20px;margin-bottom:24px;">
-          <div style="font-size:44px;font-weight:900;color:#f97316;letter-spacing:10px;font-family:monospace">${otp}</div>
-        </div>
-        <p style="color:#94a3b8;font-size:13px;margin:0">Valid for <strong>10 minutes</strong> · Never share this code</p>
-        <hr style="border:none;border-top:1px solid #f1f5f9;margin:24px 0"/>
-        <p style="color:#cbd5e1;font-size:11px">© PETclub · For pets, with love 🐾</p>
-      </div>`;
-
-    await sendEmail(email, `🐾 Your PETclub OTP: ${otp}`, otpHtml);
+    await emailService.sendOtpEmail(email, { otp, expiresMinutes: 10 });
     console.log(`[EmailOTP] Sent to ${email}`);
     res.json({ success: true, message: `OTP sent to ${email}` });
   } catch (err) {
@@ -934,62 +901,15 @@ app.post('/api/users/set-role', auth, async (req, res) => {
     const fn = (name || 'there').split(' ')[0];
     if (email) {
       const isPro = role === 'professional';
-      const roleColors = { Groomer: '#7c3aed', Trainer: '#2563eb', Vet: '#059669' };
-      const proColor = roleColors[subRole] || '#f97316';
-      const welcomeHtml = `
-        <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:560px;margin:0 auto;background:#fff;border-radius:20px;overflow:hidden;border:1px solid #f1f5f9;">
-          <div style="background:${isPro ? `linear-gradient(135deg,${proColor},${proColor}cc)` : 'linear-gradient(135deg,#f97316,#fbbf24)'};padding:40px 32px;text-align:center;">
-            <div style="font-size:52px;margin-bottom:8px">${isPro ? ({ Groomer:'✂️', Trainer:'🎓', Vet:'🏥' }[subRole] || '🌟') : '🐾'}</div>
-            <h1 style="color:white;margin:0;font-size:24px;font-weight:800">${isPro ? `${subRole} Application Submitted!` : `Welcome to PETclub, ${fn}!`}</h1>
-            <p style="color:rgba(255,255,255,0.85);margin:8px 0 0;font-size:14px">${isPro ? 'Your account is under review' : 'Your account is ready to use'}</p>
-          </div>
-          <div style="padding:32px;">
-            ${isPro ? `
-            <div style="background:#fffbeb;border:2px solid #fde68a;border-radius:14px;padding:24px;margin-bottom:24px;text-align:center;">
-              <div style="font-size:36px;margin-bottom:12px">⏳</div>
-              <h2 style="margin:0 0 8px;color:#92400e;font-size:18px;font-weight:800">Account Under Review</h2>
-              <p style="margin:0;color:#78350f;font-size:14px;line-height:1.7">Hi <strong>${fn}</strong>, your <strong>${subRole}</strong> application has been received. Our team will verify your identity and profile details.<br/><br/><strong>You will receive a confirmation email within 24–48 hours</strong> once your account is approved or if we need additional information.</p>
-            </div>
-            <div style="background:#f8fafc;border-radius:12px;padding:20px;margin-bottom:24px;">
-              <p style="margin:0 0 12px;font-weight:700;color:#374151;font-size:14px">📋 What happens next:</p>
-              <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px">
-                <div style="background:#f97316;color:white;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;text-align:center;line-height:24px">1</div>
-                <p style="margin:0;color:#64748b;font-size:13px">Our admin team reviews your profile and government ID</p>
-              </div>
-              <div style="display:flex;align-items:flex-start;gap:12px;margin-bottom:12px">
-                <div style="background:#f97316;color:white;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;text-align:center;line-height:24px">2</div>
-                <p style="margin:0;color:#64748b;font-size:13px">You get an approval email + SMS within 24–48 hours</p>
-              </div>
-              <div style="display:flex;align-items:flex-start;gap:12px">
-                <div style="background:#f97316;color:white;border-radius:50%;width:24px;height:24px;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;flex-shrink:0;text-align:center;line-height:24px">3</div>
-                <p style="margin:0;color:#64748b;font-size:13px">Log back in to access your full professional dashboard</p>
-              </div>
-            </div>
-            ` : `
-            <p style="color:#374151;font-size:15px;line-height:1.7;margin-bottom:20px">Hi <strong>${fn}</strong>! Your PETclub account is active. Book grooming, training, vet care &amp; more for your pet.</p>
-            ${pet?.name ? `<div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:16px;margin-bottom:20px;"><p style="margin:0;font-weight:700;color:#9a3412;font-size:14px">🐾 ${pet.name} is now on PETclub!</p><p style="margin:4px 0 0;color:#c2410c;font-size:13px">${[pet.species, pet.breed, pet.age ? `${pet.age} yr${pet.age > 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ')}</p></div>` : ''}
-            <div style="background:#f0fdf4;border:1px solid #bbf7d0;border-radius:14px;padding:20px;margin-bottom:24px;">
-              <p style="margin:0 0 10px;font-weight:700;color:#166534;font-size:14px">🌟 What you can do now:</p>
-              <ul style="margin:0;padding-left:18px;color:#4b7c5a;font-size:14px;line-height:2.2">
-                <li>Add more pet profiles</li>
-                <li>Book verified groomers, trainers &amp; vets</li>
-                <li>Track health records &amp; vaccinations</li>
-                <li>Get appointment reminders</li>
-              </ul>
-            </div>
-            `}
-            <div style="text-align:center;margin:28px 0 0;">
-              <a href="https://app.mypetclub.app" style="display:inline-block;background:linear-gradient(135deg,#f97316,#fbbf24);color:white;padding:15px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:15px;box-shadow:0 4px 20px rgba(249,115,22,0.3)">Open PETclub App →</a>
-            </div>
-          </div>
-          <div style="background:#f8fafc;padding:16px 32px;text-align:center;border-top:1px solid #f1f5f9;">
-            <p style="margin:0;font-size:12px;color:#94a3b8">© ${new Date().getFullYear()} PETclub · For pets, with love 🐾 · <a href="${WEBSITE_URL}" style="color:#f97316;text-decoration:none">mypetclub.app</a></p>
-          </div>
-        </div>`;
-      sendEmail(email,
-        isPro ? `🐾 ${subRole} Application Received — Review in 24–48 hrs` : `🐾 Welcome to PETclub, ${fn}!`,
-        welcomeHtml
-      ).catch(e => console.error('Welcome email failed:', e.message));
+      if (isPro) {
+        // Professional: role-assignment email (under-review messaging)
+        emailService.sendRoleAssignedEmail(email, { name, role, subRole })
+          .catch(e => console.error('[Email] Role-assigned email failed:', e.message));
+      } else {
+        // Customer: welcome email with optional pet card
+        emailService.sendWelcomeEmail(email, { name, pet })
+          .catch(e => console.error('[Email] Welcome email failed:', e.message));
+      }
     }
 
     res.json({ success: true, token, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
@@ -2204,7 +2124,18 @@ app.put('/api/admin/verify/:id', auth, adminOnly, async (req, res) => {
     const sms = action === 'approve'
       ? `✅ Congrats! Your PETclub profile is verified. Open the app to go live and start earning! 🐾`
       : `❌ PETclub verification not approved. Reason: ${reason||'Documents incomplete'}. Resubmit via the app.`;
-    if (prof.users.email) sendEmail(prof.users.email, `PETclub Verification ${action==='approve'?'Approved ✅':'Update ❌'}`, `<p>${sms}</p>`).catch(console.error);
+    // SMS notification (existing)
+    sendSMS(prof.users.phone, sms).catch(console.error);
+    // Branded verification email (new)
+    if (prof.users.email) {
+      emailService.sendProviderVerificationEmail(prof.users.email, {
+        name:    prof.users.name,
+        subRole: prof.sub_role,
+        action,
+        reason,
+        city:    prof.city,
+      }).catch(console.error);
+    }
   }
   res.json({ success: true, professional: prof });
 });
@@ -2311,6 +2242,14 @@ app.put('/api/admin/users/:id/suspend', auth, adminOnly, async (req, res) => {
     // Compute deletion time (24 hr from now)
     const deleteAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
     const deleteStr = deleteAt.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', dateStyle: 'medium', timeStyle: 'short' });
+
+    // Notify the user themselves (branded suspension template)
+    if (u.email) {
+      emailService.sendAccountSuspendedEmail(u.email, {
+        name:   u.name,
+        reason: req.body?.reason || null,
+      }).catch(e => console.error('[Email] Suspension notice failed:', e.message));
+    }
 
     if (adminEmail) {
       sendEmail(
