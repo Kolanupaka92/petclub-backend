@@ -2037,14 +2037,18 @@ app.post('/api/bookings/:id/rate', auth, async (req, res) => {
 
     const profUserId = booking.professional_profiles?.user_id;
 
-    // Upsert — one rating per booking
-    await supabase.from('reviews').upsert({
+    // Upsert — one rating per booking (unique constraint on booking_id enforces this)
+    const { error: upsertErr } = await supabase.from('reviews').upsert({
       reviewer_id: req.user.id,
       reviewee_id: profUserId,
       booking_id: req.params.id,
       rating: parseInt(rating),
-      review: review?.trim() || null,
+      comment: review?.trim() || null,
     }, { onConflict: 'booking_id' });
+    if (upsertErr) {
+      console.error('[rate] reviews upsert error:', upsertErr.message, upsertErr.details || '');
+      return res.status(500).json({ error: 'Failed to save your rating. Please try again.' });
+    }
 
     // Recalculate pro's average rating
     if (profUserId) {
@@ -2063,8 +2067,8 @@ app.post('/api/bookings/:id/rate', auth, async (req, res) => {
 
 // Check if a booking has been rated (customer only)
 app.get('/api/bookings/:id/my-rating', auth, async (req, res) => {
-  const { data } = await supabase.from('reviews').select('rating, review').eq('booking_id', req.params.id).eq('reviewer_id', req.user.id).single();
-  res.json({ success: true, rated: !!data, rating: data?.rating || null, review: data?.review || null });
+  const { data } = await supabase.from('reviews').select('rating, comment').eq('booking_id', req.params.id).eq('reviewer_id', req.user.id).single();
+  res.json({ success: true, rated: !!data, rating: data?.rating || null, review: data?.comment || null });
 });
 
 // ══════════════════════════════════════════════════════
