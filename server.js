@@ -2965,6 +2965,61 @@ async function seedAdminEmail() {
 }
 
 // ═══════════════════════════════════════════════════════════════════════
+// 🧪  TEST MOVEMENT — POST /api/test/move-seed-provider
+//
+// Simulates the seed provider sending a GPS update.
+// Secured by X-Test-Key header matching the SEED_TEST_KEY env var —
+// works in ANY environment (including production) as long as the key is set.
+// Also broadcasts to any open SSE connections so the Mappls marker moves live.
+//
+// Usage:
+//   curl -X POST https://api.mypetclub.app/api/test/move-seed-provider \
+//        -H "Content-Type: application/json" \
+//        -H "X-Test-Key: <SEED_TEST_KEY value>" \
+//        -d '{"lat":12.9325,"lng":77.6185}'
+// ═══════════════════════════════════════════════════════════════════════
+app.post('/api/test/move-seed-provider', async (req, res) => {
+  const testKey = process.env.SEED_TEST_KEY;
+  if (!testKey) {
+    return res.status(503).json({ error: 'SEED_TEST_KEY env var not set — add it to Cloud Run env vars to enable this endpoint.' });
+  }
+  if (req.headers['x-test-key'] !== testKey) {
+    return res.status(403).json({ error: 'Invalid X-Test-Key header.' });
+  }
+
+  try {
+    const DEFAULT_BOOKING_ID = '9dc0d859-7ded-41b3-83d7-7b570be7ceee';
+    const { lat, lng, bookingId = DEFAULT_BOOKING_ID } = req.body;
+    if (typeof lat !== 'number' || typeof lng !== 'number') {
+      return res.status(400).json({ error: 'lat and lng must be numbers.' });
+    }
+
+    // Persist to DB (REST-polling clients and SSE reconnects pick this up)
+    await supabase.from('bookings').update({
+      pro_lat:                 lat,
+      pro_lng:                 lng,
+      pro_location_updated_at: new Date().toISOString(),
+    }).eq('id', bookingId);
+
+    // Push immediately to all open SSE connections for this booking
+    const clients = trackingClients.get(bookingId);
+    const pushed  = clients?.size || 0;
+    if (clients && pushed > 0) {
+      const payload = JSON.stringify({ lat, lng });
+      clients.forEach(clientRes => {
+        try { clientRes.write(`data: ${payload}\n\n`); } catch (_) {}
+      });
+    }
+
+    console.log(`[seed-move] Booking ${bookingId} → (${lat}, ${lng}) — pushed to ${pushed} SSE client(s)`);
+    return res.json({ ok: true, lat, lng, bookingId, sseClientsPushed: pushed });
+  } catch (err) {
+    console.error('[seed-move] Error:', err.message);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════════════
 // 🧪  TEST SEED — /api/test/seed-active-provider
 //
 // DEV ONLY — blocked in production (ALLOW_DEV_TOOLS must be set to bypass).
