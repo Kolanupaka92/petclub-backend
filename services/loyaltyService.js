@@ -28,7 +28,7 @@
 
 const crypto = require('crypto');
 
-// ── Config ──────────────────────────────────���──────────────────────────────
+// ── Config ──────────────────────────────────────────────────────────────────
 const CREDITS_PER_RUPEE   = 1 / 10;   // 1 credit per ₹10 spent
 const PAYMENT_BONUS       = 50;
 const REVIEW_BONUS        = 50;
@@ -36,6 +36,11 @@ const REFERRAL_BONUS      = 200;       // awarded to referrer when friend books
 const REDEMPTION_THRESHOLD = 1000;     // credits needed to unlock free service
 const REDEMPTION_SERVICE  = 'Basic Bath'; // free service granted on redemption
 const COUPON_VALIDITY_DAYS = 180;      // 6 months
+
+// Anomaly detection threshold — alert if a user earns more than this in 24 h.
+// Normal max in one day: booking_spend (~200) + payment_bonus (50) + review_bonus (50) = ~300
+// Anything above 2 × normal max is suspicious.
+const ANOMALY_THRESHOLD_24H = 600;
 
 // ── Helpers ──────────────��──────────────────────────��───────────────────────
 /**
@@ -96,7 +101,46 @@ async function awardPoints(supabase, userId, points, type, description, bookingI
   if (updateErr) return { success: false, error: updateErr.message };
 
   console.log(`[Loyalty] Awarded ${points} pts (${type}) → user ${userId} | new balance: ${newBalance}`);
+
+  // ── Anomaly detection (non-blocking) ──────────────────────────────────────
+  // Check how many points this user has earned in the last 24 hours.
+  // If it exceeds ANOMALY_THRESHOLD_24H, emit a loud warning so ops can review.
+  // This runs in the background — it never delays or blocks the award response.
+  checkAnomalyAsync(supabase, userId, newBalance).catch(e =>
+    console.warn('[Loyalty] anomaly check error (non-fatal):', e.message)
+  );
+
   return { success: true, newBalance, awarded: points };
+}
+
+/**
+ * Background anomaly check — runs after every successful awardPoints call.
+ * Sums points earned by this user in the last 24 h. If the total exceeds
+ * ANOMALY_THRESHOLD_24H, logs a structured warning for ops to investigate.
+ * Does NOT block or reverse the award — detection only, not prevention.
+ */
+async function checkAnomalyAsync(supabase, userId, currentBalance) {
+  const since = new Date(Date.now() - 86400_000).toISOString(); // 24 h ago
+  const { data: rows } = await supabase
+    .from('loyalty_transactions')
+    .select('points')
+    .eq('user_id', userId)
+    .gte('created_at', since)
+    .gt('points', 0);   // only earning events, not redemptions
+
+  const earned24h = (rows || []).reduce((s, r) => s + (r.points || 0), 0);
+  if (earned24h > ANOMALY_THRESHOLD_24H) {
+    // Structured log — easy to grep/alert on in Cloud Run logs
+    console.warn(JSON.stringify({
+      alert:       'LOYALTY_ANOMALY',
+      user_id:     userId,
+      earned_24h:  earned24h,
+      threshold:   ANOMALY_THRESHOLD_24H,
+      balance:     currentBalance,
+      ts:          new Date().toISOString(),
+      action:      'Review this account for unusual activity. Admin panel → /api/admin/loyalty/stats',
+    }));
+  }
 }
 
 /**
@@ -211,6 +255,13 @@ async function getLoyaltySummary(supabase, userId) {
     return sum + Math.floor((b.amount || 0) * CREDITS_PER_RUPEE);
   }, 0);
 
+  const transactions = txnRes.data  || [];
+  const coupons      = couponRes.data || [];
+
+  // is_new_member: true on the first GET after account creation (no earn history yet).
+  // The frontend uses this flag to show the "Welcome to PETclub Rewards" modal once.
+  const isNewMember = transactions.length === 0 && balance === 0;
+
   return {
     balance,
     pending_points: pendingPoints,           // Fix 5: shown in UI as locked
@@ -219,14 +270,15 @@ async function getLoyaltySummary(supabase, userId) {
     credits_needed: Math.max(0, REDEMPTION_THRESHOLD - balance),
     can_redeem:     balance >= REDEMPTION_THRESHOLD,
     referral_code:  referralCode,
+    is_new_member:  isNewMember,             // Frontend trigger for welcome modal
     earn_rules: [
       { event: 'Book & pay via app',     points: '1 per ₹10',       icon: '📅' },
       { event: 'Pay in-app (Razorpay)',   points: `+${PAYMENT_BONUS}`, icon: '💳' },
       { event: 'Write a review',          points: `+${REVIEW_BONUS}`,  icon: '⭐' },
       { event: 'Refer a friend',          points: `+${REFERRAL_BONUS}`,icon: '👥' },
     ],
-    transactions:  txnRes.data  || [],
-    coupons:       couponRes.data || [],
+    transactions,
+    coupons,
   };
 }
 
@@ -263,8 +315,10 @@ module.exports = {
   REFERRAL_BONUS,
   REDEMPTION_THRESHOLD,
   REDEMPTION_SERVICE,
+  ANOMALY_THRESHOLD_24H,
   creditsFromAmount,
   awardPoints,
+  checkAnomalyAsync,
   hasEarnedReviewBonus,
   redeemCredits,
   getLoyaltySummary,

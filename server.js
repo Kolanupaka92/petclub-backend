@@ -1297,6 +1297,89 @@ app.post('/api/admin/loyalty/award', auth, adminOnly, async (req, res) => {
   res.json({ success: true, newBalance: result.newBalance, awarded: result.awarded });
 });
 
+// GET /api/admin/loyalty/stats — programme health dashboard (admin only)
+// Returns redemption rate, top earners, anomalies, active coupons.
+// Use ?days=N to change the reporting window (default 30).
+app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
+  try {
+    const days  = Math.min(parseInt(req.query.days) || 30, 365);
+    const since = new Date(Date.now() - days * 86400_000).toISOString();
+
+    const [earnRes, redeemRes, couponRes, anomalyRes, eligibleRes] = await Promise.all([
+      // Total points earned in window
+      supabase.from('loyalty_transactions')
+        .select('points, user_id')
+        .gt('points', 0)
+        .gte('created_at', since),
+
+      // Total points redeemed in window
+      supabase.from('loyalty_transactions')
+        .select('points')
+        .lt('points', 0)
+        .eq('type', 'redemption')
+        .gte('created_at', since),
+
+      // Active (unused, non-expired) coupons
+      supabase.from('loyalty_coupons')
+        .select('id', { count: 'exact', head: true })
+        .eq('is_used', false)
+        .gt('expires_at', new Date().toISOString()),
+
+      // Anomaly candidates: users earning > threshold in last 24 h
+      supabase.from('loyalty_transactions')
+        .select('user_id, points')
+        .gt('points', 0)
+        .gte('created_at', new Date(Date.now() - 86400_000).toISOString()),
+
+      // Users currently eligible to redeem (balance >= 1000)
+      supabase.from('users')
+        .select('id', { count: 'exact', head: true })
+        .gte('loyalty_points', loyalty.REDEMPTION_THRESHOLD),
+    ]);
+
+    const totalEarned   = (earnRes.data   || []).reduce((s, r) => s +  r.points, 0);
+    const totalRedeemed = (redeemRes.data || []).reduce((s, r) => s + -r.points, 0); // stored negative
+    const redemptionRate = totalEarned > 0
+      ? Math.round((totalRedeemed / totalEarned) * 100) : 0;
+
+    // Top earners in window — aggregate by user_id
+    const earnerMap = {};
+    for (const row of earnRes.data || []) {
+      earnerMap[row.user_id] = (earnerMap[row.user_id] || 0) + row.points;
+    }
+    const topEarners = Object.entries(earnerMap)
+      .sort(([, a], [, b]) => b - a)
+      .slice(0, 10)
+      .map(([user_id, points_earned]) => ({ user_id, points_earned }));
+
+    // Anomaly candidates — users earning > threshold in last 24 h
+    const anomalyMap = {};
+    for (const row of anomalyRes.data || []) {
+      anomalyMap[row.user_id] = (anomalyMap[row.user_id] || 0) + row.points;
+    }
+    const anomalies = Object.entries(anomalyMap)
+      .filter(([, pts]) => pts > loyalty.ANOMALY_THRESHOLD_24H)
+      .map(([user_id, earned_24h]) => ({ user_id, earned_24h }));
+
+    res.json({
+      success:          true,
+      window_days:      days,
+      total_earned:     totalEarned,
+      total_redeemed:   totalRedeemed,
+      redemption_rate:  `${redemptionRate}%`,
+      active_coupons:   couponRes.count ?? 0,
+      eligible_to_redeem: eligibleRes.count ?? 0,
+      top_earners:      topEarners,
+      anomalies,                              // empty array = all clear
+      anomaly_threshold_24h: loyalty.ANOMALY_THRESHOLD_24H,
+      generated_at:     new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error('[Loyalty] stats error:', e.message);
+    res.status(500).json({ error: 'Could not generate loyalty stats' });
+  }
+});
+
 // ══════════════════════════════════════════════════════
 //  PROFESSIONAL ROUTES
 // ══════════════════════════════════════════════════════
