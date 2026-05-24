@@ -1,3 +1,17 @@
+# [1.12.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.11.1...v1.12.0) (2026-05-24)
+
+
+### Bug Fixes
+
+* sync package-lock.json with package.json ([55f4985](https://github.com/Kolanupaka92/petclub-backend/commit/55f498580013a65cd18e1d60610b168821f595fe))
+
+
+### Features
+
+* **booking:** clickwrap Terms & Conditions consent with audit trail ([2d7e9d2](https://github.com/Kolanupaka92/petclub-backend/commit/2d7e9d2d3aabc76269da843573cd4b143d9c36d6))
+* **loyalty:** add operational readiness layer for launch ([5878a8d](https://github.com/Kolanupaka92/petclub-backend/commit/5878a8db9d986e0819448f0ca8bfe3b24a1eb1c8))
+* Referral & Partner Commission system ([1313c7d](https://github.com/Kolanupaka92/petclub-backend/commit/1313c7d5af7a553e284b07b0df11cd789258c01c))
+
 ## [1.11.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.11.0...v1.11.1) (2026-05-23)
 
 
