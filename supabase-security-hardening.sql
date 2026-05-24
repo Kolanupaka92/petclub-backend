@@ -184,14 +184,25 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS loyalty_leaderboard AS
 CREATE UNIQUE INDEX IF NOT EXISTS loyalty_leaderboard_user_idx
   ON loyalty_leaderboard (user_id);
 
--- Refresh nightly at 02:00 UTC via pg_cron.
+-- Issue 2 fix: populate the view immediately after creation so the first
+-- admin request after deployment gets real data (not an empty result set).
+-- Without this, the view stays empty until the 02:00 UTC pg_cron fires.
+-- REFRESH MATERIALIZED VIEW does not support IF NOT EXISTS, so use a DO
+-- block to skip if the view somehow already has rows.
+DO $$
+BEGIN
+  IF (SELECT COUNT(*) FROM loyalty_leaderboard) = 0 THEN
+    REFRESH MATERIALIZED VIEW loyalty_leaderboard;
+  END IF;
+END;
+$$;
+
+-- Schedule nightly refresh at 02:00 UTC via pg_cron.
 -- If pg_cron is not available on your Supabase plan, trigger a refresh
 -- from your keepalive GitHub Actions workflow instead (see keepalive.yml).
 DO $$
 BEGIN
-  IF EXISTS (
-    SELECT 1 FROM pg_extension WHERE extname = 'pg_cron'
-  ) THEN
+  IF EXISTS (SELECT 1 FROM pg_extension WHERE extname = 'pg_cron') THEN
     PERFORM cron.schedule(
       'loyalty-leaderboard-refresh',
       '0 2 * * *',
@@ -202,17 +213,47 @@ END;
 $$;
 
 
--- ── Verification queries ────────────────────────────────────────
+-- ────────────────────────────────────────────────────────────────
+--  6. sum_loyalty_earned_in_window aggregate helper  (O-5 companion)
+--
+--  Issue 1 fix: server.js calls supabase.rpc('sum_loyalty_earned_in_window')
+--  but this function was never created. The .catch() fallback was always
+--  firing — meaning the O-5 optimisation was silently not working.
+--
+--  This function returns the total positive points earned since p_since,
+--  letting the stats endpoint avoid fetching all rows into Node memory.
+-- ────────────────────────────────────────────────────────────────
+CREATE OR REPLACE FUNCTION sum_loyalty_earned_in_window(p_since TIMESTAMPTZ)
+RETURNS NUMERIC
+LANGUAGE sql
+SECURITY DEFINER
+AS $$
+  SELECT COALESCE(SUM(points), 0)
+  FROM   loyalty_transactions
+  WHERE  points     > 0
+    AND  created_at >= p_since;
+$$;
+
+GRANT EXECUTE ON FUNCTION sum_loyalty_earned_in_window(TIMESTAMPTZ) TO authenticated;
+GRANT EXECUTE ON FUNCTION sum_loyalty_earned_in_window(TIMESTAMPTZ) TO service_role;
+
+
+-- ── Verification queries ─────────────────────────────────────────────────────
+-- Expected: 5 rows — all function names below should appear in the result.
 SELECT routine_name
 FROM   information_schema.routines
 WHERE  routine_name IN (
-  'use_loyalty_coupon_at_booking',
+  'redeem_loyalty_coupon',            -- was: use_loyalty_coupon_at_booking (dropped)
   'refresh_professional_rating',
-  'partner_revenue_report'
-);
+  'partner_revenue_report',
+  'sum_loyalty_earned_in_window'      -- new — required for O-5 stats endpoint
+)
+  AND routine_schema = 'public';
 
+-- Expected: 1 row
 SELECT matviewname FROM pg_matviews WHERE matviewname = 'loyalty_leaderboard';
 
+-- Expected: 4 rows
 SELECT indexname
 FROM   pg_indexes
 WHERE  indexname IN (
@@ -221,3 +262,9 @@ WHERE  indexname IN (
   'users_phone_trgm_idx',
   'loyalty_leaderboard_user_idx'
 );
+
+-- Expected: 0 rows — confirms the dropped function is gone
+SELECT routine_name
+FROM   information_schema.routines
+WHERE  routine_name = 'use_loyalty_coupon_at_booking'
+  AND  routine_schema = 'public';
