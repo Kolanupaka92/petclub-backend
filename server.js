@@ -3065,16 +3065,122 @@ app.post('/api/payments/create-order', auth, async (req, res) => {
   }
 });
 
-// Verify Razorpay payment signature (called after payment success)
+// ─────────────────────────────────────────────────────────────────────────────
+//  Shared payment finalisation helper
+//  Called by BOTH the client-facing verify endpoint AND the server-side webhook.
+//
+//  Atomically marks a booking as paid using:
+//    UPDATE bookings SET payment_status='paid' … WHERE payment_status != 'paid'
+//  If the UPDATE touches 0 rows the booking was already processed — idempotent.
+//  Awards booking_spend + payment_bonus loyalty credits only on first call.
+//
+//  Returns: { alreadyProcessed: boolean, split: object|null }
+// ─────────────────────────────────────────────────────────────────────────────
+async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_payment_id, amountPaise, currency = 'INR' }) {
+  // Fetch current booking state (amount, currency, payment_status, customer_id)
+  const { data: bk } = await supabase
+    .from('bookings')
+    .select('id, amount, currency, payment_status, customer_id')
+    .eq('id', bookingId)
+    .single();
+
+  if (!bk) throw new Error(`Booking ${bookingId} not found`);
+
+  // Idempotency guard — already paid, nothing to do
+  if (bk.payment_status === 'paid') {
+    console.log(`[Payment] finalisePayment: booking ${bookingId} already paid — skipping`);
+    return { alreadyProcessed: true, split: null };
+  }
+
+  // Use Razorpay-confirmed paise amount when available (authoritative);
+  // fall back to the amount stored at booking-creation time.
+  const confirmedAmount = amountPaise ? amountPaise / 100 : parseFloat(bk.amount);
+  const split = confirmedAmount > 0 ? computeSplit(confirmedAmount, currency || bk.currency || 'INR') : null;
+
+  // Atomic update — only touches rows where payment_status != 'paid'
+  // so concurrent calls (verify + webhook) can never double-process.
+  const { data: updated } = await supabase
+    .from('bookings')
+    .update({
+      payment_status:    'paid',
+      razorpay_payment_id,
+      razorpay_order_id,
+      payout_status:     'pending',
+      ...(split ? {
+        total_amount:      split.total_amount,
+        platform_fee:      split.platform_fee,
+        provider_earnings: split.provider_earnings,
+        gateway_fee:       split.gateway_fee,
+      } : {}),
+    })
+    .eq('id', bookingId)
+    .neq('payment_status', 'paid')   // atomic guard — skip if already paid
+    .select('id');
+
+  // 0 rows updated means another concurrent call beat us here — idempotent exit
+  if (!updated || updated.length === 0) {
+    console.log(`[Payment] finalisePayment: concurrent update detected for ${bookingId} — skipping loyalty`);
+    return { alreadyProcessed: true, split: null };
+  }
+
+  // ── Log payment ──────────────────────────────────────────────────────────
+  supabase.from('payment_logs').insert({
+    booking_id:         bookingId,
+    user_id:            userId || bk.customer_id,
+    razorpay_order_id,
+    razorpay_payment_id,
+    status:             'success',
+    amount:             confirmedAmount,
+    currency:           currency || bk.currency || 'INR',
+  }).catch(() => {}); // table may not exist yet — non-fatal
+
+  // ── Award loyalty credits (non-blocking — never delay the payment response) ─
+  const loyaltyUserId = userId || bk.customer_id;
+  if (loyaltyUserId && confirmedAmount > 0) {
+    const spendCredits = loyalty.creditsFromAmount(confirmedAmount);
+
+    // booking_spend: 1 credit per ₹10 paid
+    if (spendCredits > 0) {
+      loyalty.awardPoints(
+        supabase, loyaltyUserId,
+        spendCredits, 'booking_spend',
+        `${spendCredits} credits for ₹${confirmedAmount} payment on booking ${bookingId}`,
+        bookingId,
+      ).catch(e => console.error('[Loyalty] booking_spend award failed:', e.message));
+    }
+
+    // payment_bonus: flat +50 for paying via in-app Razorpay
+    loyalty.awardPoints(
+      supabase, loyaltyUserId,
+      loyalty.PAYMENT_BONUS, 'payment_bonus',
+      `In-app Razorpay payment bonus for booking ${bookingId}`,
+      bookingId,
+    ).catch(e => console.error('[Loyalty] payment_bonus award failed:', e.message));
+
+    console.log(`[Payment] Loyalty queued: ${spendCredits} booking_spend + ${loyalty.PAYMENT_BONUS} payment_bonus → user ${loyaltyUserId}`);
+  }
+
+  return { alreadyProcessed: false, split };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  POST /api/payments/verify  — client-facing, called right after checkout
+//
+//  Fast feedback path: the frontend calls this immediately after Razorpay
+//  confirms the payment so the UI can show a success screen without waiting
+//  for the webhook. We verify the HMAC signature (proves the response came
+//  from Razorpay, not a tampered client payload) then delegate to finalisePayment.
+// ─────────────────────────────────────────────────────────────────────────────
 app.post('/api/payments/verify', auth, async (req, res) => {
   try {
     if (!razorpay) {
       return res.status(503).json({ error: 'Payments not yet active', coming_soon: true });
     }
     const { razorpay_order_id, razorpay_payment_id, razorpay_signature, bookingId } = req.body;
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature)
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !bookingId)
       return res.status(400).json({ error: 'Missing payment verification fields' });
 
+    // Verify HMAC — proves this payload was constructed by Razorpay
     const crypto = require('crypto');
     const expected = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
@@ -3084,36 +3190,15 @@ app.post('/api/payments/verify', auth, async (req, res) => {
     if (expected !== razorpay_signature)
       return res.status(400).json({ error: 'Payment signature mismatch — possible tamper attempt' });
 
-    // Compute authoritative split from the confirmed payment amount
-    // This overwrites the estimate stored at booking-creation time with the
-    // real paid amount, then locks it — historical splits must never change.
-    const { data: bk } = await supabase.from('bookings').select('amount, currency').eq('id', bookingId).single();
-    const split = bk?.amount ? computeSplit(bk.amount, bk.currency || 'INR') : {};
-
-    // Mark booking as paid + persist final revenue split
-    await supabase.from('bookings').update({
-      payment_status: 'paid',
-      razorpay_payment_id,
+    await finalisePayment({
+      bookingId,
+      userId:              req.user.id,
       razorpay_order_id,
-      payout_status: 'pending',
-      ...(split ? {
-        total_amount:      split.total_amount,
-        platform_fee:      split.platform_fee,
-        provider_earnings: split.provider_earnings,
-        gateway_fee:       split.gateway_fee,
-      } : {}),
-    }).eq('id', bookingId).eq('customer_id', req.user.id);
-
-    // Log payment
-    try {
-      await supabase.from('payment_logs').insert({
-        booking_id: bookingId,
-        user_id: req.user.id,
-        razorpay_order_id,
-        razorpay_payment_id,
-        status: 'success',
-      });
-    } catch {} // table may not exist yet
+      razorpay_payment_id,
+      // amount from Razorpay is in paise — not available here so we use booking amount
+      amountPaise: null,
+      currency:    'INR',
+    });
 
     res.json({ success: true, message: '✅ Payment verified and booking confirmed!' });
   } catch (err) {
@@ -3121,6 +3206,119 @@ app.post('/api/payments/verify', auth, async (req, res) => {
     res.status(500).json({ error: 'Payment verification failed' });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  POST /api/payments/webhook  — server-to-server from Razorpay
+//
+//  Razorpay posts payment.captured events here directly — bypasses the client
+//  entirely. This is the safety net: if the app crashes after charging the
+//  customer but before /verify is called, this webhook still fires and
+//  finalises the booking.
+//
+//  IMPORTANT: this route must use express.raw() to receive the raw body
+//  needed for HMAC verification. It is registered before express.json() runs.
+//
+//  Setup in Razorpay Dashboard:
+//    Webhooks → Add Webhook URL → https://petclub-backend-xxx.run.app/api/payments/webhook
+//    Events: payment.captured, payment.failed
+//    Secret: set RAZORPAY_WEBHOOK_SECRET in Cloud Run env vars (different from key_secret)
+// ─────────────────────────────────────────────────────────────────────────────
+app.post('/api/payments/webhook',
+  express.raw({ type: 'application/json' }),   // raw body required for HMAC
+  async (req, res) => {
+    // ── 1. Verify webhook signature ────────────────────────────────────────
+    const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
+    if (!webhookSecret) {
+      // Webhook secret not configured — log and return 200 so Razorpay doesn't retry forever
+      console.warn('[Webhook] RAZORPAY_WEBHOOK_SECRET not set — skipping signature check. Set it in Cloud Run env vars.');
+    } else {
+      const crypto   = require('crypto');
+      const received = req.headers['x-razorpay-signature'];
+      const expected = crypto
+        .createHmac('sha256', webhookSecret)
+        .update(req.body)           // raw Buffer, not parsed JSON
+        .digest('hex');
+
+      if (received !== expected) {
+        console.warn('[Webhook] Invalid signature — rejected');
+        return res.status(400).json({ error: 'Invalid webhook signature' });
+      }
+    }
+
+    // ── 2. Parse event ─────────────────────────────────────────────────────
+    let event;
+    try {
+      event = JSON.parse(req.body.toString());
+    } catch {
+      return res.status(400).json({ error: 'Invalid JSON body' });
+    }
+
+    const eventType = event.event;
+    console.log(`[Webhook] Received event: ${eventType}`);
+
+    // ── 3. Handle payment.captured ─────────────────────────────────────────
+    if (eventType === 'payment.captured') {
+      const payment = event.payload?.payment?.entity;
+      if (!payment) {
+        console.warn('[Webhook] payment.captured missing payload.payment.entity');
+        return res.status(200).json({ received: true }); // ack to stop retries
+      }
+
+      const razorpay_payment_id = payment.id;
+      const razorpay_order_id   = payment.order_id;
+      const amountPaise         = payment.amount;          // in paise
+      const currency            = payment.currency || 'INR';
+
+      // bookingId and userId were stored in order notes at create-order time
+      const bookingId = payment.notes?.bookingId;
+      const userId    = payment.notes?.userId;
+
+      if (!razorpay_order_id || !bookingId) {
+        console.warn('[Webhook] payment.captured missing order_id or bookingId in notes:', { razorpay_order_id, bookingId });
+        return res.status(200).json({ received: true });
+      }
+
+      try {
+        const result = await finalisePayment({
+          bookingId,
+          userId,
+          razorpay_order_id,
+          razorpay_payment_id,
+          amountPaise,
+          currency,
+        });
+        console.log(`[Webhook] payment.captured processed for booking ${bookingId} — alreadyProcessed: ${result.alreadyProcessed}`);
+      } catch (err) {
+        console.error('[Webhook] finalisePayment error:', err.message);
+        // Return 500 so Razorpay retries (it retries for up to 24 hours)
+        return res.status(500).json({ error: 'Internal error processing payment' });
+      }
+    }
+
+    // ── 4. Handle payment.failed ────────────────────────────────────────────
+    if (eventType === 'payment.failed') {
+      const payment   = event.payload?.payment?.entity;
+      const orderId   = payment?.order_id;
+      const bookingId = payment?.notes?.bookingId;
+      if (bookingId) {
+        await supabase.from('bookings')
+          .update({ payment_status: 'failed' })
+          .eq('id', bookingId)
+          .eq('payment_status', 'pending'); // only update if still pending
+        console.log(`[Webhook] payment.failed recorded for booking ${bookingId}`);
+      }
+      supabase.from('payment_logs').insert({
+        booking_id:       bookingId || null,
+        razorpay_order_id: orderId   || null,
+        razorpay_payment_id: payment?.id || null,
+        status:           'failed',
+      }).catch(() => {});
+    }
+
+    // Always return 200 to acknowledge receipt — Razorpay will retry on non-200
+    res.status(200).json({ received: true });
+  }
+);
 
 // Get Razorpay public key (frontend uses this to initialize the checkout)
 app.get('/api/payments/config', auth, (req, res) => {
