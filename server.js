@@ -48,11 +48,11 @@ const maskEmail = e => {
 const sanitize = s => typeof s === 'string' ? s.replace(/<[^>]*>/g, '').trim().slice(0, 2000) : s;
 
 // ── Revenue split ─────────────────────────────────────────────────────────────
-// PETclub takes 30%; provider earns 70%. Gateway fees are absorbed from our 30%.
+// PETclub takes 55%; provider earns 45%. Gateway fees are absorbed from our 55%.
 // All computation is server-side only — clients never receive platform_fee.
 // Override via env vars — no code change needed for business model adjustments.
-const PLATFORM_RATE   = parseFloat(process.env.PLATFORM_RATE)        || 0.30;
-const PROVIDER_RATE   = parseFloat(process.env.PROVIDER_RATE)        || 0.70;
+const PLATFORM_RATE   = parseFloat(process.env.PLATFORM_RATE)        || 0.55;
+const PROVIDER_RATE   = parseFloat(process.env.PROVIDER_RATE)        || 0.45;
 // Gateway fee rates (absorbed by PETclub, never charged to provider)
 const GW_PCT_USD      = parseFloat(process.env.GATEWAY_FEE_PCT_USD)  || 0.029;   // 2.9%
 const GW_FLAT_USD     = parseFloat(process.env.GATEWAY_FEE_FLAT_USD) || 0.30;    // $0.30
@@ -62,7 +62,7 @@ const GW_FLAT_INR     = parseFloat(process.env.GATEWAY_FEE_FLAT_INR) || 0.03;   
 function computeSplit(totalAmount, currency = 'INR') {
   const amt = parseFloat(totalAmount);
   if (!amt || isNaN(amt) || amt <= 0) return null;
-  // Gateway fee absorbed by PETclub (comes out of our 30%, never from provider's cut)
+  // Gateway fee absorbed by PETclub (comes out of our 55%, never from provider's cut)
   const gatewayFee = currency === 'USD'
     ? +(amt * GW_PCT_USD + GW_FLAT_USD).toFixed(2)
     : +(amt * GW_PCT_INR + GW_FLAT_INR).toFixed(2);
