@@ -4,12 +4,18 @@
 #  Why this exists:
 #    Supabase free-tier pauses after 7 days of zero DB activity.
 #    Cloud Run cold-start latency also increases with inactivity.
-#    This workflow pings /api/health daily, which:
-#      1. Wakes Cloud Run (backend)
-#      2. Executes a Supabase DB query inside the health check
-#      3. Keeps the Supabase project from pausing
+#    GitHub Actions disables scheduled workflows after 60 days of
+#    zero repository activity — the timestamp commit below prevents
+#    that from ever happening.
 #
-#  No secrets required — /api/health is a public endpoint.
+#    This workflow:
+#      1. Pings /api/health  → wakes Cloud Run + keeps Supabase active
+#      2. Pings Vercel frontend → keeps CDN edge cache warm
+#      3. Commits a daily timestamp → prevents GitHub's 60-day
+#         scheduled-workflow disable rule from killing this cron
+#
+#  Permissions required (set below):
+#    contents: write   — needed for the git commit step
 # ══════════════════════════════════════════════════════════════════
 
 name: Keep-Alive Ping
@@ -19,6 +25,9 @@ on:
     - cron: '0 8 * * *'       # 08:00 UTC daily  (1:30 PM IST / 4:00 AM EST)
   workflow_dispatch:            # allow manual trigger any time
 
+permissions:
+  contents: write               # needed to push the daily timestamp commit
+
 jobs:
   ping:
     name: Ping API & Supabase
@@ -26,7 +35,14 @@ jobs:
     timeout-minutes: 5
 
     steps:
-      - name: Ping backend health (wakes Cloud Run + Supabase)
+      # ── 1. Checkout (needed for git commit below) ────────────────
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # ── 2. Ping backend health (wakes Cloud Run + Supabase) ──────
+      - name: Ping backend health
         run: |
           echo "🐾 Pinging PETclub API health endpoint..."
           RESPONSE=$(curl -s -w "\n%{http_code}" https://api.mypetclub.app/api/health)
@@ -42,9 +58,25 @@ jobs:
           fi
           echo "✅ API is alive — Supabase kept active"
 
-      - name: Ping frontend (keeps Vercel warm)
+      # ── 3. Ping frontend (keeps Vercel CDN warm) ─────────────────
+      - name: Ping frontend
         run: |
           echo "🌐 Pinging frontend..."
           CODE=$(curl -s -o /dev/null -w "%{http_code}" https://app.mypetclub.app/)
           echo "Frontend HTTP status: $CODE"
           [ "$CODE" = "200" ] && echo "✅ Frontend alive" || echo "⚠️  Frontend returned $CODE"
+
+      # ── 4. Commit daily timestamp ─────────────────────────────────
+      # Prevents GitHub from disabling this scheduled workflow after
+      # 60 days of zero repository activity.
+      - name: Commit daily keep-alive timestamp
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          mkdir -p .github/keepalive
+          echo "Last keep-alive: $(date -u '+%Y-%m-%d %H:%M:%S UTC')" > .github/keepalive/timestamp.txt
+
+          git add .github/keepalive/timestamp.txt
+          git diff --staged --quiet || git commit -m "chore: keep-alive timestamp $(date -u '+%Y-%m-%d') [skip ci]"
+          git push
