@@ -300,12 +300,36 @@ async function validateCoupon(supabase, code, userId) {
 }
 
 /**
- * Mark a coupon as used when a booking is completed.
+ * Mark a coupon as used atomically via a Postgres RPC (C-4 fix).
+ *
+ * Uses the use_loyalty_coupon_at_booking() function which acquires a
+ * row-level lock on the coupon before checking and marking it used.
+ * This eliminates the race window that existed when the check and the
+ * update were separate operations.
+ *
+ * Returns { success: true } or { success: false, error: string }.
+ * The caller (server.js booking route) must roll back the booking
+ * insert if this returns success: false.
+ *
+ * @param {object} supabase
+ * @param {string} code       — coupon code (e.g. PCR-XXXXXX-XXXXXX)
+ * @param {string} bookingId  — UUID of the booking just created
+ * @returns {Promise<{ success: boolean, error?: string }>}
  */
 async function markCouponUsed(supabase, code, bookingId) {
-  await supabase.from('loyalty_coupons')
-    .update({ is_used: true, used_booking_id: bookingId, used_at: new Date().toISOString() })
-    .eq('code', code);
+  const { data, error } = await supabase.rpc('use_loyalty_coupon_at_booking', {
+    p_coupon_code: code,
+    p_booking_id:  bookingId,
+  });
+  if (error) {
+    console.error('[Loyalty] markCouponUsed RPC error:', error.message);
+    return { success: false, error: 'Failed to mark coupon as used' };
+  }
+  const result = typeof data === 'string' ? JSON.parse(data) : data;
+  if (!result?.success) {
+    console.error('[Loyalty] markCouponUsed RPC returned failure:', result?.error);
+  }
+  return result ?? { success: false, error: 'No response from RPC' };
 }
 
 module.exports = {

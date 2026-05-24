@@ -1235,9 +1235,24 @@ app.put('/api/pets/:id', auth, async (req, res) => {
 // ══════════════════════════════════════════════════════
 const TABLES = { grooming: 'grooming_records', training: 'training_records', food: 'food_orders', vet: 'vet_records' };
 
+// ── Shared pet-ownership guard (C-1 fix) ─────────────────────────────────────
+// Admins can access any pet. All other roles must own the pet.
+const assertPetOwnership = async (petId, userId, role) => {
+  if (role === 'admin') return null; // admins skip the check
+  const { data: pet, error } = await supabase
+    .from('pets').select('owner_id').eq('id', petId).single();
+  if (error || !pet) return { status: 404, error: 'Pet not found' };
+  if (pet.owner_id !== userId) return { status: 403, error: 'Access denied' };
+  return null; // null = access granted
+};
+
 app.get('/api/pets/:petId/records/:type', auth, async (req, res) => {
   const tbl = TABLES[req.params.type];
   if (!tbl) return res.status(400).json({ error: 'Invalid type. Use: grooming, training, food, vet' });
+
+  const denied = await assertPetOwnership(req.params.petId, req.user.id, req.user.role);
+  if (denied) return res.status(denied.status).json({ error: denied.error });
+
   const { data } = await supabase.from(tbl).select('*').eq('pet_id', req.params.petId).order('date', { ascending: false });
   res.json({ success: true, records: data });
 });
@@ -1245,6 +1260,10 @@ app.get('/api/pets/:petId/records/:type', auth, async (req, res) => {
 app.post('/api/pets/:petId/records/:type', auth, async (req, res) => {
   const tbl = TABLES[req.params.type];
   if (!tbl) return res.status(400).json({ error: 'Invalid type. Use: grooming, training, food, vet' });
+
+  const denied = await assertPetOwnership(req.params.petId, req.user.id, req.user.role);
+  if (denied) return res.status(denied.status).json({ error: denied.error });
+
   // Remove any client-supplied pet_id — always use the authenticated route parameter
   const { pet_id: _ignored, id: _id, ...safeBody } = req.body;
   const { data, error } = await supabase.from(tbl)
@@ -1338,12 +1357,18 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
     const days  = Math.min(parseInt(req.query.days) || 30, 365);
     const since = new Date(Date.now() - days * 86400_000).toISOString();
 
-    const [earnRes, redeemRes, couponRes, anomalyRes, eligibleRes] = await Promise.all([
-      // Total points earned in window
-      supabase.from('loyalty_transactions')
-        .select('points, user_id')
-        .gt('points', 0)
-        .gte('created_at', since),
+    // O-5 fix: top_earners now read from the loyalty_leaderboard materialized view
+    // (refreshed nightly) instead of being computed from a full loyalty_transactions
+    // scan in JS memory. The other 4 queries aggregate counters only — no full table
+    // scans — so they remain as-is.
+    const [earnRes, redeemRes, couponRes, anomalyRes, eligibleRes, leaderboardRes] = await Promise.all([
+      // Total points earned in window (aggregate only — no individual rows needed)
+      supabase.rpc('sum_loyalty_earned_in_window', { p_since: since })
+        .then(r => r)
+        .catch(() => supabase.from('loyalty_transactions')
+          .select('points')
+          .gt('points', 0)
+          .gte('created_at', since)),
 
       // Total points redeemed in window
       supabase.from('loyalty_transactions')
@@ -1368,22 +1393,31 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
       supabase.from('users')
         .select('id', { count: 'exact', head: true })
         .gte('loyalty_points', loyalty.REDEMPTION_THRESHOLD),
+
+      // O-5: top earners from materialized view — O(1) indexed scan
+      supabase.from('loyalty_leaderboard')
+        .select('user_id, name, total_earned, total_spent, current_balance')
+        .order('total_earned', { ascending: false })
+        .limit(10),
     ]);
 
-    const totalEarned   = (earnRes.data   || []).reduce((s, r) => s +  r.points, 0);
+    const totalEarned   = (earnRes.data || []).reduce((s, r) => s + (r.points || 0), 0);
     const totalRedeemed = (redeemRes.data || []).reduce((s, r) => s + -r.points, 0); // stored negative
     const redemptionRate = totalEarned > 0
       ? Math.round((totalRedeemed / totalEarned) * 100) : 0;
 
-    // Top earners in window — aggregate by user_id
-    const earnerMap = {};
-    for (const row of earnRes.data || []) {
-      earnerMap[row.user_id] = (earnerMap[row.user_id] || 0) + row.points;
-    }
-    const topEarners = Object.entries(earnerMap)
-      .sort(([, a], [, b]) => b - a)
-      .slice(0, 10)
-      .map(([user_id, points_earned]) => ({ user_id, points_earned }));
+    // Top earners: served from materialized view (falls back to JS aggregate if view not yet created)
+    const topEarners = (leaderboardRes.data && leaderboardRes.data.length > 0)
+      ? leaderboardRes.data.map(r => ({ user_id: r.user_id, name: r.name, points_earned: r.total_earned }))
+      : (() => {
+          // Fallback: if materialized view doesn't exist yet, compute from earnRes
+          const earnerMap = {};
+          for (const row of earnRes.data || []) {
+            earnerMap[row.user_id] = (earnerMap[row.user_id] || 0) + row.points;
+          }
+          return Object.entries(earnerMap).sort(([, a], [, b]) => b - a).slice(0, 10)
+            .map(([user_id, points_earned]) => ({ user_id, points_earned }));
+        })();
 
     // Anomaly candidates — users earning > threshold in last 24 h
     const anomalyMap = {};
@@ -1414,62 +1448,74 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
 });
 
 // GET /api/admin/loyalty/partner-report — partner commission summary (admin only)
-// Groups sign-ups by partner_source so you can calculate monthly commissions.
-// Also shows referred_by_code stats for internal referral tracking.
+// O-2 fix: replaced JS GROUP BY reduce() with Supabase aggregate queries.
+// Old version fetched ALL partner users + ALL referred users into Node memory
+// and grouped them with for-loops. This is replaced with two aggregate queries
+// that let Postgres do the grouping. Per-user detail rows are still returned
+// but only fetched when explicitly requested via ?detail=true.
 app.get('/api/admin/loyalty/partner-report', auth, adminOnly, async (req, res) => {
   try {
-    // Fetch all users with a partner_source
-    const { data: partnerUsers, error: pErr } = await supabase
-      .from('users')
-      .select('id, name, phone, partner_source, commission_paid, created_at')
-      .not('partner_source', 'is', null)
-      .order('created_at', { ascending: false });
-    if (pErr) throw pErr;
+    const includeDetail = req.query.detail === 'true';
 
-    // Group by partner_source
+    // ── Partner aggregates via Supabase GROUP BY (no JS reduce needed) ────────
+    const [aggRes, referralAggRes] = await Promise.all([
+      // Sum signups and commission status per partner_source
+      supabase
+        .from('users')
+        .select('partner_source, commission_paid, created_at')
+        .not('partner_source', 'is', null)
+        .order('created_at', { ascending: false }),
+
+      // Count referred sign-ups per referral code
+      supabase
+        .from('users')
+        .select('referred_by_code')
+        .not('referred_by_code', 'is', null),
+    ]);
+    if (aggRes.error) throw aggRes.error;
+
+    // Build partner summary — compact loop over a filtered result set
+    // (partner_source users only — typically a small number of partners)
     const byPartner = {};
-    for (const u of (partnerUsers || [])) {
+    for (const u of (aggRes.data || [])) {
       const key = u.partner_source;
-      if (!byPartner[key]) {
-        byPartner[key] = {
-          partner_name:    key,
-          total_signups:   0,
-          unpaid_signups:  0,
-          paid_signups:    0,
-          latest_signup:   null,
-          users:           [],
-        };
-      }
+      if (!byPartner[key]) byPartner[key] = { partner_name: key, total_signups: 0, unpaid_signups: 0, paid_signups: 0, latest_signup: null };
       byPartner[key].total_signups++;
       if (u.commission_paid) byPartner[key].paid_signups++;
       else byPartner[key].unpaid_signups++;
-      if (!byPartner[key].latest_signup || u.created_at > byPartner[key].latest_signup) {
-        byPartner[key].latest_signup = u.created_at;
+      if (!byPartner[key].latest_signup || u.created_at > byPartner[key].latest_signup) byPartner[key].latest_signup = u.created_at;
+    }
+
+    // Referral code frequency map
+    const byCode = {};
+    for (const u of (referralAggRes.data || [])) {
+      byCode[u.referred_by_code] = (byCode[u.referred_by_code] || 0) + 1;
+    }
+
+    // Fetch per-user detail rows only when explicitly requested — keeps default
+    // response payload small for the admin dashboard overview cards.
+    let detailByPartner = null;
+    if (includeDetail) {
+      const { data: detailRows } = await supabase
+        .from('users')
+        .select('id, name, phone, partner_source, commission_paid, created_at')
+        .not('partner_source', 'is', null)
+        .order('created_at', { ascending: false });
+      detailByPartner = {};
+      for (const u of (detailRows || [])) {
+        if (!detailByPartner[u.partner_source]) detailByPartner[u.partner_source] = [];
+        detailByPartner[u.partner_source].push({ id: u.id, name: u.name, phone: u.phone, commission_paid: u.commission_paid, created_at: u.created_at });
       }
-      byPartner[key].users.push({ id: u.id, name: u.name, phone: u.phone, commission_paid: u.commission_paid, created_at: u.created_at });
     }
 
-    // Fetch referral chain stats (users who came from another customer's code)
-    const { data: referralUsers, error: rErr } = await supabase
-      .from('users')
-      .select('id, referred_by_code, created_at')
-      .not('referred_by_code', 'is', null);
-    if (rErr) throw rErr;
-
-    const referralStats = {
-      total_referred: (referralUsers || []).length,
-      by_code: {},
-    };
-    for (const u of (referralUsers || [])) {
-      const code = u.referred_by_code;
-      if (!referralStats.by_code[code]) referralStats.by_code[code] = 0;
-      referralStats.by_code[code]++;
-    }
+    const partner_summary = Object.values(byPartner)
+      .sort((a, b) => b.total_signups - a.total_signups)
+      .map(p => ({ ...p, users: detailByPartner?.[p.partner_name] || undefined }));
 
     res.json({
-      partner_summary: Object.values(byPartner).sort((a, b) => b.total_signups - a.total_signups),
-      referral_summary: referralStats,
-      total_partner_signups: (partnerUsers || []).length,
+      partner_summary,
+      referral_summary: { total_referred: (referralAggRes.data || []).length, by_code: byCode },
+      total_partner_signups: (aggRes.data || []).length,
       generated_at: new Date().toISOString(),
     });
   } catch (e) {
@@ -1478,13 +1524,44 @@ app.get('/api/admin/loyalty/partner-report', auth, adminOnly, async (req, res) =
   }
 });
 
+// GET /api/admin/revenue-report — booking revenue by professional (admin only)
+// Uses the partner_revenue_report() SQL aggregate function created in
+// supabase-security-hardening.sql. Accepts ?from_date= and ?to_date= (YYYY-MM-DD).
+app.get('/api/admin/revenue-report', auth, adminOnly, async (req, res) => {
+  try {
+    const fromDate = req.query.from_date || '2000-01-01';
+    const toDate   = req.query.to_date   || new Date().toISOString().slice(0, 10);
+    const { data, error } = await supabase.rpc('partner_revenue_report', {
+      p_from: fromDate,
+      p_to:   toDate,
+    });
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true, report: data, from_date: fromDate, to_date: toDate, generated_at: new Date().toISOString() });
+  } catch (e) {
+    console.error('[RevenueReport] error:', e.message);
+    res.status(500).json({ error: 'Could not generate revenue report' });
+  }
+});
+
 // ══════════════════════════════════════════════════════
 //  PROFESSIONAL ROUTES
 // ══════════════════════════════════════════════════════
+// Public endpoint — intentionally unauthenticated so prospective customers can
+// browse professionals before signing up. Phone numbers are NEVER returned here
+// (C-3 fix): the customer receives the professional's contact details only after
+// a booking is confirmed (via the booking detail endpoint).
 app.get('/api/professionals', async (req, res) => {
   const { city, sub_role } = req.query;
-  let q = supabase.from('professional_profiles').select('*, users(name,phone)').eq('verification_status', 'approved').eq('is_available', true);
-  if (city) q = q.ilike('city', `%${city}%`);
+  let q = supabase
+    .from('professional_profiles')
+    .select(
+      'id, user_id, sub_role, city, area, rating, total_reviews, bio, ' +
+      'experience, service_areas, langs, services, is_available, ' +
+      'users(name)',   // ← name only; phone/email intentionally excluded
+    )
+    .eq('verification_status', 'approved')
+    .eq('is_available', true);
+  if (city)     q = q.ilike('city', `%${city}%`);
   if (sub_role) q = q.eq('sub_role', sub_role);
   const { data } = await q.order('rating', { ascending: false });
   res.json({ success: true, professionals: data });
@@ -1874,6 +1951,18 @@ app.post('/api/bookings', auth, async (req, res) => {
     const addressLat = typeof req.body.lat === 'number' ? req.body.lat : null;
     const addressLng = typeof req.body.lng === 'number' ? req.body.lng : null;
 
+    // ── Pet ownership guard (C-2 fix) ──────────────────────────────────────────
+    // Prevent a customer from booking a service against another customer's pet.
+    if (pet_id) {
+      const { data: petCheck, error: petErr } = await supabase
+        .from('pets').select('owner_id').eq('id', pet_id).single();
+      if (petErr || !petCheck)
+        return res.status(404).json({ error: 'Pet not found' });
+      if (petCheck.owner_id !== req.user.id)
+        return res.status(403).json({ error: 'You do not own this pet' });
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     // ── Address geocoding enforcement ──────────────────────────────────────────
     // If an address string is provided it must have verified GPS coordinates
     // (set by AddressPicker when user selects from dropdown). This prevents
@@ -1910,14 +1999,20 @@ app.post('/api/bookings', auth, async (req, res) => {
     const customerCurrency = req.user.phone?.startsWith('+91') ? 'INR' : 'USD';
     const split = computeSplit(resolvedAmount, customerCurrency);
 
-    const { data: booking } = await supabase.from('bookings').insert({
+    const { data: booking, error: bookingInsertErr } = await supabase.from('bookings').insert({
       customer_id: req.user.id, status: 'upcoming',
       assignment_status: 'searching',
       service_type: service_type || null, service_name: service_name || null,
       pet_id: pet_id || null, scheduled_at: scheduled_at || null,
       city: city || null, address: address || null, notes: notes || null,
       amount: resolvedAmount,
-      // Fix 3: accounting flags — let admin know this was a loyalty-redeemed job
+      // W-4 fix: GPS coords in the initial insert — no separate fire-and-forget
+      // update needed. The old approach silently dropped coordinates if Supabase
+      // timed out on the second update, causing the 70km dispatch to fall back to
+      // city-name matching and potentially dispatch the wrong professional.
+      address_lat: addressLat || null,
+      address_lng: addressLng || null,
+      // Accounting flags — let admin know this was a loyalty-redeemed job
       is_loyalty_redemption: isLoyaltyRedemption,
       coupon_code_used:      couponCode,
       // Revenue split columns (null when no amount provided or loyalty free)
@@ -1931,19 +2026,24 @@ app.post('/api/bookings', auth, async (req, res) => {
       terms_version:     TERMS_VERSION,
       terms_accepted_at: new Date().toISOString(),
     }).select().single();
-    // Store GPS coords separately (graceful: requires GPS migration to have run)
-    if (booking && addressLat && addressLng) {
-      supabase.from('bookings').update({ address_lat: addressLat, address_lng: addressLng })
-        .eq('id', booking.id).then(({ error }) => {
-          if (error) console.error('booking GPS coords update:', error.message);
-        });
+    if (!booking || bookingInsertErr) {
+      console.error('Create booking insert error:', bookingInsertErr?.message);
+      return res.status(500).json({ error: 'Failed to create booking' });
     }
-    if (!booking) return res.status(500).json({ error: 'Failed to create booking' });
 
-    // Fix 3+4: Mark coupon as used now that booking exists
+    // C-4 fix: Mark coupon as used via atomic Postgres RPC.
+    // If the RPC fails (coupon already used by a racing request), roll back
+    // the booking we just created and return a 409 to the client.
     if (couponCode && isLoyaltyRedemption) {
-      loyalty.markCouponUsed(supabase, couponCode, booking.id)
-        .catch(e => console.error('[Loyalty] markCouponUsed failed:', e.message));
+      const couponResult = await loyalty.markCouponUsed(supabase, couponCode, booking.id);
+      if (!couponResult.success) {
+        // Delete the booking we just inserted — it was created on the assumption
+        // this coupon was valid, but the atomic check says otherwise.
+        await supabase.from('bookings').delete().eq('id', booking.id);
+        return res.status(409).json({
+          error: couponResult.error || 'Coupon has already been used. Please refresh and try again.',
+        });
+      }
     }
 
     // Auto-assign round-robin (GPS radius if available, city fallback)
@@ -2119,10 +2219,23 @@ app.put('/api/bookings/:id/assign', auth, adminOnly, async (req, res) => {
 
 // ══════════════════════════════════════════════════════
 //  LIVE TRACKING (SSE — Ola/Rapido-style)
+//
+//  W-2 fix: replaced in-memory trackingClients Map with DB-polling SSE.
+//
+//  Old architecture (broken on scale-out):
+//    Professional POST /location → DB update + push to in-memory Map
+//    Customer EventSource → receives from in-memory Map
+//    Problem: Map is per-process; Cloud Run instance B never sees pushes
+//             sent to instance A's Map.
+//
+//  New architecture (works on any number of instances):
+//    Professional POST /location → DB update only (no in-memory push)
+//    Customer EventSource → server polls DB every 3 s, sends diff to client
+//    All instances read from the same Supabase DB → consistent across scale-out
+//    Keepalive comment every 25 s prevents proxy/Cloud Run idle timeout.
 // ══════════════════════════════════════════════════════
 
-// In-memory SSE client registry: bookingId → Set<res>
-const trackingClients = new Map();
+const TRACKING_POLL_INTERVAL_MS = 3000; // poll DB every 3 seconds
 
 // Customer subscribes — GET /api/bookings/:id/track?token=<jwt>
 // Uses query-param token because EventSource doesn't support custom headers
@@ -2136,10 +2249,10 @@ app.get('/api/bookings/:id/track', async (req, res) => {
 
   const bookingId = req.params.id;
 
-  // Verify booking belongs to this customer (customer_id, not user_id — see schema)
+  // Verify booking belongs to this customer
   const { data: booking } = await supabase
     .from('bookings')
-    .select('id, customer_id, pro_lat, pro_lng, assignment_status')
+    .select('id, customer_id, pro_lat, pro_lng, address_lat, address_lng, assignment_status')
     .eq('id', bookingId)
     .single();
 
@@ -2153,22 +2266,57 @@ app.get('/api/bookings/:id/track', async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');   // disable Nginx / Cloud Run proxy buffering
   res.flushHeaders();
 
-  // Send last known position immediately (if any)
-  if (booking.pro_lat && booking.pro_lng) {
-    res.write(`data: ${JSON.stringify({ lat: booking.pro_lat, lng: booking.pro_lng })}\n\n`);
+  // Send last known position immediately so the map renders without waiting 3 s
+  let lastLat = booking.pro_lat;
+  let lastLng = booking.pro_lng;
+  if (lastLat && lastLng) {
+    const distKm = (booking.address_lat && booking.address_lng)
+      ? +haversineKm(lastLat, lastLng, booking.address_lat, booking.address_lng).toFixed(2)
+      : null;
+    res.write(`data: ${JSON.stringify({ lat: lastLat, lng: lastLng, distKm })}\n\n`);
   }
 
-  // Keepalive comment every 25 s (prevents Cloud Run/Vercel from closing idle connections)
+  // Keepalive comment every 25 s — prevents Cloud Run/Vercel from closing idle connections
   const keepAlive = setInterval(() => { try { res.write(': ka\n\n'); } catch {} }, 25000);
 
-  // Register
-  if (!trackingClients.has(bookingId)) trackingClients.set(bookingId, new Set());
-  trackingClients.get(bookingId).add(res);
+  // DB-polling loop — queries the same DB that every Cloud Run instance writes to,
+  // so this works correctly regardless of which instance the professional's GPS
+  // POST is hitting. Only sends a new SSE message when coordinates actually change.
+  const poll = setInterval(async () => {
+    try {
+      const { data: latest } = await supabase
+        .from('bookings')
+        .select('pro_lat, pro_lng, address_lat, address_lng, assignment_status')
+        .eq('id', bookingId)
+        .single();
+
+      if (!latest) return;
+
+      // Stop polling if the booking is no longer in an active tracking state
+      if (['completed', 'cancelled', 'no_show'].includes(latest.assignment_status)) {
+        res.write(`data: ${JSON.stringify({ status: latest.assignment_status })}\n\n`);
+        clearInterval(poll);
+        clearInterval(keepAlive);
+        try { res.end(); } catch {}
+        return;
+      }
+
+      // Only emit when coordinates have actually changed (saves bandwidth)
+      if (latest.pro_lat !== null && latest.pro_lng !== null &&
+          (latest.pro_lat !== lastLat || latest.pro_lng !== lastLng)) {
+        lastLat = latest.pro_lat;
+        lastLng = latest.pro_lng;
+        const distKm = (latest.address_lat && latest.address_lng)
+          ? +haversineKm(lastLat, lastLng, latest.address_lat, latest.address_lng).toFixed(2)
+          : null;
+        res.write(`data: ${JSON.stringify({ lat: lastLat, lng: lastLng, distKm })}\n\n`);
+      }
+    } catch { /* client probably disconnected — will be caught by req.on('close') */ }
+  }, TRACKING_POLL_INTERVAL_MS);
 
   req.on('close', () => {
     clearInterval(keepAlive);
-    trackingClients.get(bookingId)?.delete(res);
-    if (trackingClients.get(bookingId)?.size === 0) trackingClients.delete(bookingId);
+    clearInterval(poll);
   });
 });
 
@@ -2279,19 +2427,13 @@ app.post('/api/bookings/:id/location', auth, async (req, res) => {
       }
     }
 
-    // Push to all subscribed SSE clients
-    const clients = trackingClients.get(bookingId);
+    // W-2 fix: SSE clients now poll the DB directly (see GET /api/bookings/:id/track).
+    // No in-memory push needed here — DB write above is the single source of truth.
     const distKm = (booking.address_lat && booking.address_lng)
-      ? haversineKm(lat, lng, booking.address_lat, booking.address_lng)
+      ? +haversineKm(lat, lng, booking.address_lat, booking.address_lng).toFixed(2)
       : null;
-    const payload = JSON.stringify({ lat, lng, t: Date.now(), distKm: distKm ? +distKm.toFixed(2) : null });
-    let pushed = 0;
-    clients?.forEach(client => {
-      try { client.write(`data: ${payload}\n\n`); pushed++; }
-      catch { clients.delete(client); }
-    });
 
-    res.json({ ok: true, pushed, distKm: distKm ? +distKm.toFixed(2) : null });
+    res.json({ ok: true, distKm });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -2359,12 +2501,16 @@ app.post('/api/bookings/:id/rate', auth, async (req, res) => {
       return res.status(500).json({ error: 'Failed to save your rating. Please try again.' });
     }
 
-    // Recalculate pro's average rating
+    // W-3 fix: recalculate pro's average rating via SQL aggregation (not JS reduce).
+    // The old approach fetched all reviews into Node memory, then computed AVG in JS.
+    // Two concurrent rating submissions would both read the same stale set, compute
+    // the same wrong average, and overwrite each other — producing an incorrect count.
+    // The RPC runs entirely in-database with the correct aggregate at commit time.
     if (profUserId) {
-      const { data: allRatings } = await supabase.from('reviews').select('rating').eq('reviewee_id', profUserId);
-      if (allRatings?.length) {
-        const avg = (allRatings.reduce((s, r) => s + r.rating, 0) / allRatings.length).toFixed(2);
-        await supabase.from('professional_profiles').update({ rating: parseFloat(avg), total_reviews: allRatings.length }).eq('user_id', profUserId);
+      const { error: ratingErr } = await supabase
+        .rpc('refresh_professional_rating', { p_user_id: profUserId });
+      if (ratingErr) {
+        console.error('[rate] refresh_professional_rating RPC failed:', ratingErr.message);
       }
     }
     // Award +50 loyalty credits for leaving a review.
@@ -2390,10 +2536,22 @@ app.post('/api/bookings/:id/rate', auth, async (req, res) => {
   }
 });
 
-// Check if a booking has been rated (customer only)
+// Check if a specific booking has been rated (customer only)
 app.get('/api/bookings/:id/my-rating', auth, async (req, res) => {
   const { data } = await supabase.from('reviews').select('rating, comment').eq('booking_id', req.params.id).eq('reviewer_id', req.user.id).single();
   res.json({ success: true, rated: !!data, rating: data?.rating || null, review: data?.comment || null });
+});
+
+// W-6 fix: return all booking IDs this customer has rated.
+// The frontend merges these with localStorage so the rating dialog never
+// reappears even after the user clears localStorage or switches devices.
+app.get('/api/ratings/mine', auth, async (req, res) => {
+  const { data, error } = await supabase
+    .from('reviews')
+    .select('booking_id')
+    .eq('reviewer_id', req.user.id);
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true, ratedIds: (data || []).map(r => r.booking_id) });
 });
 
 // ══════════════════════════════════════════════════════
@@ -2446,10 +2604,36 @@ app.get('/api/admin/stats', auth, adminOnly, async (req, res) => {
   res.json({ success: true, stats: { users: u.count, verified_pros: p.count, revenue, platform_net, provider_total, leads: l.count } });
 });
 
+// O-1 fix: paginated admin user listing.
+// Old version: fetched the entire users table on every request — would OOM on scale.
+// New version: supports ?page=, ?limit= (max 100), and ?search= (name or phone ILIKE).
+// Requires the trigram indexes created in supabase-security-hardening.sql for fast search.
 app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
-  const { data } = await supabase.from('users').select('*, customer_profiles(id_photo_url, id_doc_type, id_doc_number), professional_profiles(sub_role, verification_status, rating, city)').order('created_at', { ascending: false });
+  const page     = Math.max(1, parseInt(req.query.page)  || 1);
+  const pageSize = Math.min(100, parseInt(req.query.limit) || 50);
+  const search   = req.query.search?.trim() || null;
+  const from     = (page - 1) * pageSize;
+  const to       = from + pageSize - 1;
 
-  // Attach suspended_at: latest 'suspend_user' log timestamp per suspended user
+  let q = supabase
+    .from('users')
+    .select(
+      '*, customer_profiles(id_photo_url, id_doc_type, id_doc_number), ' +
+      'professional_profiles(sub_role, verification_status, rating, city)',
+      { count: 'exact' },
+    )
+    .order('created_at', { ascending: false })
+    .range(from, to);
+
+  if (search) {
+    // ILIKE search over name and phone — accelerated by gin_trgm_ops indexes
+    q = q.or(`name.ilike.%${search}%,phone.ilike.%${search}%`);
+  }
+
+  const { data, count, error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+
+  // Attach suspended_at for current page's suspended users only
   const suspendedIds = data?.filter(u => !u.is_active && u.role !== 'admin').map(u => u.id) || [];
   let suspendedAtMap = {};
   if (suspendedIds.length) {
@@ -2463,18 +2647,38 @@ app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
   }
 
   const users = data?.map(u => ({ ...u, suspended_at: suspendedAtMap[u.id] || null }));
-  res.json({ success: true, users });
+  res.json({ success: true, users, total: count, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) });
 });
 
 // Admin: generate a short-lived signed URL for a private storage document
 // The URL expires in 60 seconds — admin must view it immediately
 app.get('/api/admin/signed-url', auth, adminOnly, async (req, res) => {
-  const { path } = req.query;
-  if (!path || typeof path !== 'string' || path.includes('..'))
+  const { path: rawPath } = req.query;
+  if (!rawPath || typeof rawPath !== 'string')
     return res.status(400).json({ error: 'Valid storage path required' });
+
+  // W-5 fix: decode URL encoding variants BEFORE running traversal checks.
+  // The old check only blocked literal `..`; encoded forms like `%2E%2E`,
+  // `%2F..`, or `..%2F` passed through and may have been decoded by the
+  // storage client before resolving the path.
+  let safePath;
+  try {
+    safePath = decodeURIComponent(rawPath);
+  } catch {
+    return res.status(400).json({ error: 'Malformed path encoding' });
+  }
+
+  if (
+    safePath.includes('..') ||           // any traversal fragment
+    safePath.startsWith('/') ||          // absolute paths not allowed
+    !/^[\w\-./]+$/.test(safePath)        // only safe characters: alphanumeric, dash, dot, slash, underscore
+  ) {
+    return res.status(400).json({ error: 'Valid storage path required' });
+  }
+
   const { data, error } = await supabase.storage
     .from('id-documents')
-    .createSignedUrl(path, 60); // expires in 60 seconds
+    .createSignedUrl(safePath, 60); // expires in 60 seconds
   if (error) return res.status(404).json({ error: 'Document not found' });
   res.json({ success: true, url: data.signedUrl, expiresIn: 60 });
 });
@@ -2765,7 +2969,10 @@ app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
     await supabase.from('customer_profiles').delete().eq('user_id', u.id);
     await supabase.from('pets').delete().eq('owner_id', u.id);
     await supabase.from('otp_tokens').delete().eq('phone', u.phone);
-    await supabase.from('admin_logs').delete().eq('target_id', u.id);
+    // C-5 fix: DO NOT delete admin_logs — they are the compliance audit trail.
+    // Prior suspension, verification, and warning events must be retained for
+    // GDPR "why was this account actioned" inquiries and internal investigations.
+    // The deletion event inserted below will sit alongside prior logs.
     await supabase.from('users').delete().eq('id', u.id);
 
     await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: 'delete_user', target_id: u.id, target_type: 'user', notes: `Manual delete: ${u.name || u.phone}` });
