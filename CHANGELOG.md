@@ -1,3 +1,10 @@
+## [1.12.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.12.0...v1.12.1) (2026-05-24)
+
+
+### Bug Fixes
+
+* **keepalive:** add daily timestamp commit to prevent GitHub 60-day workflow disable ([276dd3c](https://github.com/Kolanupaka92/petclub-backend/commit/276dd3c9022f76ed06a7dc3bea812a3f3fad4ea9))
+
 # [1.12.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.11.1...v1.12.0) (2026-05-24)
 
 
