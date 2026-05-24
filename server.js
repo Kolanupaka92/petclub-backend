@@ -872,12 +872,45 @@ app.post('/api/users/set-role', auth, async (req, res) => {
     const validRoles = ['customer', 'professional'];
     if (!validRoles.includes(role)) return res.status(400).json({ error: 'Role must be customer or professional' });
 
+    // Referral / Partner source (optional, customer sign-up only)
+    // Sanitize and uppercase so matching is case-insensitive ("PCR-..." codes are uppercase)
+    const referralInput = sanitize(req.body.referral_input)?.trim().toUpperCase() || null;
+    let referredByCode = null;
+    let partnerSource  = null;
+    if (referralInput && role === 'customer') {
+      // Check if the input matches an existing PETclub referral_code
+      const { data: referrer } = await supabase
+        .from('users')
+        .select('id, referral_code')
+        .eq('referral_code', referralInput)
+        .neq('id', req.user.id)   // can't refer yourself
+        .single();
+      if (referrer) {
+        // It's a valid customer referral — record it and credit the referrer
+        referredByCode = referralInput;
+        // Award referral bonus to the referrer (non-blocking; fail silently)
+        loyalty.awardPoints(
+          supabase, referrer.id, loyalty.REFERRAL_BONUS,
+          'referral_bonus',
+          `Referral bonus — friend signed up (user ${req.user.id})`,
+          null
+        ).catch(e => console.error('[Referral] award bonus error:', e.message));
+      } else {
+        // Not a known referral code — treat as a free-text partner/clinic name
+        // Store original casing from the user's input (before toUpperCase())
+        partnerSource = sanitize(req.body.referral_input)?.trim() || null;
+      }
+    }
+
     // Infer country from phone prefix
     const phoneCountry = req.user.phone?.startsWith('+1') ? 'United States'
       : req.user.phone?.startsWith('+91') ? 'India' : null;
 
-    // Update user record
-    await supabase.from('users').update({ role, name: name || null, email: email || null }).eq('id', req.user.id);
+    // Update user record (include referral/partner if resolved)
+    const userUpdate = { role, name: name || null, email: email || null };
+    if (referredByCode) userUpdate.referred_by_code = referredByCode;
+    if (partnerSource)  userUpdate.partner_source   = partnerSource;
+    await supabase.from('users').update(userUpdate).eq('id', req.user.id);
 
     if (role === 'professional') {
       if (!['Groomer', 'Trainer', 'Vet'].includes(subRole))
@@ -1377,6 +1410,71 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
   } catch (e) {
     console.error('[Loyalty] stats error:', e.message);
     res.status(500).json({ error: 'Could not generate loyalty stats' });
+  }
+});
+
+// GET /api/admin/loyalty/partner-report — partner commission summary (admin only)
+// Groups sign-ups by partner_source so you can calculate monthly commissions.
+// Also shows referred_by_code stats for internal referral tracking.
+app.get('/api/admin/loyalty/partner-report', auth, adminOnly, async (req, res) => {
+  try {
+    // Fetch all users with a partner_source
+    const { data: partnerUsers, error: pErr } = await supabase
+      .from('users')
+      .select('id, name, phone, partner_source, commission_paid, created_at')
+      .not('partner_source', 'is', null)
+      .order('created_at', { ascending: false });
+    if (pErr) throw pErr;
+
+    // Group by partner_source
+    const byPartner = {};
+    for (const u of (partnerUsers || [])) {
+      const key = u.partner_source;
+      if (!byPartner[key]) {
+        byPartner[key] = {
+          partner_name:    key,
+          total_signups:   0,
+          unpaid_signups:  0,
+          paid_signups:    0,
+          latest_signup:   null,
+          users:           [],
+        };
+      }
+      byPartner[key].total_signups++;
+      if (u.commission_paid) byPartner[key].paid_signups++;
+      else byPartner[key].unpaid_signups++;
+      if (!byPartner[key].latest_signup || u.created_at > byPartner[key].latest_signup) {
+        byPartner[key].latest_signup = u.created_at;
+      }
+      byPartner[key].users.push({ id: u.id, name: u.name, phone: u.phone, commission_paid: u.commission_paid, created_at: u.created_at });
+    }
+
+    // Fetch referral chain stats (users who came from another customer's code)
+    const { data: referralUsers, error: rErr } = await supabase
+      .from('users')
+      .select('id, referred_by_code, created_at')
+      .not('referred_by_code', 'is', null);
+    if (rErr) throw rErr;
+
+    const referralStats = {
+      total_referred: (referralUsers || []).length,
+      by_code: {},
+    };
+    for (const u of (referralUsers || [])) {
+      const code = u.referred_by_code;
+      if (!referralStats.by_code[code]) referralStats.by_code[code] = 0;
+      referralStats.by_code[code]++;
+    }
+
+    res.json({
+      partner_summary: Object.values(byPartner).sort((a, b) => b.total_signups - a.total_signups),
+      referral_summary: referralStats,
+      total_partner_signups: (partnerUsers || []).length,
+      generated_at: new Date().toISOString(),
+    });
+  } catch (e) {
+    console.error('[PartnerReport] error:', e.message);
+    res.status(500).json({ error: 'Could not generate partner report' });
   }
 });
 
