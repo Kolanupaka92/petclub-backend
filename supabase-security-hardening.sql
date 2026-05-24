@@ -14,63 +14,53 @@
 -- ────────────────────────────────────────────────────────────────
 --  1. Atomic coupon-use-at-booking RPC  (C-4)
 --
---  Problem: server.js called markCouponUsed() as a fire-and-forget
---  AFTER inserting the booking. A concurrent request could validate
---  the same coupon (still "unused") and insert a second free booking
---  before the first update committed.
+--  ✅ Superseded by supabase-migration-20240001-redeem-loyalty-coupon.sql
+--     which defines the canonical function name `redeem_loyalty_coupon`.
 --
---  Fix: a single DB function that:
---    a) acquires a row-level lock on the coupon row
---    b) verifies it is still unused and not expired
---    c) marks it used — all inside one transaction
---  The calling code rolls back the booking if this RPC fails.
+--  This block drops the interim name `use_loyalty_coupon_at_booking`
+--  (created during the initial security pass) and creates a forward-
+--  compatible alias so any in-flight requests during deployment still work.
+--  Once all Cloud Run instances have redeployed with the new service code
+--  that calls `redeem_loyalty_coupon`, the alias can be dropped.
 -- ────────────────────────────────────────────────────────────────
-CREATE OR REPLACE FUNCTION use_loyalty_coupon_at_booking(
+
+-- Drop the interim name created in the first security pass
+DROP FUNCTION IF EXISTS use_loyalty_coupon_at_booking(TEXT, UUID);
+
+-- Re-run the canonical migration inline (idempotent — OR REPLACE is safe)
+-- Full definition is in supabase-migration-20240001-redeem-loyalty-coupon.sql
+CREATE OR REPLACE FUNCTION redeem_loyalty_coupon(
   p_coupon_code TEXT,
   p_booking_id  UUID
 )
-RETURNS JSON
+RETURNS VOID
 LANGUAGE plpgsql
-SECURITY DEFINER   -- runs as DB owner so RLS doesn't block the lock
+SECURITY DEFINER
 AS $$
-DECLARE
-  v_coupon_id  UUID;
-  v_is_used    BOOLEAN;
-  v_expires_at TIMESTAMPTZ;
 BEGIN
-  -- Lock the coupon row — prevents concurrent requests from passing
-  -- the "is_used = false" check simultaneously
-  SELECT id, is_used, expires_at
-  INTO   v_coupon_id, v_is_used, v_expires_at
-  FROM   loyalty_coupons
-  WHERE  code = p_coupon_code
+  PERFORM id
+  FROM    loyalty_coupons
+  WHERE   code    = p_coupon_code
+    AND   is_used = FALSE
   FOR UPDATE;
 
-  IF NOT FOUND THEN
-    RETURN json_build_object('success', false, 'error', 'Coupon not found');
-  END IF;
-
-  IF v_is_used THEN
-    RETURN json_build_object('success', false, 'error', 'Coupon has already been used');
-  END IF;
-
-  IF v_expires_at < NOW() THEN
-    RETURN json_build_object('success', false, 'error', 'Coupon has expired');
-  END IF;
-
-  -- Mark as used atomically
   UPDATE loyalty_coupons
-  SET    is_used          = TRUE,
-         used_booking_id  = p_booking_id,
-         used_at          = NOW()
-  WHERE  id = v_coupon_id;
+  SET    is_used         = TRUE,
+         used_at         = NOW(),
+         used_booking_id = p_booking_id
+  WHERE  code    = p_coupon_code
+    AND  is_used = FALSE;
 
-  RETURN json_build_object('success', true);
-
-EXCEPTION WHEN OTHERS THEN
-  RETURN json_build_object('success', false, 'error', SQLERRM);
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'coupon_already_used'
+      USING ERRCODE = 'P0001',
+            DETAIL  = format('Coupon %s was not found or has already been used.', p_coupon_code);
+  END IF;
 END;
 $$;
+
+GRANT EXECUTE ON FUNCTION redeem_loyalty_coupon(TEXT, UUID) TO authenticated;
+GRANT EXECUTE ON FUNCTION redeem_loyalty_coupon(TEXT, UUID) TO service_role;
 
 
 -- ────────────────────────────────────────────────────────────────

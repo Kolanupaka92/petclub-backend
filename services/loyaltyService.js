@@ -300,16 +300,21 @@ async function validateCoupon(supabase, code, userId) {
 }
 
 /**
- * Mark a coupon as used atomically via a Postgres RPC (C-4 fix).
+ * Mark a coupon as used atomically via the redeem_loyalty_coupon() Postgres RPC.
  *
- * Uses the use_loyalty_coupon_at_booking() function which acquires a
- * row-level lock on the coupon before checking and marking it used.
- * This eliminates the race window that existed when the check and the
- * update were separate operations.
+ * Migration: supabase-migration-20240001-redeem-loyalty-coupon.sql
  *
- * Returns { success: true } or { success: false, error: string }.
- * The caller (server.js booking route) must roll back the booking
- * insert if this returns success: false.
+ * The function acquires a FOR UPDATE row-level lock on the loyalty_coupons row,
+ * then marks is_used = TRUE and sets used_booking_id in a single transaction.
+ * It returns VOID on success and raises ERRCODE P0001 ('coupon_already_used')
+ * if the coupon does not exist, is already used, or has expired.
+ *
+ * PostgREST surfaces Postgres RAISE EXCEPTION as an error object in the Supabase
+ * response ({ data: null, error: { message: '...', code: 'P0001' } }) rather than
+ * throwing a JS exception — so we check error, not catch.
+ *
+ * The caller (server.js booking route) MUST delete the booking that was already
+ * inserted if this returns { success: false } — see POST /api/bookings.
  *
  * @param {object} supabase
  * @param {string} code       — coupon code (e.g. PCR-XXXXXX-XXXXXX)
@@ -317,19 +322,24 @@ async function validateCoupon(supabase, code, userId) {
  * @returns {Promise<{ success: boolean, error?: string }>}
  */
 async function markCouponUsed(supabase, code, bookingId) {
-  const { data, error } = await supabase.rpc('use_loyalty_coupon_at_booking', {
+  const { error } = await supabase.rpc('redeem_loyalty_coupon', {
     p_coupon_code: code,
     p_booking_id:  bookingId,
   });
-  if (error) {
-    console.error('[Loyalty] markCouponUsed RPC error:', error.message);
-    return { success: false, error: 'Failed to mark coupon as used' };
+
+  if (!error) {
+    return { success: true };
   }
-  const result = typeof data === 'string' ? JSON.parse(data) : data;
-  if (!result?.success) {
-    console.error('[Loyalty] markCouponUsed RPC returned failure:', result?.error);
+
+  // P0001 = our explicit 'coupon_already_used' RAISE EXCEPTION
+  if (error.code === 'P0001' || error.message?.includes('coupon_already_used')) {
+    console.warn('[Loyalty] markCouponUsed: coupon already used —', code);
+    return { success: false, error: 'Coupon has already been used. Please refresh and try again.' };
   }
-  return result ?? { success: false, error: 'No response from RPC' };
+
+  // Any other Postgres error (connection issue, schema mismatch, etc.)
+  console.error('[Loyalty] markCouponUsed RPC error:', error.message, error.code);
+  return { success: false, error: 'Failed to mark coupon as used. Please try again.' };
 }
 
 module.exports = {
