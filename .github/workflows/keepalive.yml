@@ -1,0 +1,50 @@
+# ══════════════════════════════════════════════════════════════════
+#  PETclub Keep-Alive — runs every day at 08:00 UTC
+#
+#  Why this exists:
+#    Supabase free-tier pauses after 7 days of zero DB activity.
+#    Cloud Run cold-start latency also increases with inactivity.
+#    This workflow pings /api/health daily, which:
+#      1. Wakes Cloud Run (backend)
+#      2. Executes a Supabase DB query inside the health check
+#      3. Keeps the Supabase project from pausing
+#
+#  No secrets required — /api/health is a public endpoint.
+# ══════════════════════════════════════════════════════════════════
+
+name: Keep-Alive Ping
+
+on:
+  schedule:
+    - cron: '0 8 * * *'       # 08:00 UTC daily  (1:30 PM IST / 4:00 AM EST)
+  workflow_dispatch:            # allow manual trigger any time
+
+jobs:
+  ping:
+    name: Ping API & Supabase
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Ping backend health (wakes Cloud Run + Supabase)
+        run: |
+          echo "🐾 Pinging PETclub API health endpoint..."
+          RESPONSE=$(curl -s -w "\n%{http_code}" https://api.mypetclub.app/api/health)
+          HTTP_CODE=$(echo "$RESPONSE" | tail -n1)
+          BODY=$(echo "$RESPONSE" | head -n -1)
+
+          echo "HTTP status : $HTTP_CODE"
+          echo "Response    : $BODY"
+
+          if [ "$HTTP_CODE" != "200" ]; then
+            echo "❌ Health check failed with status $HTTP_CODE"
+            exit 1
+          fi
+          echo "✅ API is alive — Supabase kept active"
+
+      - name: Ping frontend (keeps Vercel warm)
+        run: |
+          echo "🌐 Pinging frontend..."
+          CODE=$(curl -s -o /dev/null -w "%{http_code}" https://app.mypetclub.app/)
+          echo "Frontend HTTP status: $CODE"
+          [ "$CODE" = "200" ] && echo "✅ Frontend alive" || echo "⚠️  Frontend returned $CODE"
