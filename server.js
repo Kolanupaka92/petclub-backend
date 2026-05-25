@@ -28,7 +28,7 @@ app.set('trust proxy', 1); // Trust Cloud Run reverse proxy — needed for rate-
 const PORT = process.env.PORT || 5000;
 const IS_PROD = process.env.NODE_ENV === 'production' || !process.env.ALLOW_DEV_TOOLS;
 const JWT_SECRET    = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '30d';  // centralised — change via env var, not code
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';   // 7-day expiry — override via env var for longer sessions
 const WEB_APP_URL   = process.env.WEB_APP_URL   || 'https://app.mypetclub.app';
 const WEBSITE_URL   = process.env.WEBSITE_URL   || 'https://mypetclub.app';
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@mypetclub.app';
