@@ -1,3 +1,21 @@
+# [1.13.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.12.1...v1.13.0) (2026-05-25)
+
+
+### Bug Fixes
+
+* **admin:** normalise PostgREST one-to-one embeds to arrays in GET /api/admin/users ([d9cc53b](https://github.com/Kolanupaka92/petclub-backend/commit/d9cc53b7d477c6034872af916ce9178f954f9b8e))
+* **loyalty:** rename RPC to redeem_loyalty_coupon, add dedicated migrations ([2118f03](https://github.com/Kolanupaka92/petclub-backend/commit/2118f035a7419c1468f2560d5106d50e62937ca2))
+* **security:** enable Helmet CSP for backend API (replaces contentSecurityPolicy: false) ([fe2ad36](https://github.com/Kolanupaka92/petclub-backend/commit/fe2ad3657d471c24e411f22a3e88dbdb1a64e12f))
+* **security:** replace in-memory rate limiter with distributed Postgres-backed store ([95b477d](https://github.com/Kolanupaka92/petclub-backend/commit/95b477d82071224d5293cbb9bcb259f9c61d86e0))
+* **security:** tighten JWT expiry from 30 days to 7 days ([e97dd26](https://github.com/Kolanupaka92/petclub-backend/commit/e97dd2651a8b5b757a0814fba68158eb60dd8b44))
+* **sql:** add missing sum_loyalty_earned_in_window RPC, populate mat view on deploy, fix stale verification query ([d54d414](https://github.com/Kolanupaka92/petclub-backend/commit/d54d4146600112f87ad2dae4e692a777c56346c2))
+
+
+### Features
+
+* **billing:** update revenue split from 70/30 to 45/55 (partner/platform) ([644e588](https://github.com/Kolanupaka92/petclub-backend/commit/644e5880e3c97c4fdfd097b5d987c8a8979ec08f))
+* **payments:** add Razorpay webhook + award booking_spend/payment_bonus loyalty credits ([48b2257](https://github.com/Kolanupaka92/petclub-backend/commit/48b22579d72d4283ca60416c236016c36ca02f05))
+
 ## [1.12.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.12.0...v1.12.1) (2026-05-24)
 
 
