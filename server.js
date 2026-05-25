@@ -127,10 +127,29 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
 }
 
 // ── Middleware ─────────────────────────────────────────
-// Security headers — disable CSP so JSON API clients aren't affected
+// Security headers
+// CSP on a pure JSON API is mainly defence-in-depth — API responses are not
+// rendered as HTML by browsers, so most directives are no-ops.  We still set
+// a restrictive policy so that if any endpoint ever accidentally returns HTML
+// (e.g. a misconfigured proxy error page) a browser won't execute scripts.
 app.use(helmet({
-  contentSecurityPolicy: false,
-  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc:      ["'none'"],        // nothing allowed by default
+      scriptSrc:       ["'none'"],        // no scripts — pure JSON API
+      styleSrc:        ["'none'"],
+      imgSrc:          ["'none'"],
+      connectSrc:      ["'self'"],        // XHR/fetch only to same origin
+      fontSrc:         ["'none'"],
+      objectSrc:       ["'none'"],
+      frameSrc:        ["'none'"],
+      frameAncestors:  ["'none'"],        // no embedding in iframes
+      baseUri:         ["'none'"],
+      formAction:      ["'none'"],
+      upgradeInsecureRequests: [],
+    },
+  },
+  crossOriginEmbedderPolicy: false,      // API responses don't embed resources
 }));
 
 const ALLOWED_ORIGINS = [
