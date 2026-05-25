@@ -2674,7 +2674,25 @@ app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
     logs?.forEach(l => { if (!suspendedAtMap[l.target_id]) suspendedAtMap[l.target_id] = l.created_at; });
   }
 
-  const users = data?.map(u => ({ ...u, suspended_at: suspendedAtMap[u.id] || null }));
+  // PostgREST v12+ returns embedded one-to-one relationships (identified by a
+  // UNIQUE FK) as a plain object instead of an array.  professional_profiles
+  // has UNIQUE(user_id), so PostgREST returns it as {} not [{}].
+  // The frontend always does u.professional_profiles?.[0]?.sub_role, so we
+  // normalise here: wrap any plain object in a single-element array and
+  // collapse null/undefined to an empty array.  customer_profiles has the same
+  // UNIQUE constraint so we apply the same treatment.
+  const normaliseEmbed = v => {
+    if (!v) return [];
+    if (Array.isArray(v)) return v;
+    return [v];  // PostgREST returned a plain object — wrap it
+  };
+
+  const users = data?.map(u => ({
+    ...u,
+    professional_profiles: normaliseEmbed(u.professional_profiles),
+    customer_profiles:     normaliseEmbed(u.customer_profiles),
+    suspended_at:          suspendedAtMap[u.id] || null,
+  }));
   res.json({ success: true, users, total: count, page, pageSize, totalPages: Math.ceil((count || 0) / pageSize) });
 });
 
