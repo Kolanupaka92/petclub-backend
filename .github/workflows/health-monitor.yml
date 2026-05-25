@@ -1,10 +1,10 @@
-# ══════════════════════════════════════════════════════════════════
-#  PETclub — Automated Health Monitor
+﻿# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+#  PETclub â€” Automated Health Monitor
 #
 #  Runs every 2 hours. If any service is down it:
 #    1. Waits 3 min and re-checks (eliminates transient blips)
 #    2. Tries to auto-recover: rolls Cloud Run back to the last
-#       healthy revision (zero-downtime — traffic shifts, old
+#       healthy revision (zero-downtime â€” traffic shifts, old
 #       revision keeps serving until new one is healthy)
 #    3. Sends an SMS via Twilio directly (works even if backend is down)
 #    4. Opens a GitHub Issue tagged [incident] with a full diagnostic
@@ -13,21 +13,21 @@
 #  When all services recover, re-checks automatically close the
 #  open incident issue with a "resolved" comment.
 #
-#  Required GitHub Secrets — add in Repo → Settings → Secrets → Actions:
-#    HEALTH_SECRET        — same value as HEALTH_SECRET in Cloud Run env vars
-#    TWILIO_ACCOUNT_SID   — same as Cloud Run TWILIO_ACCOUNT_SID
-#    TWILIO_AUTH_TOKEN    — same as Cloud Run TWILIO_AUTH_TOKEN
-#    TWILIO_FROM_PHONE    — same as Cloud Run TWILIO_PHONE_NUMBER  (e.g. +12025551234)
-#    ADMIN_PHONE          — your mobile number to receive alerts    (e.g. +916097215754)
+#  Required GitHub Secrets â€” add in Repo â†’ Settings â†’ Secrets â†’ Actions:
+#    HEALTH_SECRET        â€” same value as HEALTH_SECRET in Cloud Run env vars
+#    TWILIO_ACCOUNT_SID   â€” same as Cloud Run TWILIO_ACCOUNT_SID
+#    TWILIO_AUTH_TOKEN    â€” same as Cloud Run TWILIO_AUTH_TOKEN
+#    TWILIO_FROM_PHONE    â€” same as Cloud Run TWILIO_PHONE_NUMBER  (e.g. +12025551234)
+#    ADMIN_PHONE          â€” your mobile number to receive alerts    (e.g. +916097215754)
 #
 #  Optional (enables Cloud Run auto-rollback):
-#    GCP_SA_KEY           — JSON service-account key with roles/run.admin
-#    GCP_PROJECT_ID       — your GCP project ID  (e.g. petclub-prod)
-#    GCP_REGION           — Cloud Run region     (default: us-central1)
-#    GCP_SERVICE_NAME     — Cloud Run service    (default: petclub-backend)
-# ══════════════════════════════════════════════════════════════════
+#    GCP_SA_KEY           â€” JSON service-account key with roles/run.admin
+#    GCP_PROJECT_ID       â€” your GCP project ID  (e.g. petclub-prod)
+#    GCP_REGION           â€” Cloud Run region     (default: us-central1)
+#    GCP_SERVICE_NAME     â€” Cloud Run service    (default: petclub-backend)
+# â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-name: 🏥 Health Monitor
+name: ðŸ¥ Health Monitor
 
 on:
   schedule:
@@ -44,7 +44,7 @@ concurrency:
   cancel-in-progress: false   # never cancel a running health check
 
 jobs:
-  # ── Step 1: Probe both services ──────────────────────────────────
+  # â”€â”€ Step 1: Probe both services â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   probe:
     name: Probe Services
     runs-on: ubuntu-latest
@@ -71,7 +71,7 @@ jobs:
 
           echo "http=$HTTP"   >> $GITHUB_OUTPUT
           echo "ok=$( [ "$HTTP" = "200" ] && echo true || echo false )" >> $GITHUB_OUTPUT
-          # Multi-line output — use delimiter
+          # Multi-line output â€” use delimiter
           {
             echo "body<<BODY_EOF"
             echo "$BODY"
@@ -79,10 +79,10 @@ jobs:
           } >> $GITHUB_OUTPUT
 
           if [ "$HTTP" = "200" ]; then
-            echo "✅ Backend healthy (HTTP 200)"
+            echo "âœ… Backend healthy (HTTP 200)"
           else
-            echo "❌ Backend returned HTTP $HTTP"
-            exit 0   # don't fail the step — we report in a later job
+            echo "âŒ Backend returned HTTP $HTTP"
+            exit 0   # don't fail the step â€” we report in a later job
           fi
 
       - name: Check Frontend (Vercel)
@@ -96,12 +96,12 @@ jobs:
           echo "ok=$( [ "$HTTP" = "200" ] && echo true || echo false )" >> $GITHUB_OUTPUT
 
           if [ "$HTTP" = "200" ]; then
-            echo "✅ Frontend healthy (HTTP 200)"
+            echo "âœ… Frontend healthy (HTTP 200)"
           else
-            echo "❌ Frontend returned HTTP $HTTP"
+            echo "âŒ Frontend returned HTTP $HTTP"
           fi
 
-  # ── Step 2: If anything failed, wait 3 min and re-probe ──────────
+  # â”€â”€ Step 2: If anything failed, wait 3 min and re-probe â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   # (eliminates false alarms from transient network blips)
   recheck:
     name: Re-check After 3 Minutes
@@ -116,7 +116,7 @@ jobs:
     steps:
       - name: Wait 3 minutes before re-checking
         run: |
-          echo "⏳ Waiting 180 seconds before re-check to filter transient failures..."
+          echo "â³ Waiting 180 seconds before re-check to filter transient failures..."
           sleep 180
 
       - name: Re-check Backend
@@ -138,7 +138,7 @@ jobs:
           echo "ok=$( [ "$HTTP" = "200" ] && echo true || echo false )" >> $GITHUB_OUTPUT
           echo "Frontend re-check: HTTP $HTTP"
 
-  # ── Step 3: Auto-recover Cloud Run (backend only) ────────────────
+  # â”€â”€ Step 3: Auto-recover Cloud Run (backend only) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   auto_recover:
     name: Auto-Recover Cloud Run
     needs: [probe, recheck]
@@ -166,7 +166,7 @@ jobs:
           SERVICE="${{ secrets.GCP_SERVICE_NAME || 'petclub-backend' }}"
           REGION="${{ secrets.GCP_REGION || 'us-central1' }}"
 
-          echo "🔍 Listing recent revisions..."
+          echo "ðŸ” Listing recent revisions..."
           REVISIONS=$(gcloud run revisions list \
             --service="$SERVICE" \
             --region="$REGION" \
@@ -181,15 +181,15 @@ jobs:
           echo "Previous: $PREVIOUS"
 
           if [ -n "$PREVIOUS" ]; then
-            echo "↩️  Rolling back traffic to $PREVIOUS (zero-downtime)..."
+            echo "â†©ï¸  Rolling back traffic to $PREVIOUS (zero-downtime)..."
             gcloud run services update-traffic "$SERVICE" \
               --region="$REGION" \
               --to-revisions="${PREVIOUS}=100" \
               --quiet
-            echo "Rollback triggered — waiting 45 s for health check..."
+            echo "Rollback triggered â€” waiting 45 s for health check..."
             sleep 45
           else
-            echo "No previous revision found — forcing restart of current revision..."
+            echo "No previous revision found â€” forcing restart of current revision..."
             gcloud run services update-traffic "$SERVICE" \
               --region="$REGION" \
               --to-latest \
@@ -202,15 +202,15 @@ jobs:
 
           if [ "$HTTP" = "200" ]; then
             echo "recovered=true" >> $GITHUB_OUTPUT
-            echo "✅ Auto-recovery successful!"
+            echo "âœ… Auto-recovery successful!"
           else
             echo "recovered=false" >> $GITHUB_OUTPUT
-            echo "❌ Auto-recovery did not restore service (HTTP $HTTP)"
+            echo "âŒ Auto-recovery did not restore service (HTTP $HTTP)"
           fi
         env:
           CLOUDSDK_CORE_DISABLE_PROMPTS: '1'
 
-  # ── Step 4: Alert + create/update GitHub Issue ───────────────────
+  # â”€â”€ Step 4: Alert + create/update GitHub Issue â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   alert:
     name: Alert & Create Incident Issue
     needs: [probe, recheck, auto_recover]
@@ -225,14 +225,14 @@ jobs:
       - name: Send SMS via Twilio
         if: secrets.TWILIO_ACCOUNT_SID != '' && secrets.ADMIN_PHONE != ''
         run: |
-          BACKEND_STATUS="${{ needs.recheck.outputs.backend_ok == 'true' && '✅ OK' || '❌ DOWN' }}"
-          FRONTEND_STATUS="${{ needs.recheck.outputs.frontend_ok == 'true' && '✅ OK' || '❌ DOWN' }}"
+          BACKEND_STATUS="${{ needs.recheck.outputs.backend_ok == 'true' && 'âœ… OK' || 'âŒ DOWN' }}"
+          FRONTEND_STATUS="${{ needs.recheck.outputs.frontend_ok == 'true' && 'âœ… OK' || 'âŒ DOWN' }}"
           RECOVERED="${{ needs.auto_recover.outputs.recovered }}"
 
           if [ "$RECOVERED" = "true" ]; then
-            MSG="🚨 PETclub ALERT: Backend was DOWN but auto-recovered. Check GitHub Issues for details. https://github.com/${{ github.repository }}/issues"
+            MSG="ðŸš¨ PETclub ALERT: Backend was DOWN but auto-recovered. Check GitHub Issues for details. https://github.com/${{ github.repository }}/issues"
           else
-            MSG="🚨 PETclub ALERT: Backend ${BACKEND_STATUS} | Frontend ${FRONTEND_STATUS}. Needs attention! https://github.com/${{ github.repository }}/issues"
+            MSG="ðŸš¨ PETclub ALERT: Backend ${BACKEND_STATUS} | Frontend ${FRONTEND_STATUS}. Needs attention! https://github.com/${{ github.repository }}/issues"
           fi
 
           curl -s -X POST \
@@ -241,10 +241,10 @@ jobs:
             --data-urlencode "From=${{ secrets.TWILIO_FROM_PHONE }}" \
             --data-urlencode "To=${{ secrets.ADMIN_PHONE }}" \
             -u "${{ secrets.TWILIO_ACCOUNT_SID }}:${{ secrets.TWILIO_AUTH_TOKEN }}" \
-            > /dev/null && echo "📱 SMS sent to admin" || echo "⚠️ SMS failed (check Twilio secrets)"
+            > /dev/null && echo "ðŸ“± SMS sent to admin" || echo "âš ï¸ SMS failed (check Twilio secrets)"
 
       - name: Create or update GitHub Issue
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const backendOk  = '${{ needs.recheck.outputs.backend_ok }}'  === 'true';
@@ -254,13 +254,13 @@ jobs:
             const now = new Date().toISOString();
 
             const recoveryNote = recovered === 'true'
-              ? '✅ **Auto-recovered** — Cloud Run was rolled back to the previous revision.'
+              ? 'âœ… **Auto-recovered** â€” Cloud Run was rolled back to the previous revision.'
               : recovered === 'false'
-              ? '❌ **Auto-recovery attempted but failed** — manual intervention required.'
-              : '⏭️ Auto-recovery not attempted (GCP secrets not configured, or frontend-only issue).';
+              ? 'âŒ **Auto-recovery attempted but failed** â€” manual intervention required.'
+              : 'â­ï¸ Auto-recovery not attempted (GCP secrets not configured, or frontend-only issue).';
 
             const body = [
-              '## 🚨 PETclub Health Alert',
+              '## ðŸš¨ PETclub Health Alert',
               '',
               `**Detected:** ${now}`,
               `**Run:** [View workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`,
@@ -268,8 +268,8 @@ jobs:
               '### Service Status',
               '| Service | Status |',
               '|---------|--------|',
-              `| 🔧 Backend API (api.mypetclub.app) | ${backendOk ? '✅ OK' : '❌ DOWN'} |`,
-              `| 🌐 Frontend (app.mypetclub.app) | ${frontendOk ? '✅ OK' : '❌ DOWN'} |`,
+              `| ðŸ”§ Backend API (api.mypetclub.app) | ${backendOk ? 'âœ… OK' : 'âŒ DOWN'} |`,
+              `| ðŸŒ Frontend (app.mypetclub.app) | ${frontendOk ? 'âœ… OK' : 'âŒ DOWN'} |`,
               '',
               `### Auto-Recovery`,
               recoveryNote,
@@ -302,24 +302,24 @@ jobs:
               const { data: issue } = await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
-                title: `🚨 Health Alert — ${now.slice(0, 16).replace('T', ' ')} UTC`,
+                title: `ðŸš¨ Health Alert â€” ${now.slice(0, 16).replace('T', ' ')} UTC`,
                 body,
                 labels: ['incident', 'automated'],
               });
               console.log(`Created issue #${issue.number}: ${issue.html_url}`);
             } else {
-              // Add a follow-up comment — don't spam with new issues
+              // Add a follow-up comment â€” don't spam with new issues
               const issueNum = openIssues[0].number;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
                 issue_number: issueNum,
-                body: `## 🔁 Follow-up Alert — ${now}\n\n${body}`,
+                body: `## ðŸ” Follow-up Alert â€” ${now}\n\n${body}`,
               });
               console.log(`Added comment to existing issue #${issueNum}`);
             }
 
-  # ── Step 5: Auto-close incident when all services recover ────────
+  # â”€â”€ Step 5: Auto-close incident when all services recover â”€â”€â”€â”€â”€â”€â”€â”€
   resolve:
     name: Close Incident if Recovered
     needs: probe
@@ -330,7 +330,7 @@ jobs:
 
     steps:
       - name: Close open incident issues
-        uses: actions/github-script@v7
+        uses: actions/github-script@v8
         with:
           script: |
             const { data: openIssues } = await github.rest.issues.listForRepo({
@@ -341,7 +341,7 @@ jobs:
             });
 
             if (openIssues.length === 0) {
-              console.log('No open incidents — all clear ✅');
+              console.log('No open incidents â€” all clear âœ…');
               return;
             }
 
@@ -352,14 +352,14 @@ jobs:
                 repo: context.repo.repo,
                 issue_number: issue.number,
                 body: [
-                  '## ✅ All Systems Recovered',
+                  '## âœ… All Systems Recovered',
                   '',
                   `**Resolved:** ${now}`,
                   '',
                   '| Service | Status |',
                   '|---------|--------|',
-                  '| Backend API (api.mypetclub.app) | ✅ OK |',
-                  '| Frontend (app.mypetclub.app) | ✅ OK |',
+                  '| Backend API (api.mypetclub.app) | âœ… OK |',
+                  '| Frontend (app.mypetclub.app) | âœ… OK |',
                   '',
                   '*Auto-resolved by Health Monitor*',
                 ].join('\n'),

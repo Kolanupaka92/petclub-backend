@@ -1,6 +1,6 @@
-# Run this ONCE manually (Actions → Create Labels → Run workflow)
+﻿# Run this ONCE manually (Actions â†’ Create Labels â†’ Run workflow)
 # to create the GitHub labels the health monitor needs.
-name: 🏷️ Create Labels (run once)
+name: ðŸ·ï¸ Create Labels (run once)
 
 on:
   workflow_dispatch:
@@ -9,11 +9,11 @@ jobs:
   create-labels:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/github-script@v7
+      - uses: actions/github-script@v8
         with:
           script: |
             const labels = [
-              { name: 'incident',  color: 'D93F0B', description: 'Production incident — auto-created by health monitor' },
+              { name: 'incident',  color: 'D93F0B', description: 'Production incident â€” auto-created by health monitor' },
               { name: 'automated', color: '0075CA', description: 'Created automatically by a GitHub Action' },
             ];
             for (const label of labels) {
