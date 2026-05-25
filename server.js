@@ -10,9 +10,10 @@ const cors    = require('cors');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
-const emailService   = require('./services/emailService');
-const pricingCatalog = require('./services/pricingCatalog');
-const loyalty        = require('./services/loyaltyService');
+const emailService      = require('./services/emailService');
+const pricingCatalog    = require('./services/pricingCatalog');
+const loyalty           = require('./services/loyaltyService');
+const { PgRateLimitStore } = require('./services/pgRateLimitStore');
 
 // ── Startup secret guard — refuse to boot without critical secrets ─────────
 const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
@@ -157,22 +158,30 @@ app.use((req, res, next) => {
   });
   next();
 });
-// Global rate limit — returns proper JSON
+// ── Distributed rate limiters (Postgres-backed — safe across Cloud Run instances) ──
+// PgRateLimitStore uses an atomic UPSERT in Supabase so limits are enforced
+// globally even when Cloud Run scales to N instances.  Falls back to in-memory
+// if the DB is unreachable so traffic is never fully blocked by a DB hiccup.
+//
+// Global rate limit — 300 req / 15 min per IP
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000, max: 300,
   standardHeaders: true, legacyHeaders: false,
+  store: new PgRateLimitStore(),
   handler: (req, res) => res.status(429).json({ error: 'Too many requests. Please slow down.' }),
 }));
 // OTP send rate limit — max 5 sends per minute per IP
 const otpLimit = rateLimit({
   windowMs: 60 * 1000, max: 5,
   standardHeaders: true, legacyHeaders: false,
+  store: new PgRateLimitStore(),
   handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait 1 minute and try again.' }),
 });
 // Auth verify rate limit — max 10 attempts per 15 min per IP (prevents brute-force)
 const authLimit = rateLimit({
   windowMs: 15 * 60 * 1000, max: 10,
   standardHeaders: true, legacyHeaders: false,
+  store: new PgRateLimitStore(),
   handler: (req, res) => res.status(429).json({ error: 'Too many login attempts. Please wait 15 minutes.' }),
 });
 
