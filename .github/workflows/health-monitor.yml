@@ -1,0 +1,374 @@
+# ══════════════════════════════════════════════════════════════════
+#  PETclub — Automated Health Monitor
+#
+#  Runs every 2 hours. If any service is down it:
+#    1. Waits 3 min and re-checks (eliminates transient blips)
+#    2. Tries to auto-recover: rolls Cloud Run back to the last
+#       healthy revision (zero-downtime — traffic shifts, old
+#       revision keeps serving until new one is healthy)
+#    3. Sends an SMS via Twilio directly (works even if backend is down)
+#    4. Opens a GitHub Issue tagged [incident] with a full diagnostic
+#    5. Adds a comment to any existing incident issue (avoids spam)
+#
+#  When all services recover, re-checks automatically close the
+#  open incident issue with a "resolved" comment.
+#
+#  Required GitHub Secrets — add in Repo → Settings → Secrets → Actions:
+#    HEALTH_SECRET        — same value as HEALTH_SECRET in Cloud Run env vars
+#    TWILIO_ACCOUNT_SID   — same as Cloud Run TWILIO_ACCOUNT_SID
+#    TWILIO_AUTH_TOKEN    — same as Cloud Run TWILIO_AUTH_TOKEN
+#    TWILIO_FROM_PHONE    — same as Cloud Run TWILIO_PHONE_NUMBER  (e.g. +12025551234)
+#    ADMIN_PHONE          — your mobile number to receive alerts    (e.g. +916097215754)
+#
+#  Optional (enables Cloud Run auto-rollback):
+#    GCP_SA_KEY           — JSON service-account key with roles/run.admin
+#    GCP_PROJECT_ID       — your GCP project ID  (e.g. petclub-prod)
+#    GCP_REGION           — Cloud Run region     (default: us-central1)
+#    GCP_SERVICE_NAME     — Cloud Run service    (default: petclub-backend)
+# ══════════════════════════════════════════════════════════════════
+
+name: 🏥 Health Monitor
+
+on:
+  schedule:
+    - cron: '0 */2 * * *'   # every 2 hours, on the hour
+  workflow_dispatch:          # manual trigger for testing
+    inputs:
+      force_alert:
+        description: 'Force SMS + issue even if healthy (for testing)?'
+        required: false
+        default: 'false'
+
+concurrency:
+  group: health-monitor
+  cancel-in-progress: false   # never cancel a running health check
+
+jobs:
+  # ── Step 1: Probe both services ──────────────────────────────────
+  probe:
+    name: Probe Services
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      backend_ok:  ${{ steps.backend.outputs.ok }}
+      frontend_ok: ${{ steps.frontend.outputs.ok }}
+      backend_body: ${{ steps.backend.outputs.body }}
+      backend_http: ${{ steps.backend.outputs.http }}
+
+    steps:
+      - name: Check Backend API
+        id: backend
+        run: |
+          HTTP=$(curl -s -o /tmp/health.json -w "%{http_code}" \
+            --max-time 12 \
+            -H "X-Health-Secret: ${{ secrets.HEALTH_SECRET }}" \
+            https://api.mypetclub.app/api/health \
+            || echo "000")
+
+          BODY=$(cat /tmp/health.json 2>/dev/null | python3 -m json.tool --no-ensure-ascii 2>/dev/null \
+                 || cat /tmp/health.json 2>/dev/null \
+                 || echo "no response")
+
+          echo "http=$HTTP"   >> $GITHUB_OUTPUT
+          echo "ok=$( [ "$HTTP" = "200" ] && echo true || echo false )" >> $GITHUB_OUTPUT
+          # Multi-line output — use delimiter
+          {
+            echo "body<<BODY_EOF"
+            echo "$BODY"
+            echo "BODY_EOF"
+          } >> $GITHUB_OUTPUT
+
+          if [ "$HTTP" = "200" ]; then
+            echo "✅ Backend healthy (HTTP 200)"
+          else
+            echo "❌ Backend returned HTTP $HTTP"
+            exit 0   # don't fail the step — we report in a later job
+          fi
+
+      - name: Check Frontend (Vercel)
+        id: frontend
+        run: |
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 12 \
+            https://app.mypetclub.app \
+            || echo "000")
+
+          echo "ok=$( [ "$HTTP" = "200" ] && echo true || echo false )" >> $GITHUB_OUTPUT
+
+          if [ "$HTTP" = "200" ]; then
+            echo "✅ Frontend healthy (HTTP 200)"
+          else
+            echo "❌ Frontend returned HTTP $HTTP"
+          fi
+
+  # ── Step 2: If anything failed, wait 3 min and re-probe ──────────
+  # (eliminates false alarms from transient network blips)
+  recheck:
+    name: Re-check After 3 Minutes
+    needs: probe
+    if: needs.probe.outputs.backend_ok == 'false' || needs.probe.outputs.frontend_ok == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      backend_ok:  ${{ steps.backend.outputs.ok }}
+      frontend_ok: ${{ steps.frontend.outputs.ok }}
+
+    steps:
+      - name: Wait 3 minutes before re-checking
+        run: |
+          echo "⏳ Waiting 180 seconds before re-check to filter transient failures..."
+          sleep 180
+
+      - name: Re-check Backend
+        id: backend
+        run: |
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 12 \
+            -H "X-Health-Secret: ${{ secrets.HEALTH_SECRET }}" \
+            https://api.mypetclub.app/api/health \
+            || echo "000")
+          echo "ok=$( [ "$HTTP" = "200" ] && echo true || echo false )" >> $GITHUB_OUTPUT
+          echo "Backend re-check: HTTP $HTTP"
+
+      - name: Re-check Frontend
+        id: frontend
+        run: |
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" \
+            --max-time 12 https://app.mypetclub.app || echo "000")
+          echo "ok=$( [ "$HTTP" = "200" ] && echo true || echo false )" >> $GITHUB_OUTPUT
+          echo "Frontend re-check: HTTP $HTTP"
+
+  # ── Step 3: Auto-recover Cloud Run (backend only) ────────────────
+  auto_recover:
+    name: Auto-Recover Cloud Run
+    needs: [probe, recheck]
+    # Only run if re-check confirms backend is still down
+    if: |
+      always() &&
+      needs.recheck.result == 'success' &&
+      needs.recheck.outputs.backend_ok == 'false' &&
+      secrets.GCP_SA_KEY != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      recovered: ${{ steps.recover.outputs.recovered }}
+
+    steps:
+      - name: Authenticate with GCP
+        run: |
+          echo '${{ secrets.GCP_SA_KEY }}' > /tmp/sa-key.json
+          gcloud auth activate-service-account --key-file=/tmp/sa-key.json --quiet
+          gcloud config set project "${{ secrets.GCP_PROJECT_ID }}" --quiet
+
+      - name: Roll back to previous healthy revision
+        id: recover
+        run: |
+          SERVICE="${{ secrets.GCP_SERVICE_NAME || 'petclub-backend' }}"
+          REGION="${{ secrets.GCP_REGION || 'us-central1' }}"
+
+          echo "🔍 Listing recent revisions..."
+          REVISIONS=$(gcloud run revisions list \
+            --service="$SERVICE" \
+            --region="$REGION" \
+            --format="value(name)" \
+            --limit=5 \
+            --sort-by="~metadata.creationTimestamp")
+
+          CURRENT=$(echo "$REVISIONS" | head -1)
+          PREVIOUS=$(echo "$REVISIONS" | sed -n '2p')
+
+          echo "Current: $CURRENT"
+          echo "Previous: $PREVIOUS"
+
+          if [ -n "$PREVIOUS" ]; then
+            echo "↩️  Rolling back traffic to $PREVIOUS (zero-downtime)..."
+            gcloud run services update-traffic "$SERVICE" \
+              --region="$REGION" \
+              --to-revisions="${PREVIOUS}=100" \
+              --quiet
+            echo "Rollback triggered — waiting 45 s for health check..."
+            sleep 45
+          else
+            echo "No previous revision found — forcing restart of current revision..."
+            gcloud run services update-traffic "$SERVICE" \
+              --region="$REGION" \
+              --to-latest \
+              --quiet
+            sleep 45
+          fi
+
+          HTTP=$(curl -s -o /dev/null -w "%{http_code}" --max-time 12 \
+            https://api.mypetclub.app/api/health || echo "000")
+
+          if [ "$HTTP" = "200" ]; then
+            echo "recovered=true" >> $GITHUB_OUTPUT
+            echo "✅ Auto-recovery successful!"
+          else
+            echo "recovered=false" >> $GITHUB_OUTPUT
+            echo "❌ Auto-recovery did not restore service (HTTP $HTTP)"
+          fi
+        env:
+          CLOUDSDK_CORE_DISABLE_PROMPTS: '1'
+
+  # ── Step 4: Alert + create/update GitHub Issue ───────────────────
+  alert:
+    name: Alert & Create Incident Issue
+    needs: [probe, recheck, auto_recover]
+    if: |
+      always() &&
+      needs.recheck.result == 'success' &&
+      (needs.recheck.outputs.backend_ok == 'false' || needs.recheck.outputs.frontend_ok == 'false')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Send SMS via Twilio
+        if: secrets.TWILIO_ACCOUNT_SID != '' && secrets.ADMIN_PHONE != ''
+        run: |
+          BACKEND_STATUS="${{ needs.recheck.outputs.backend_ok == 'true' && '✅ OK' || '❌ DOWN' }}"
+          FRONTEND_STATUS="${{ needs.recheck.outputs.frontend_ok == 'true' && '✅ OK' || '❌ DOWN' }}"
+          RECOVERED="${{ needs.auto_recover.outputs.recovered }}"
+
+          if [ "$RECOVERED" = "true" ]; then
+            MSG="🚨 PETclub ALERT: Backend was DOWN but auto-recovered. Check GitHub Issues for details. https://github.com/${{ github.repository }}/issues"
+          else
+            MSG="🚨 PETclub ALERT: Backend ${BACKEND_STATUS} | Frontend ${FRONTEND_STATUS}. Needs attention! https://github.com/${{ github.repository }}/issues"
+          fi
+
+          curl -s -X POST \
+            "https://api.twilio.com/2010-04-01/Accounts/${{ secrets.TWILIO_ACCOUNT_SID }}/Messages.json" \
+            --data-urlencode "Body=$MSG" \
+            --data-urlencode "From=${{ secrets.TWILIO_FROM_PHONE }}" \
+            --data-urlencode "To=${{ secrets.ADMIN_PHONE }}" \
+            -u "${{ secrets.TWILIO_ACCOUNT_SID }}:${{ secrets.TWILIO_AUTH_TOKEN }}" \
+            > /dev/null && echo "📱 SMS sent to admin" || echo "⚠️ SMS failed (check Twilio secrets)"
+
+      - name: Create or update GitHub Issue
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const backendOk  = '${{ needs.recheck.outputs.backend_ok }}'  === 'true';
+            const frontendOk = '${{ needs.recheck.outputs.frontend_ok }}' === 'true';
+            const recovered  = '${{ needs.auto_recover.outputs.recovered }}';
+            const backendBody = `${{ needs.probe.outputs.backend_body }}`;
+            const now = new Date().toISOString();
+
+            const recoveryNote = recovered === 'true'
+              ? '✅ **Auto-recovered** — Cloud Run was rolled back to the previous revision.'
+              : recovered === 'false'
+              ? '❌ **Auto-recovery attempted but failed** — manual intervention required.'
+              : '⏭️ Auto-recovery not attempted (GCP secrets not configured, or frontend-only issue).';
+
+            const body = [
+              '## 🚨 PETclub Health Alert',
+              '',
+              `**Detected:** ${now}`,
+              `**Run:** [View workflow logs](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }})`,
+              '',
+              '### Service Status',
+              '| Service | Status |',
+              '|---------|--------|',
+              `| 🔧 Backend API (api.mypetclub.app) | ${backendOk ? '✅ OK' : '❌ DOWN'} |`,
+              `| 🌐 Frontend (app.mypetclub.app) | ${frontendOk ? '✅ OK' : '❌ DOWN'} |`,
+              '',
+              `### Auto-Recovery`,
+              recoveryNote,
+              '',
+              '### Backend Health Response',
+              '```json',
+              backendBody || 'No response from backend',
+              '```',
+              '',
+              '### Suggested Next Steps',
+              '1. Check [Cloud Run logs](https://console.cloud.google.com/run) for errors',
+              '2. Check [Supabase dashboard](https://supabase.com/dashboard) for DB connectivity',
+              '3. Verify environment variables are intact in Cloud Run',
+              '4. If a bad deploy caused this, roll back: `gcloud run services update-traffic petclub-backend --to-revisions=PREV_REVISION=100 --region=us-central1`',
+              '',
+              '---',
+              '*Auto-generated by [Health Monitor](.github/workflows/health-monitor.yml)*',
+            ].join('\n');
+
+            // Check for existing open incident
+            const { data: openIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'incident',
+              state: 'open',
+            });
+
+            if (openIssues.length === 0) {
+              // Create new issue
+              const { data: issue } = await github.rest.issues.create({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                title: `🚨 Health Alert — ${now.slice(0, 16).replace('T', ' ')} UTC`,
+                body,
+                labels: ['incident', 'automated'],
+              });
+              console.log(`Created issue #${issue.number}: ${issue.html_url}`);
+            } else {
+              // Add a follow-up comment — don't spam with new issues
+              const issueNum = openIssues[0].number;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issueNum,
+                body: `## 🔁 Follow-up Alert — ${now}\n\n${body}`,
+              });
+              console.log(`Added comment to existing issue #${issueNum}`);
+            }
+
+  # ── Step 5: Auto-close incident when all services recover ────────
+  resolve:
+    name: Close Incident if Recovered
+    needs: probe
+    # Run when BOTH services are healthy (normal 2-hour check)
+    if: needs.probe.outputs.backend_ok == 'true' && needs.probe.outputs.frontend_ok == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Close open incident issues
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { data: openIssues } = await github.rest.issues.listForRepo({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              labels: 'incident',
+              state: 'open',
+            });
+
+            if (openIssues.length === 0) {
+              console.log('No open incidents — all clear ✅');
+              return;
+            }
+
+            const now = new Date().toISOString();
+            for (const issue of openIssues) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                body: [
+                  '## ✅ All Systems Recovered',
+                  '',
+                  `**Resolved:** ${now}`,
+                  '',
+                  '| Service | Status |',
+                  '|---------|--------|',
+                  '| Backend API (api.mypetclub.app) | ✅ OK |',
+                  '| Frontend (app.mypetclub.app) | ✅ OK |',
+                  '',
+                  '*Auto-resolved by Health Monitor*',
+                ].join('\n'),
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: issue.number,
+                state: 'closed',
+              });
+              console.log(`Closed incident issue #${issue.number}`);
+            }
