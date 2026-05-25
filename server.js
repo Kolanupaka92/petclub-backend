@@ -1390,9 +1390,11 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
     // scan in JS memory. The other 4 queries aggregate counters only — no full table
     // scans — so they remain as-is.
     const [earnRes, redeemRes, couponRes, anomalyRes, eligibleRes, leaderboardRes] = await Promise.all([
-      // Total points earned in window (aggregate only — no individual rows needed)
+      // Total points earned in window.
+      // The RPC returns a scalar number directly in data (not an array).
+      // Normalise to { data: <number> } so the reduce below doesn't throw.
       supabase.rpc('sum_loyalty_earned_in_window', { p_since: since })
-        .then(r => r)
+        .then(r => ({ data: typeof r.data === 'number' ? r.data : null, error: r.error }))
         .catch(() => supabase.from('loyalty_transactions')
           .select('points')
           .gt('points', 0)
@@ -1429,7 +1431,10 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
         .limit(10),
     ]);
 
-    const totalEarned   = (earnRes.data || []).reduce((s, r) => s + (r.points || 0), 0);
+    // earnRes.data is either a scalar number (RPC) or an array of rows (fallback query)
+    const totalEarned = typeof earnRes.data === 'number'
+      ? earnRes.data
+      : (Array.isArray(earnRes.data) ? earnRes.data : []).reduce((s, r) => s + (r.points || 0), 0);
     const totalRedeemed = (redeemRes.data || []).reduce((s, r) => s + -r.points, 0); // stored negative
     const redemptionRate = totalEarned > 0
       ? Math.round((totalRedeemed / totalEarned) * 100) : 0;
