@@ -1,3 +1,10 @@
+## [1.14.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.14.0...v1.14.1) (2026-05-25)
+
+
+### Bug Fixes
+
+* **loyalty:** handle scalar return from sum_loyalty_earned_in_window RPC ([80da8ea](https://github.com/Kolanupaka92/petclub-backend/commit/80da8eae3e54a0ddc295964068c878ec8aa1be33))
+
 # [1.14.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.13.0...v1.14.0) (2026-05-25)
 
 
