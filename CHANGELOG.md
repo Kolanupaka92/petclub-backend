@@ -1,3 +1,10 @@
+# [1.14.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.13.0...v1.14.0) (2026-05-25)
+
+
+### Features
+
+* **ops:** add automated health monitor with 2-hour cron, SMS alerts, auto-recovery ([d40c208](https://github.com/Kolanupaka92/petclub-backend/commit/d40c2087b2c772f11a1cf11856f1af456c9b0682))
+
 # [1.13.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.12.1...v1.13.0) (2026-05-25)
 
 
