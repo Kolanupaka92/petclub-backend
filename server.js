@@ -941,8 +941,8 @@ app.post('/api/users/set-role', auth, async (req, res) => {
     await supabase.from('users').update(userUpdate).eq('id', req.user.id);
 
     if (role === 'professional') {
-      if (!['Groomer', 'Trainer', 'Vet'].includes(subRole))
-        return res.status(400).json({ error: 'subRole must be Groomer, Trainer, or Vet' });
+      if (!['Groomer', 'Trainer', 'Vet', 'Walker', 'Boarding'].includes(subRole))
+        return res.status(400).json({ error: 'subRole must be Groomer, Trainer, Vet, Walker, or Boarding' });
       await supabase.from('professional_profiles').upsert({
         user_id: req.user.id, sub_role: subRole, verification_status: 'pending',
         is_available: false, city: city || null, address: address || null,
@@ -1635,7 +1635,7 @@ app.put('/api/professionals/me', auth, async (req, res) => {
     updatePayload.address_lng = addressLng;
   }
   // Only update sub_role if explicitly provided (prevents overwriting with undefined)
-  if (sub_role && ['Groomer','Trainer','Vet'].includes(sub_role)) {
+  if (sub_role && ['Groomer','Trainer','Vet','Walker','Boarding'].includes(sub_role)) {
     updatePayload.sub_role = sub_role;
   }
   // Fetch current profile BEFORE update to detect first-time profile completion
@@ -1721,8 +1721,8 @@ app.put('/api/professionals/availability', auth, async (req, res) => {
 app.post('/api/professionals/apply', auth, async (req, res) => {
   // Allowlist: never accept verification_status or is_available from client
   const { sub_role, city, address, bio, experience } = req.body;
-  if (sub_role && !['Groomer', 'Trainer', 'Vet'].includes(sub_role))
-    return res.status(400).json({ error: 'sub_role must be Groomer, Trainer, or Vet' });
+  if (sub_role && !['Groomer', 'Trainer', 'Vet', 'Walker', 'Boarding'].includes(sub_role))
+    return res.status(400).json({ error: 'sub_role must be Groomer, Trainer, Vet, Walker, or Boarding' });
   const { data, error } = await supabase.from('professional_profiles').upsert({
     user_id:             req.user.id,
     verification_status: 'pending',   // always pending — never accept from client
@@ -2080,7 +2080,7 @@ app.post('/api/bookings', auth, async (req, res) => {
     }
 
     // Auto-assign round-robin (GPS radius if available, city fallback)
-    if (service_type && ['Groomer', 'Trainer', 'Vet'].includes(service_type)) {
+    if (service_type && ['Groomer', 'Trainer', 'Vet', 'Walker', 'Boarding'].includes(service_type)) {
       let petName = 'Pet';
       if (pet_id) {
         const { data: pet } = await supabase.from('pets').select('name, health_notes').eq('id', pet_id).single();
