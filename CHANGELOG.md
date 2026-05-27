@@ -1,3 +1,10 @@
+## [1.14.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.14.1...v1.14.2) (2026-05-27)
+
+
+### Bug Fixes
+
+* **ci:** move GCP_SA_KEY check out of job-level if into env + step conditions ([bcafcdd](https://github.com/Kolanupaka92/petclub-backend/commit/bcafcddad2af1ad21403cff84f7318df1b335616))
+
 ## [1.14.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.14.0...v1.14.1) (2026-05-25)
 
 
