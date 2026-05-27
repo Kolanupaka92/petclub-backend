@@ -1,3 +1,10 @@
+## [1.14.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.14.2...v1.14.3) (2026-05-27)
+
+
+### Bug Fixes
+
+* **health:** ping DB on every health check to prevent Supabase auto-pause ([45a82b8](https://github.com/Kolanupaka92/petclub-backend/commit/45a82b80c79f9c6c1678476c4159ceab076aeef7))
+
 ## [1.14.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.14.1...v1.14.2) (2026-05-27)
 
 
