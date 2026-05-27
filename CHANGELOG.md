@@ -1,3 +1,10 @@
+## [1.15.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.15.0...v1.15.1) (2026-05-27)
+
+
+### Bug Fixes
+
+* **rbac:** enforce professional-only access on /incoming, /me, /availability endpoints ([6d633c4](https://github.com/Kolanupaka92/petclub-backend/commit/6d633c4050628e4d1a1be88839359f07265f4384))
+
 # [1.15.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.14.4...v1.15.0) (2026-05-27)
 
 
