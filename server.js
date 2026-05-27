@@ -1601,12 +1601,18 @@ app.get('/api/professionals', async (req, res) => {
 });
 
 app.get('/api/professionals/me', auth, async (req, res) => {
+  if (req.user.role !== 'professional' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access restricted to professionals.' });
+  }
   const { data: prof } = await supabase.from('professional_profiles').select('*').eq('user_id', req.user.id).single();
   const { data: user } = await supabase.from('users').select('id,name,phone,email,role').eq('id', req.user.id).single();
   res.json({ success: true, profile: { ...prof, ...user } });
 });
 
 app.put('/api/professionals/me', auth, async (req, res) => {
+  if (req.user.role !== 'professional' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access restricted to professionals.' });
+  }
   const name = sanitize(req.body.name), email = sanitize(req.body.email);
   const city = sanitize(req.body.city), area = sanitize(req.body.area);
   const address = sanitize(req.body.address), bio = sanitize(req.body.bio);
@@ -1679,6 +1685,9 @@ app.put('/api/professionals/me', auth, async (req, res) => {
 
 // Toggle online/offline availability — with admin email notification
 app.put('/api/professionals/availability', auth, async (req, res) => {
+  if (req.user.role !== 'professional' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access restricted to professionals.' });
+  }
   const { is_available } = req.body;
   if (typeof is_available !== 'boolean') return res.status(400).json({ error: 'is_available must be true or false' });
 
@@ -2204,6 +2213,9 @@ app.post('/api/bookings/:id/respond', auth, async (req, res) => {
 
 // Pro: Get all incoming (offered) bookings
 app.get('/api/bookings/incoming', auth, async (req, res) => {
+  if (req.user.role !== 'professional' && req.user.role !== 'admin') {
+    return res.status(403).json({ error: 'Access restricted to professionals.' });
+  }
   try {
     processTimedOutAssignments().catch(console.error);
     const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
