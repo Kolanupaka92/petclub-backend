@@ -1,3 +1,10 @@
+# [1.15.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.14.4...v1.15.0) (2026-05-27)
+
+
+### Features
+
+* add Walker and Boarding professional roles to all backend whitelists ([d7fd12b](https://github.com/Kolanupaka92/petclub-backend/commit/d7fd12b1974c9bc96b402ac2580d290a26b831b7))
+
 ## [1.14.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.14.3...v1.14.4) (2026-05-27)
 
 
