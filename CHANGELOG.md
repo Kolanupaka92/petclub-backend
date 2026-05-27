@@ -1,3 +1,10 @@
+## [1.14.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.14.3...v1.14.4) (2026-05-27)
+
+
+### Bug Fixes
+
+* **ci:** rewrite health-monitor.yml with clean ASCII YAML ([f7cea67](https://github.com/Kolanupaka92/petclub-backend/commit/f7cea67ec560735ad6a3a81ba1672c31da3e6c63))
+
 ## [1.14.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.14.2...v1.14.3) (2026-05-27)
 
 
