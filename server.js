@@ -3529,25 +3529,41 @@ app.get('/api/reverse-geocode', auth, async (req, res) => {
 //  Authenticated (X-Health-Secret header): full service map
 //  CI/CD: curl -H "X-Health-Secret: $HEALTH_SECRET" $URL/api/health
 // ══════════════════════════════════════════════════════
-app.get('/api/health', (req, res) => {
+app.get('/api/health', async (req, res) => {
   const authenticated = process.env.HEALTH_SECRET
     && req.headers['x-health-secret'] === process.env.HEALTH_SECRET;
+
+  // Always ping Supabase with a lightweight query — keeps the free-tier project
+  // from auto-pausing (Supabase pauses after 7 days of no DB activity).
+  // This runs on every health check so the 2-hour health monitor keeps us alive.
+  let dbOk = false;
+  let dbMs = null;
+  try {
+    const t0 = Date.now();
+    const { error } = await supabase.rpc('pg_sleep', { seconds: 0 }).single()
+      .catch(() => supabase.from('users').select('id').limit(1));
+    dbMs = Date.now() - t0;
+    dbOk = !error;
+  } catch { dbOk = false; }
+
   const base = {
     status:  '🐾 PETclub API running',
     version: API_VERSION,
     time:    new Date(),
+    db:      dbOk ? '✅' : '⚠️ unreachable',
   };
   if (!authenticated) return res.json(base);
   // Full response for CI/CD and ops tooling only
   res.json({
     ...base,
+    db_latency_ms: dbMs,
     config: {
       booking_response_timeout_mins: RESPONSE_TIMEOUT_MINS,
       web_app_url: WEB_APP_URL,
       website_url: WEBSITE_URL,
     },
     services: {
-      supabase:      '✅',
+      supabase:      dbOk ? '✅' : '❌ unreachable',
       zoho_smtp:     process.env.ZOHO_SMTP_USER ? '✅' : '⚠️ not configured',
       firebase_auth: firebaseAdmin ? '✅ live' : '⏳ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
       razorpay:      razorpay ? '✅ live' : '⏳ pending (set env vars)',
