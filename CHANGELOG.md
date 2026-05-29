@@ -1,3 +1,10 @@
+# [1.22.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.21.0...v1.22.0) (2026-05-29)
+
+
+### Features
+
+* pro cancel+redispatch, loyalty reversal, refund mgmt, chat masking ([5426bf6](https://github.com/Kolanupaka92/petclub-backend/commit/5426bf6759f1804c604dee534b2482de7a7bb13f))
+
 # [1.21.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.20.0...v1.21.0) (2026-05-29)
 
 
