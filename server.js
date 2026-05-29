@@ -194,6 +194,13 @@ const otpLimit = rateLimit({
   windowMs: 60 * 1000, max: 5,
   standardHeaders: true, legacyHeaders: false,
   store: new PgRateLimitStore(),
+  // Skip rate limiting for E2E test emails (e.g. @mailinator.com) so the
+  // bypass handler in the route can return the fixed OTP without being blocked.
+  skip: (req) => {
+    const testDomain = process.env.E2E_TEST_EMAIL_DOMAIN;
+    const email = (req.body?.email || '').toLowerCase();
+    return !!(testDomain && email.endsWith(`@${testDomain}`));
+  },
   handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait 1 minute and try again.' }),
 });
 // Auth verify rate limit — max 10 attempts per 15 min per IP (prevents brute-force)
