@@ -1,3 +1,10 @@
+## [1.16.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.16.0...v1.16.1) (2026-05-29)
+
+
+### Bug Fixes
+
+* **e2e:** skip rate limiter for E2E test email domain ([ad7f87f](https://github.com/Kolanupaka92/petclub-backend/commit/ad7f87f55afd83aacd9ac429bcb530e9451499ef))
+
 # [1.16.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.15.1...v1.16.0) (2026-05-29)
 
 
