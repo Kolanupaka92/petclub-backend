@@ -197,6 +197,8 @@ const otpLimit = rateLimit({
   // Skip rate limiting for E2E test emails (e.g. @mailinator.com) so the
   // bypass handler in the route can return the fixed OTP without being blocked.
   skip: (req) => {
+    // Only bypass in non-production — prevents test credentials leaking into prod
+    if (IS_PROD) return false;
     const testDomain = process.env.E2E_TEST_EMAIL_DOMAIN;
     const email = (req.body?.email || '').toLowerCase();
     return !!(testDomain && email.endsWith(`@${testDomain}`));
@@ -569,7 +571,9 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
   // Matches the format groomers/trainers are used to seeing in WhatsApp.
   if (proPhone) {
     const custName    = bookingDetails.user_name    || bookingDetails.customer_name || 'Customer';
-    const custPhone   = bookingDetails.user_phone   || bookingDetails.customer_phone || '';
+    // ⚠ SECURITY: Do NOT include customer phone here.
+    // The professional has only been *offered* the booking — not yet accepted.
+    // Customer contact details are shared only after acceptance (see booking accept endpoint).
     const petBreed    = bookingDetails.pet_breed    || 'Not specified';
     const vaccinated  = bookingDetails.vaccinated   != null ? (bookingDetails.vaccinated  ? 'Yes' : 'No') : 'Unknown';
     const aggressive  = bookingDetails.aggressive   != null ? (bookingDetails.aggressive   ? 'Yes' : 'No') : 'Unknown';
@@ -587,7 +591,6 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
       `🐾 *New PETclub Booking — Respond in ${RESPONSE_TIMEOUT_MINS} min*`,
       ``,
       `*Name:* ${custName}`,
-      custPhone ? `*Number:* ${custPhone}` : null,
       `*Scheduled Date:* ${scheduledDate}`,
       timeSlot  ? `*Time:* ${timeSlot}`   : null,
       `*Breed:* ${petBreed}`,
@@ -732,7 +735,7 @@ app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
       subRole = prof?.sub_role || null;
     }
 
-    const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     console.log(`[FirebaseVerify] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
     res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
   } catch (err) {
@@ -753,9 +756,9 @@ app.post('/api/auth/send-email-otp', otpLimit, async (req, res) => {
     // ── E2E test bypass ──────────────────────────────────────────────────────
     // When E2E_TEST_EMAIL_DOMAIN is set (e.g. "mailinator.com"), requests to
     // that domain get a fixed OTP (123456), skip real email sending, and bypass
-    // the rate limiter.  Never set this env var in production.
+    // the rate limiter.  ONLY active in non-production environments.
     const testDomain = process.env.E2E_TEST_EMAIL_DOMAIN;
-    if (testDomain && email.toLowerCase().endsWith(`@${testDomain}`)) {
+    if (!IS_PROD && testDomain && email.toLowerCase().endsWith(`@${testDomain}`)) {
       const fixedOtp = '123456';
       const expires = new Date(Date.now() + 10 * 60000).toISOString();
       await supabase.from('otp_tokens').upsert(
@@ -839,7 +842,7 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
       subRole = prof?.sub_role || null;
     }
 
-    const token = jwt.sign({ id: user.id, phone: user.phone || null, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     console.log(`[EmailOTP] ${isNew ? 'New' : 'Returning'} user: ${maskEmail(email)}`);
     res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
   } catch (err) {
@@ -967,7 +970,7 @@ app.post('/api/auth/verify-phone-otp', authLimit, async (req, res) => {
       subRole = prof?.sub_role || null;
     }
 
-    const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     console.log(`[PhoneOTP] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
     res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
   } catch (err) {
@@ -1091,7 +1094,7 @@ app.post('/api/users/set-role', auth, async (req, res) => {
     }
 
     const { data: user } = await supabase.from('users').select('*').eq('id', req.user.id).single();
-    const token = jwt.sign({ id: user.id, phone: user.phone, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     const verificationStatus = role === 'professional' ? 'pending' : null;
     // subRole already defined above from req.body
 
@@ -1122,7 +1125,9 @@ app.post('/api/users/set-role', auth, async (req, res) => {
 // ══════════════════════════════════════════════════════
 app.post('/api/contact/send-link', async (req, res) => {
   try {
-    const { name, phone, email, city, pettype, service, pet, message } = req.body;
+    const { name, phone, email, city, pettype, service, pet } = req.body;
+    // Sanitize free-text message to prevent HTML injection in admin email
+    const message = sanitize(req.body.message || '');
     if (!phone || !email || !name) return res.status(400).json({ error: 'Name, phone and email required' });
 
     const fn = name.split(' ')[0];
@@ -2753,7 +2758,10 @@ app.get('/api/admin/stats', auth, adminOnly, async (req, res) => {
 app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
   const page     = Math.max(1, parseInt(req.query.page)  || 1);
   const pageSize = Math.min(100, parseInt(req.query.limit) || 50);
-  const search   = req.query.search?.trim() || null;
+  // Strip non-alphanumeric/space characters and cap length to prevent
+  // PostgREST filter-expression injection via the or() predicate
+  const rawSearch = req.query.search?.trim() || '';
+  const search    = rawSearch.replace(/[^a-zA-Z0-9\s+@._-]/g, '').slice(0, 60) || null;
   const from     = (page - 1) * pageSize;
   const to       = from + pageSize - 1;
 
@@ -4104,11 +4112,12 @@ app.post('/api/test/move-seed-provider', async (req, res) => {
 // DELETE /api/test/seed-active-provider       — teardown / clean up seed data
 // ═══════════════════════════════════════════════════════════════════════
 
-const SEED_PROVIDER_EMAIL = 'test-provider@mailinator.com';
-const SEED_PROVIDER_PHONE = '+919000009001';   // +91 → Mappls map engine
-const SEED_PROVIDER_NAME  = 'Sai Groomer (Test)';
-// Default test-customer ID — user created during E2E customer registration
-const SEED_CUSTOMER_ID    = 'b8a8947c-226f-4bc4-ab79-6deec8b11c03';
+// Seed credentials loaded from env — never hard-coded in source
+const SEED_PROVIDER_EMAIL = process.env.SEED_PROVIDER_EMAIL || 'test-provider@mailinator.com';
+const SEED_PROVIDER_PHONE = process.env.SEED_PROVIDER_PHONE || '+919000009001';
+const SEED_PROVIDER_NAME  = process.env.SEED_PROVIDER_NAME  || 'Sai Groomer (Test)';
+// Seed customer ID loaded from env — real UUIDs must not be embedded in source
+const SEED_CUSTOMER_ID    = process.env.SEED_CUSTOMER_ID    || null;
 
 app.post('/api/test/seed-active-provider', async (req, res) => {
   if (IS_PROD) {
