@@ -1,3 +1,10 @@
+## [1.18.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.18.0...v1.18.1) (2026-05-29)
+
+
+### Bug Fixes
+
+* **auth:** include email in set-role response ([5e66da7](https://github.com/Kolanupaka92/petclub-backend/commit/5e66da7808b0b99f4ee00d89f965b431971ad1b5))
+
 # [1.18.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.17.0...v1.18.0) (2026-05-29)
 
 
