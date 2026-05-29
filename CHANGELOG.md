@@ -1,3 +1,10 @@
+# [1.20.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.19.0...v1.20.0) (2026-05-29)
+
+
+### Features
+
+* **chat:** booking_messages table + GET/POST endpoints ([c33b448](https://github.com/Kolanupaka92/petclub-backend/commit/c33b448140fc7055418dae492a4c76aed2ac1fdf))
+
 # [1.19.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.18.1...v1.19.0) (2026-05-29)
 
 
