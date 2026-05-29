@@ -1,3 +1,10 @@
+# [1.19.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.18.1...v1.19.0) (2026-05-29)
+
+
+### Features
+
+* **pets:** auto-create service record when booking is completed ([2c34b3f](https://github.com/Kolanupaka92/petclub-backend/commit/2c34b3f9b6db563a07d4cce61612f1b977a83812))
+
 ## [1.18.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.18.0...v1.18.1) (2026-05-29)
 
 
