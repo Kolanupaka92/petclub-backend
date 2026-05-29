@@ -670,6 +670,23 @@ app.post('/api/auth/send-email-otp', otpLimit, async (req, res) => {
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
       return res.status(400).json({ error: 'Valid email address required' });
 
+    // ── E2E test bypass ──────────────────────────────────────────────────────
+    // When E2E_TEST_EMAIL_DOMAIN is set (e.g. "mailinator.com"), requests to
+    // that domain get a fixed OTP (123456), skip real email sending, and bypass
+    // the rate limiter.  Never set this env var in production.
+    const testDomain = process.env.E2E_TEST_EMAIL_DOMAIN;
+    if (testDomain && email.toLowerCase().endsWith(`@${testDomain}`)) {
+      const fixedOtp = '123456';
+      const expires = new Date(Date.now() + 10 * 60000).toISOString();
+      await supabase.from('otp_tokens').upsert(
+        { phone: email.toLowerCase(), otp: fixedOtp, expires_at: expires, verified: false },
+        { onConflict: 'phone' }
+      );
+      console.log(`[EmailOTP][E2E] Test bypass for ${email} — OTP: ${fixedOtp}`);
+      return res.json({ success: true, message: `OTP sent to ${email}` });
+    }
+    // ────────────────────────────────────────────────────────────────────────
+
     const otp = genOTP();
     const expires = new Date(Date.now() + 10 * 60000).toISOString();
 
