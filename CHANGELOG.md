@@ -1,3 +1,10 @@
+# [1.18.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.17.0...v1.18.0) (2026-05-29)
+
+
+### Features
+
+* **billing:** groomer 70/30 split on net after PETclub offer deduction ([a616a12](https://github.com/Kolanupaka92/petclub-backend/commit/a616a1280037b164ce39aa05c3ac22f2033cd5b4))
+
 # [1.17.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.16.1...v1.17.0) (2026-05-29)
 
 
