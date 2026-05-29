@@ -1,3 +1,10 @@
+# [1.16.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.15.1...v1.16.0) (2026-05-29)
+
+
+### Features
+
+* **e2e:** add E2E_TEST_EMAIL_DOMAIN bypass for email OTP testing ([bfab91c](https://github.com/Kolanupaka92/petclub-backend/commit/bfab91c7c66a7ee49293bc4dda9f341563d65473))
+
 ## [1.15.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.15.0...v1.15.1) (2026-05-27)
 
 
