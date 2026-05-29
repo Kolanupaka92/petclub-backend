@@ -2266,7 +2266,7 @@ app.post('/api/bookings', auth, async (req, res) => {
 app.put('/api/bookings/:id/status', auth, async (req, res) => {
   const { data: booking } = await supabase
     .from('bookings')
-    .select('customer_id, professional_id, pet_id, service_type, service_name, scheduled_at, status, total_amount, currency')
+    .select('customer_id, professional_id, pet_id, service_type, service_name, scheduled_at, status, total_amount, currency, city, address_lat, address_lng, pets(name, health_notes)')
     .eq('id', req.params.id).single();
   if (!booking) return res.status(404).json({ error: 'Booking not found' });
 
@@ -2303,11 +2303,15 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
     // Only customers can self-cancel; only professionals can mark no-show; admin can do both
     if (newStatus === 'no_show' && req.user.role === 'customer')
       return res.status(403).json({ error: 'Only the professional on-site can report a no-show.' });
-    if (newStatus === 'cancelled' && req.user.role === 'professional')
-      return res.status(403).json({ error: 'Professionals cannot cancel bookings — use the no-show button if the customer is absent.' });
+    // Professionals CAN cancel their accepted booking (emergency/unable to attend)
+    // This triggers a re-dispatch to the next available professional
 
-    const cancelledBy = isNoShow ? 'no_show' : req.user.role; // 'customer' | 'admin' | 'no_show'
-    const refundCalc  = calcCancellation(booking.total_amount, booking.scheduled_at, isNoShow);
+    // 'professional' cancellations have no fee — pro is at fault, customer gets full refund
+    const isProCancel = !isNoShow && req.user.role === 'professional';
+    const cancelledBy = isNoShow ? 'no_show' : req.user.role;
+    const refundCalc  = isProCancel
+      ? { cancellation_fee: 0, refund_amount: parseFloat(booking.total_amount || 0), refund_status: 'pending', fee_free: true }
+      : calcCancellation(booking.total_amount, booking.scheduled_at, isNoShow);
 
     updatePayload.cancelled_by        = cancelledBy;
     updatePayload.cancelled_at        = new Date().toISOString();
@@ -2316,8 +2320,28 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
     updatePayload.refund_status       = refundCalc.refund_status;
     updatePayload.cancellation_reason = sanitize(req.body.reason || '') || null;
 
-    // Notify the professional if they exist and didn't initiate this
-    if (booking.professional_id && cancelledBy !== 'no_show') {
+    // ── Loyalty points reversal — cancel any credits earned for this booking ──
+    if (booking.customer_id) {
+      supabase.from('loyalty_transactions')
+        .select('id, points, type')
+        .eq('booking_id', req.params.id)
+        .gt('points', 0)
+        .then(({ data: txns }) => {
+          if (!txns?.length) return;
+          const totalToReverse = txns.reduce((s, t) => s + t.points, 0);
+          if (totalToReverse > 0) {
+            loyalty.awardPoints(
+              supabase, booking.customer_id,
+              -totalToReverse, 'booking_cancel_reversal',
+              `Reversal of ${totalToReverse} credits — booking ${req.params.id} cancelled`,
+              req.params.id,
+            ).catch(e => console.error('[Loyalty] cancel reversal failed:', e.message));
+          }
+        }).catch(() => {});
+    }
+
+    // ── Notify professional — customer/admin cancelled ─────────────────────────
+    if (booking.professional_id && !isProCancel && !isNoShow) {
       supabase.from('professional_profiles')
         .select('users(fcm_token, name)')
         .eq('id', booking.professional_id).single()
@@ -2325,8 +2349,7 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
           if (pp?.users?.fcm_token) {
             const svc = booking.service_name || booking.service_type || 'Service';
             const who = cancelledBy === 'customer' ? 'Customer' : 'Admin';
-            sendPush(pp.users.fcm_token,
-              `❌ Booking Cancelled`,
+            sendPush(pp.users.fcm_token, `❌ Booking Cancelled`,
               `${who} cancelled the ${svc} booking. Check your schedule.`,
               { bookingId: req.params.id, type: 'booking_cancelled' }
             ).catch(() => {});
@@ -2334,18 +2357,57 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
         }).catch(() => {});
     }
 
-    // Notify the customer if a professional marked no-show
-    if (isNoShow && booking.customer_id) {
+    // ── Notify customer — professional cancelled or no-show ───────────────────
+    if ((isProCancel || isNoShow) && booking.customer_id) {
       supabase.from('users').select('fcm_token').eq('id', booking.customer_id).single()
         .then(({ data: cu }) => {
           if (cu?.fcm_token) {
-            sendPush(cu.fcm_token,
-              `📋 Booking Update`,
-              `Your booking was marked as no-show. ₹${refundCalc.refund_amount} will be refunded. ₹${refundCalc.cancellation_fee} service fee applied.`,
-              { bookingId: req.params.id, type: 'no_show' }
-            ).catch(() => {});
+            const title = isNoShow ? `📋 Booking Update` : `⚠️ Provider Cancelled`;
+            const body  = isNoShow
+              ? `No-show recorded. ₹${refundCalc.refund_amount} refund pending. ₹${refundCalc.cancellation_fee} fee applied.`
+              : `Your provider had to cancel. We're finding you another ${booking.service_type || 'professional'} now.`;
+            sendPush(cu.fcm_token, title, body, { bookingId: req.params.id, type: isNoShow ? 'no_show' : 'pro_cancelled' }).catch(() => {});
           }
         }).catch(() => {});
+    }
+
+    // ── Re-dispatch when professional cancels — find next available pro ────────
+    if (isProCancel) {
+      // Clear the current assignment and restart search
+      updatePayload.status            = 'upcoming';
+      updatePayload.assignment_status = 'searching';
+      updatePayload.professional_id   = null;
+      updatePayload.cancelled_by      = null; // reset — this is a re-dispatch, not a real cancel
+      updatePayload.cancelled_at      = null;
+      updatePayload.cancellation_fee  = null;
+      updatePayload.refund_amount     = null;
+      updatePayload.refund_status     = null;
+      // Mark the old assignment as cancelled so this pro won't be offered again
+      if (booking.professional_id) {
+        supabase.from('booking_assignments')
+          .update({ status: 'cancelled', responded_at: new Date().toISOString() })
+          .eq('booking_id', req.params.id)
+          .eq('professional_id', booking.professional_id)
+          .then(() => {
+            // Re-trigger dispatch (async, non-blocking)
+            const excludeIds = [];
+            findNextPro(booking.city || '', booking.service_type || '',
+              [booking.professional_id, ...excludeIds],
+              booking.address_lat, booking.address_lng
+            ).then(async nextPro => {
+              if (nextPro) {
+                await offerBookingToPro(req.params.id, nextPro, {
+                  ...booking, pet_name: booking.pets?.name || 'Pet',
+                  pet_health_notes: booking.pets?.health_notes || null,
+                });
+              } else {
+                await supabase.from('bookings')
+                  .update({ assignment_status: 'no_pros_available' })
+                  .eq('id', req.params.id);
+              }
+            }).catch(e => console.error('[Redispatch] failed:', e.message));
+          }).catch(() => {});
+      }
     }
   }
 
@@ -2547,6 +2609,30 @@ app.get('/api/bookings/:id/cancel-preview', auth, async (req, res) => {
   res.json({ success: true, ...calc, total_amount: parseFloat(bk.total_amount || 0) });
 });
 
+// PUT /api/admin/bookings/:id/refund-status — admin marks a refund as processed
+app.put('/api/admin/bookings/:id/refund-status', auth, adminOnly, async (req, res) => {
+  const { status } = req.body; // 'processed' | 'not_applicable'
+  if (!['processed', 'not_applicable'].includes(status))
+    return res.status(400).json({ error: "status must be 'processed' or 'not_applicable'" });
+  const { data } = await supabase
+    .from('bookings').update({ refund_status: status }).eq('id', req.params.id).select().single();
+  if (!data) return res.status(404).json({ error: 'Booking not found' });
+
+  // Notify customer their refund was processed
+  if (status === 'processed') {
+    supabase.from('users').select('fcm_token').eq('id', data.customer_id).single()
+      .then(({ data: cu }) => {
+        if (cu?.fcm_token) {
+          sendPush(cu.fcm_token, `✅ Refund Processed`,
+            `Your refund of ₹${parseFloat(data.refund_amount || 0).toFixed(2)} has been sent. Allow 2–3 business days.`,
+            { bookingId: req.params.id, type: 'refund_processed' }
+          ).catch(() => {});
+        }
+      }).catch(() => {});
+  }
+  res.json({ success: true, booking: data });
+});
+
 // GET /api/bookings/:id/messages — fetch messages (newest last, limit 100)
 app.get('/api/bookings/:id/messages', auth, async (req, res) => {
   const denied = await assertChatAccess(req.params.id, req.user);
@@ -2574,9 +2660,17 @@ app.post('/api/bookings/:id/messages', auth, async (req, res) => {
   const denied = await assertChatAccess(req.params.id, req.user);
   if (denied) return res.status(denied.status).json({ error: denied.error });
 
-  const content = sanitize(req.body.content || '').trim();
+  let content = sanitize(req.body.content || '').trim();
   if (!content) return res.status(400).json({ error: 'Message cannot be empty' });
   if (content.length > 1000) return res.status(400).json({ error: 'Message too long (max 1000 chars)' });
+
+  // ── Contact masking — replace phone numbers / emails to keep both parties
+  // on the platform and prevent commission bypass. Patterns covered:
+  //   +91 XXXXX XXXXX, 91-XXXXXXXXXX, 10-digit mobile, @-containing email
+  content = content
+    .replace(/(\+?91[\s\-]?)?[6-9]\d{9}/g, '[📵 contact hidden]')          // Indian mobiles
+    .replace(/\+?1[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}/g, '[📵 contact hidden]') // US numbers
+    .replace(/\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g, '[📧 contact hidden]'); // emails
 
   // Fetch sender name from users table
   const { data: sender } = await supabase.from('users').select('name').eq('id', req.user.id).single();
@@ -2590,6 +2684,26 @@ app.post('/api/bookings/:id/messages', auth, async (req, res) => {
   }).select().single();
 
   if (error) return res.status(500).json({ error: error.message });
+
+  // Push notification to the other party so they know a message arrived
+  const { data: bkParties } = await supabase
+    .from('bookings').select('customer_id, professional_id').eq('id', req.params.id).single();
+  if (bkParties) {
+    const notifyUserId = req.user.role === 'professional' ? bkParties.customer_id : null;
+    // (professional-to-customer only for now; reverse needs pro user_id lookup)
+    if (notifyUserId) {
+      supabase.from('users').select('fcm_token').eq('id', notifyUserId).single()
+        .then(({ data: u }) => {
+          if (u?.fcm_token) {
+            sendPush(u.fcm_token, `💬 New message`,
+              `${sender?.name || 'Your provider'}: ${content.slice(0, 60)}${content.length > 60 ? '…' : ''}`,
+              { bookingId: req.params.id, type: 'chat_message' }
+            ).catch(() => {});
+          }
+        }).catch(() => {});
+    }
+  }
+
   res.json({ success: true, message: msg });
 });
 
