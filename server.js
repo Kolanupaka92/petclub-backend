@@ -49,29 +49,49 @@ const maskEmail = e => {
 const sanitize = s => typeof s === 'string' ? s.replace(/<[^>]*>/g, '').trim().slice(0, 2000) : s;
 
 // ── Revenue split ─────────────────────────────────────────────────────────────
-// PETclub takes 55%; provider earns 45%. Gateway fees are absorbed from our 55%.
+// Service-type-specific rates (no travel allowance, no insurance deductions):
+//   Groomer  → provider 70% / platform 30%  (of net after PETclub offer)
+//   All others → env-var-driven (default 45% / 55%)
 // All computation is server-side only — clients never receive platform_fee.
-// Override via env vars — no code change needed for business model adjustments.
 const PLATFORM_RATE   = parseFloat(process.env.PLATFORM_RATE)        || 0.55;
 const PROVIDER_RATE   = parseFloat(process.env.PROVIDER_RATE)        || 0.45;
+const GROOMER_PROVIDER_RATE  = 0.70;
+const GROOMER_PLATFORM_RATE  = 0.30;
+
 // Gateway fee rates (absorbed by PETclub, never charged to provider)
 const GW_PCT_USD      = parseFloat(process.env.GATEWAY_FEE_PCT_USD)  || 0.029;   // 2.9%
 const GW_FLAT_USD     = parseFloat(process.env.GATEWAY_FEE_FLAT_USD) || 0.30;    // $0.30
 const GW_PCT_INR      = parseFloat(process.env.GATEWAY_FEE_PCT_INR)  || 0.02;    // 2%
 const GW_FLAT_INR     = parseFloat(process.env.GATEWAY_FEE_FLAT_INR) || 0.03;    // ₹0.03
 
-function computeSplit(totalAmount, currency = 'INR') {
+// computeSplit(totalAmount, offerAmount, serviceType, currency)
+//   totalAmount  — what the customer paid
+//   offerAmount  — PETclub subsidy absorbed (e.g. ₹150 platform discount)
+//                  deducted from split base: net = totalAmount - offerAmount
+//   serviceType  — 'Groomer' uses 70/30; others use PROVIDER_RATE/PLATFORM_RATE
+//   currency     — 'INR' | 'USD'
+function computeSplit(totalAmount, offerAmount = 0, serviceType = '', currency = 'INR') {
   const amt = parseFloat(totalAmount);
   if (!amt || isNaN(amt) || amt <= 0) return null;
-  // Gateway fee absorbed by PETclub (comes out of our 55%, never from provider's cut)
+  const offer = Math.max(0, parseFloat(offerAmount) || 0);
+  const net   = Math.max(0, +(amt - offer).toFixed(2)); // split base after PETclub offer
+
+  const isGroomer   = serviceType === 'Groomer';
+  const provRate    = isGroomer ? GROOMER_PROVIDER_RATE : PROVIDER_RATE;
+  const platRate    = isGroomer ? GROOMER_PLATFORM_RATE : PLATFORM_RATE;
+
+  // Gateway fee absorbed by PETclub (from our platform share, never from provider's cut)
   const gatewayFee = currency === 'USD'
     ? +(amt * GW_PCT_USD + GW_FLAT_USD).toFixed(2)
     : +(amt * GW_PCT_INR + GW_FLAT_INR).toFixed(2);
+
   return {
-    total_amount:      +amt.toFixed(2),
-    platform_fee:      +(amt * PLATFORM_RATE).toFixed(2),
-    provider_earnings: +(amt * PROVIDER_RATE).toFixed(2),
-    gateway_fee:       gatewayFee,
+    total_amount:         +amt.toFixed(2),
+    petclub_offer_amount: offer > 0 ? offer : null,
+    net_split_amount:     offer > 0 ? net   : null,  // null = no offer, split was on full amount
+    platform_fee:         +(net * platRate).toFixed(2),
+    provider_earnings:    +(net * provRate).toFixed(2),
+    gateway_fee:          gatewayFee,
   };
 }
 
@@ -2141,7 +2161,11 @@ app.post('/api/bookings', auth, async (req, res) => {
 
     // Derive currency from phone prefix — same logic as frontend
     const customerCurrency = req.user.phone?.startsWith('+91') ? 'INR' : 'USD';
-    const split = computeSplit(resolvedAmount, customerCurrency);
+    // For grooming: split base = total − PLATFORM_DISCOUNT (₹150 PETclub offer absorbed)
+    const offerForSplit = (service_type === 'Groomer' && !isLoyaltyRedemption && resolvedAmount > 0)
+      ? (pricingResult?.discount || pricingCatalog.PLATFORM_DISCOUNT || 0)
+      : 0;
+    const split = computeSplit(resolvedAmount, offerForSplit, service_type, customerCurrency);
 
     const { data: booking, error: bookingInsertErr } = await supabase.from('bookings').insert({
       customer_id: req.user.id, status: 'upcoming',
@@ -2160,10 +2184,11 @@ app.post('/api/bookings', auth, async (req, res) => {
       is_loyalty_redemption: isLoyaltyRedemption,
       coupon_code_used:      couponCode,
       // Revenue split columns (null when no amount provided or loyalty free)
-      total_amount:      split?.total_amount      ?? null,
-      platform_fee:      split?.platform_fee      ?? null,
-      provider_earnings: split?.provider_earnings ?? null,
-      gateway_fee:       split?.gateway_fee       ?? null,
+      total_amount:         split?.total_amount         ?? null,
+      petclub_offer_amount: split?.petclub_offer_amount ?? null,
+      platform_fee:         split?.platform_fee         ?? null,
+      provider_earnings:    split?.provider_earnings    ?? null,
+      gateway_fee:          split?.gateway_fee          ?? null,
       currency:          customerCurrency,
       payout_status:     'pending',
       // Clickwrap consent audit trail — server-side timestamp, not client-supplied
@@ -3248,7 +3273,7 @@ async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_
   // Fetch current booking state (amount, currency, payment_status, customer_id)
   const { data: bk } = await supabase
     .from('bookings')
-    .select('id, amount, currency, payment_status, customer_id')
+    .select('id, amount, currency, payment_status, customer_id, service_type, petclub_offer_amount')
     .eq('id', bookingId)
     .single();
 
@@ -3263,7 +3288,11 @@ async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_
   // Use Razorpay-confirmed paise amount when available (authoritative);
   // fall back to the amount stored at booking-creation time.
   const confirmedAmount = amountPaise ? amountPaise / 100 : parseFloat(bk.amount);
-  const split = confirmedAmount > 0 ? computeSplit(confirmedAmount, currency || bk.currency || 'INR') : null;
+  // Re-use the offer amount stored at booking-creation time so the split is consistent
+  const storedOffer = parseFloat(bk.petclub_offer_amount || 0);
+  const split = confirmedAmount > 0
+    ? computeSplit(confirmedAmount, storedOffer, bk.service_type || '', currency || bk.currency || 'INR')
+    : null;
 
   // Atomic update — only touches rows where payment_status != 'paid'
   // so concurrent calls (verify + webhook) can never double-process.
@@ -3963,11 +3992,12 @@ async function runStartupMigrations() {
     // Bookings: revenue split (30/70) + payment/payout tracking
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS total_amount      NUMERIC(10,2)`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS platform_fee      NUMERIC(10,2)`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS provider_earnings NUMERIC(10,2)`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS gateway_fee       NUMERIC(10,2)`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS currency          TEXT DEFAULT 'INR'`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payout_status     TEXT DEFAULT 'pending'`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payout_reference  TEXT`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS provider_earnings    NUMERIC(10,2)`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS gateway_fee          NUMERIC(10,2)`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS currency             TEXT DEFAULT 'INR'`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payout_status        TEXT DEFAULT 'pending'`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payout_reference     TEXT`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS petclub_offer_amount NUMERIC(10,2)`,
   ];
   for (const sql of migrations) {
     // PostgREST can't run DDL, but Supabase service-role key can call
