@@ -2426,6 +2426,74 @@ app.get('/api/bookings/incoming', auth, async (req, res) => {
   }
 });
 
+// ══════════════════════════════════════════════════════
+//  IN-APP CHAT — per-booking messages between customer and professional
+//  Keeps both parties' phone numbers private.
+// ══════════════════════════════════════════════════════
+
+// Helper: verify the caller is the customer or assigned professional for a booking
+async function assertChatAccess(bookingId, user) {
+  const { data: bk } = await supabase
+    .from('bookings')
+    .select('customer_id, professional_id')
+    .eq('id', bookingId).single();
+  if (!bk) return { status: 404, error: 'Booking not found' };
+  if (user.role === 'admin') return null; // admin can always read
+  if (user.role === 'customer' && bk.customer_id === user.id) return null;
+  if (user.role === 'professional') {
+    const { data: prof } = await supabase
+      .from('professional_profiles').select('id').eq('user_id', user.id).single();
+    if (prof && bk.professional_id === prof.id) return null;
+  }
+  return { status: 403, error: 'Not authorised for this booking chat' };
+}
+
+// GET /api/bookings/:id/messages — fetch messages (newest last, limit 100)
+app.get('/api/bookings/:id/messages', auth, async (req, res) => {
+  const denied = await assertChatAccess(req.params.id, req.user);
+  if (denied) return res.status(denied.status).json({ error: denied.error });
+
+  const { data } = await supabase
+    .from('booking_messages')
+    .select('id, sender_id, sender_role, sender_name, content, created_at, read_at')
+    .eq('booking_id', req.params.id)
+    .order('created_at', { ascending: true })
+    .limit(100);
+
+  // Mark unread messages from the other party as read
+  const otherId = data?.filter(m => m.sender_id !== req.user.id && !m.read_at).map(m => m.id);
+  if (otherId?.length) {
+    supabase.from('booking_messages')
+      .update({ read_at: new Date().toISOString() }).in('id', otherId).then(() => {});
+  }
+
+  res.json({ success: true, messages: data || [] });
+});
+
+// POST /api/bookings/:id/messages — send a message
+app.post('/api/bookings/:id/messages', auth, async (req, res) => {
+  const denied = await assertChatAccess(req.params.id, req.user);
+  if (denied) return res.status(denied.status).json({ error: denied.error });
+
+  const content = sanitize(req.body.content || '').trim();
+  if (!content) return res.status(400).json({ error: 'Message cannot be empty' });
+  if (content.length > 1000) return res.status(400).json({ error: 'Message too long (max 1000 chars)' });
+
+  // Fetch sender name from users table
+  const { data: sender } = await supabase.from('users').select('name').eq('id', req.user.id).single();
+
+  const { data: msg, error } = await supabase.from('booking_messages').insert({
+    booking_id:  req.params.id,
+    sender_id:   req.user.id,
+    sender_role: req.user.role,
+    sender_name: sender?.name || null,
+    content,
+  }).select().single();
+
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true, message: msg });
+});
+
 // Admin: Manually assign a booking to a specific professional
 app.put('/api/bookings/:id/assign', auth, adminOnly, async (req, res) => {
   try {
@@ -4060,6 +4128,17 @@ async function runStartupMigrations() {
     `ALTER TABLE grooming_records  ADD COLUMN IF NOT EXISTS booking_id TEXT`,
     `ALTER TABLE training_records  ADD COLUMN IF NOT EXISTS booking_id TEXT`,
     `ALTER TABLE vet_records        ADD COLUMN IF NOT EXISTS booking_id TEXT`,
+    `CREATE TABLE IF NOT EXISTS booking_messages (
+       id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+       booking_id  TEXT NOT NULL,
+       sender_id   UUID NOT NULL,
+       sender_role TEXT NOT NULL,
+       sender_name TEXT,
+       content     TEXT NOT NULL,
+       created_at  TIMESTAMPTZ DEFAULT NOW(),
+       read_at     TIMESTAMPTZ
+     )`,
+    `CREATE INDEX IF NOT EXISTS booking_messages_booking_id_idx ON booking_messages (booking_id, created_at)`,
   ];
   for (const sql of migrations) {
     // PostgREST can't run DDL, but Supabase service-role key can call
