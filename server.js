@@ -2240,16 +2240,20 @@ app.post('/api/bookings', auth, async (req, res) => {
 });
 
 app.put('/api/bookings/:id/status', auth, async (req, res) => {
-  const { data: booking } = await supabase.from('bookings').select('customer_id, professional_id').eq('id', req.params.id).single();
+  const { data: booking } = await supabase
+    .from('bookings')
+    .select('customer_id, professional_id, pet_id, service_type, service_name, scheduled_at, status')
+    .eq('id', req.params.id).single();
   if (!booking) return res.status(404).json({ error: 'Booking not found' });
 
   // Ownership check: customer or the professional involved can update status
   let authorized = false;
+  let profName   = null;
   if (req.user.role === 'admin') authorized = true;
   else if (req.user.role === 'customer' && booking.customer_id === req.user.id) authorized = true;
   else if (req.user.role === 'professional') {
-    const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
-    if (prof && booking.professional_id === prof.id) authorized = true;
+    const { data: prof } = await supabase.from('professional_profiles').select('id, users(name)').eq('user_id', req.user.id).single();
+    if (prof && booking.professional_id === prof.id) { authorized = true; profName = prof.users?.name || null; }
   }
   if (!authorized) return res.status(403).json({ error: 'Not authorized to update this booking' });
 
@@ -2264,6 +2268,61 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
   if (assignmentStatusMap[req.body.status]) updatePayload.assignment_status = assignmentStatusMap[req.body.status];
 
   const { data } = await supabase.from('bookings').update(updatePayload).eq('id', req.params.id).select().single();
+
+  // ── Auto-create pet service record when booking is completed ─────────────
+  // Writes to the correct records table based on service_type so the history
+  // appears automatically under the pet's profile without manual entry.
+  if (req.body.status === 'completed' && booking.status !== 'completed' && booking.pet_id) {
+    try {
+      const svcType = booking.service_type || '';
+      const svcName = booking.service_name || svcType || 'Service';
+      const dateStr = booking.scheduled_at
+        ? new Date(booking.scheduled_at).toISOString().split('T')[0]
+        : new Date().toISOString().split('T')[0];
+
+      // Resolve provider name if not already known (admin completions)
+      let providerName = profName || null;
+      if (!providerName && booking.professional_id) {
+        const { data: pProf } = await supabase
+          .from('professional_profiles').select('users(name)').eq('id', booking.professional_id).single();
+        providerName = pProf?.users?.name || null;
+      }
+
+      if (svcType === 'Trainer') {
+        await supabase.from('training_records').insert({
+          pet_id:    booking.pet_id,
+          date:      dateStr,
+          session:   svcName,
+          by:        providerName || '',
+          notes:     `Completed via PETclub booking #${req.params.id}`,
+          booking_id: req.params.id,
+        });
+      } else if (svcType === 'Vet') {
+        await supabase.from('vet_records').insert({
+          pet_id:     booking.pet_id,
+          date:       dateStr,
+          vtype:      svcName,
+          vet:        providerName || '',
+          notes:      `Completed via PETclub booking #${req.params.id}`,
+          booking_id: req.params.id,
+        });
+      } else {
+        // Groomer, Walker, Boarding — all go to grooming_records
+        await supabase.from('grooming_records').insert({
+          pet_id:    booking.pet_id,
+          date:      dateStr,
+          service:   svcName,
+          by:        providerName || '',
+          notes:     `Completed via PETclub booking #${req.params.id}`,
+          booking_id: req.params.id,
+        });
+      }
+    } catch (recErr) {
+      // Non-fatal — log but don't fail the status update
+      console.error('[PetRecord] Auto-create failed:', recErr.message);
+    }
+  }
+
   res.json({ success: true, booking: data });
 });
 
@@ -3998,6 +4057,9 @@ async function runStartupMigrations() {
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payout_status        TEXT DEFAULT 'pending'`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payout_reference     TEXT`,
     `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS petclub_offer_amount NUMERIC(10,2)`,
+    `ALTER TABLE grooming_records  ADD COLUMN IF NOT EXISTS booking_id TEXT`,
+    `ALTER TABLE training_records  ADD COLUMN IF NOT EXISTS booking_id TEXT`,
+    `ALTER TABLE vet_records        ADD COLUMN IF NOT EXISTS booking_id TEXT`,
   ];
   for (const sql of migrations) {
     // PostgREST can't run DDL, but Supabase service-role key can call
