@@ -48,6 +48,30 @@ const maskEmail = e => {
 // Strip HTML tags from user inputs — prevents XSS in admin emails
 const sanitize = s => typeof s === 'string' ? s.replace(/<[^>]*>/g, '').trim().slice(0, 2000) : s;
 
+// ── Cancellation policy ───────────────────────────────────────────────────────
+// Cancel ≥ 2 h before appointment  → full refund, no fee
+// Cancel < 2 h before              → ₹300 cancellation fee, refund rest
+// Customer no-show at location     → ₹300 fee, refund rest
+// No reschedule under any circumstances
+const CANCEL_FEE_INR   = 300;
+const CANCEL_FREE_HOURS = 2; // hours before booking that allow fee-free cancellation
+
+function calcCancellation(totalAmount, scheduledAt, byNoShow = false) {
+  const total    = parseFloat(totalAmount) || 0;
+  const now      = Date.now();
+  const bookingMs = scheduledAt ? new Date(scheduledAt).getTime() : now;
+  const hoursUntil = (bookingMs - now) / 3600000;
+  const feeFree  = !byNoShow && hoursUntil >= CANCEL_FREE_HOURS;
+  const fee      = feeFree ? 0 : Math.min(CANCEL_FEE_INR, total);
+  return {
+    cancellation_fee:  +fee.toFixed(2),
+    refund_amount:     +Math.max(0, total - fee).toFixed(2),
+    refund_status:     total > 0 ? 'pending' : 'not_applicable',
+    fee_free:          feeFree,
+    hours_until:       +hoursUntil.toFixed(2),
+  };
+}
+
 // ── Revenue split ─────────────────────────────────────────────────────────────
 // Service-type-specific rates (no travel allowance, no insurance deductions):
 //   Groomer  → provider 70% / platform 30%  (of net after PETclub offer)
@@ -2242,7 +2266,7 @@ app.post('/api/bookings', auth, async (req, res) => {
 app.put('/api/bookings/:id/status', auth, async (req, res) => {
   const { data: booking } = await supabase
     .from('bookings')
-    .select('customer_id, professional_id, pet_id, service_type, service_name, scheduled_at, status')
+    .select('customer_id, professional_id, pet_id, service_type, service_name, scheduled_at, status, total_amount, currency')
     .eq('id', req.params.id).single();
   if (!booking) return res.status(404).json({ error: 'Booking not found' });
 
@@ -2257,15 +2281,78 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
   }
   if (!authorized) return res.status(403).json({ error: 'Not authorized to update this booking' });
 
+  const newStatus = req.body.status;
+
   // Whitelist allowed statuses — prevents state-machine manipulation from client
-  const VALID_BOOKING_STATUSES = ['upcoming', 'in_progress', 'completed', 'cancelled'];
-  if (!VALID_BOOKING_STATUSES.includes(req.body.status))
+  const VALID_BOOKING_STATUSES = ['upcoming', 'in_progress', 'completed', 'cancelled', 'no_show'];
+  if (!VALID_BOOKING_STATUSES.includes(newStatus))
     return res.status(400).json({ error: `Invalid status. Allowed: ${VALID_BOOKING_STATUSES.join(', ')}` });
 
-  // Keep assignment_status in sync with the operational status transitions
+  // Prevent double-cancellation
+  if ((newStatus === 'cancelled' || newStatus === 'no_show') && booking.status === 'cancelled')
+    return res.status(400).json({ error: 'Booking is already cancelled.' });
+
+  // ── Cancellation / No-show — calculate refund ─────────────────────────────
+  const updatePayload = { status: newStatus === 'no_show' ? 'cancelled' : newStatus };
   const assignmentStatusMap = { in_progress: 'in_progress', completed: 'completed', cancelled: 'cancelled' };
-  const updatePayload = { status: req.body.status };
-  if (assignmentStatusMap[req.body.status]) updatePayload.assignment_status = assignmentStatusMap[req.body.status];
+  if (assignmentStatusMap[newStatus]) updatePayload.assignment_status = assignmentStatusMap[newStatus];
+  if (newStatus === 'no_show') updatePayload.assignment_status = 'cancelled';
+
+  if (newStatus === 'cancelled' || newStatus === 'no_show') {
+    const isNoShow = newStatus === 'no_show';
+    // Only customers can self-cancel; only professionals can mark no-show; admin can do both
+    if (newStatus === 'no_show' && req.user.role === 'customer')
+      return res.status(403).json({ error: 'Only the professional on-site can report a no-show.' });
+    if (newStatus === 'cancelled' && req.user.role === 'professional')
+      return res.status(403).json({ error: 'Professionals cannot cancel bookings — use the no-show button if the customer is absent.' });
+
+    const cancelledBy = isNoShow ? 'no_show' : req.user.role; // 'customer' | 'admin' | 'no_show'
+    const refundCalc  = calcCancellation(booking.total_amount, booking.scheduled_at, isNoShow);
+
+    updatePayload.cancelled_by        = cancelledBy;
+    updatePayload.cancelled_at        = new Date().toISOString();
+    updatePayload.cancellation_fee    = refundCalc.cancellation_fee;
+    updatePayload.refund_amount       = refundCalc.refund_amount;
+    updatePayload.refund_status       = refundCalc.refund_status;
+    updatePayload.cancellation_reason = sanitize(req.body.reason || '') || null;
+
+    // Notify the professional if they exist and didn't initiate this
+    if (booking.professional_id && cancelledBy !== 'no_show') {
+      supabase.from('professional_profiles')
+        .select('users(fcm_token, name)')
+        .eq('id', booking.professional_id).single()
+        .then(({ data: pp }) => {
+          if (pp?.users?.fcm_token) {
+            const svc = booking.service_name || booking.service_type || 'Service';
+            const who = cancelledBy === 'customer' ? 'Customer' : 'Admin';
+            sendPush(pp.users.fcm_token,
+              `❌ Booking Cancelled`,
+              `${who} cancelled the ${svc} booking. Check your schedule.`,
+              { bookingId: req.params.id, type: 'booking_cancelled' }
+            ).catch(() => {});
+          }
+        }).catch(() => {});
+    }
+
+    // Notify the customer if a professional marked no-show
+    if (isNoShow && booking.customer_id) {
+      supabase.from('users').select('fcm_token').eq('id', booking.customer_id).single()
+        .then(({ data: cu }) => {
+          if (cu?.fcm_token) {
+            sendPush(cu.fcm_token,
+              `📋 Booking Update`,
+              `Your booking was marked as no-show. ₹${refundCalc.refund_amount} will be refunded. ₹${refundCalc.cancellation_fee} service fee applied.`,
+              { bookingId: req.params.id, type: 'no_show' }
+            ).catch(() => {});
+          }
+        }).catch(() => {});
+    }
+  }
+
+  // Service notes (when professional marks complete)
+  if (newStatus === 'completed' && req.body.service_notes) {
+    updatePayload.service_notes = sanitize(req.body.service_notes).slice(0, 500);
+  }
 
   const { data } = await supabase.from('bookings').update(updatePayload).eq('id', req.params.id).select().single();
 
@@ -2447,6 +2534,18 @@ async function assertChatAccess(bookingId, user) {
   }
   return { status: 403, error: 'Not authorised for this booking chat' };
 }
+
+// GET /api/bookings/:id/cancel-preview — returns refund estimate before customer confirms cancel
+app.get('/api/bookings/:id/cancel-preview', auth, async (req, res) => {
+  const { data: bk } = await supabase
+    .from('bookings').select('customer_id, scheduled_at, total_amount, status').eq('id', req.params.id).single();
+  if (!bk) return res.status(404).json({ error: 'Booking not found' });
+  if (bk.customer_id !== req.user.id && req.user.role !== 'admin')
+    return res.status(403).json({ error: 'Not your booking' });
+  if (bk.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
+  const calc = calcCancellation(bk.total_amount, bk.scheduled_at, false);
+  res.json({ success: true, ...calc, total_amount: parseFloat(bk.total_amount || 0) });
+});
 
 // GET /api/bookings/:id/messages — fetch messages (newest last, limit 100)
 app.get('/api/bookings/:id/messages', auth, async (req, res) => {
@@ -4128,6 +4227,13 @@ async function runStartupMigrations() {
     `ALTER TABLE grooming_records  ADD COLUMN IF NOT EXISTS booking_id TEXT`,
     `ALTER TABLE training_records  ADD COLUMN IF NOT EXISTS booking_id TEXT`,
     `ALTER TABLE vet_records        ADD COLUMN IF NOT EXISTS booking_id TEXT`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancelled_by        TEXT`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancelled_at        TIMESTAMPTZ`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancellation_fee    NUMERIC(10,2) DEFAULT 0`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS refund_amount       NUMERIC(10,2)`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS refund_status       TEXT DEFAULT 'not_applicable'`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancellation_reason TEXT`,
+    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS service_notes       TEXT`,
     `CREATE TABLE IF NOT EXISTS booking_messages (
        id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
        booking_id  TEXT NOT NULL,
