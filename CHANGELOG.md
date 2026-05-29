@@ -1,3 +1,10 @@
+# [1.21.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.20.0...v1.21.0) (2026-05-29)
+
+
+### Features
+
+* cancellation policy + no-show + service notes + refund logic ([5bcd5de](https://github.com/Kolanupaka92/petclub-backend/commit/5bcd5de32bd522a4f50a6ba13526305bf8ff6338))
+
 # [1.20.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.19.0...v1.20.0) (2026-05-29)
 
 
