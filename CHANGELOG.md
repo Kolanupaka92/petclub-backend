@@ -1,3 +1,10 @@
+# [1.17.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.16.1...v1.17.0) (2026-05-29)
+
+
+### Features
+
+* **notifications:** add WhatsApp booking notification to groomers/trainers ([0e5bc76](https://github.com/Kolanupaka92/petclub-backend/commit/0e5bc760923cf69531d864a7a9820be9166d81c0))
+
 ## [1.16.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.16.0...v1.16.1) (2026-05-29)
 
 
