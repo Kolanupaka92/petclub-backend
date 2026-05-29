@@ -269,6 +269,35 @@ const sendSMS = async (phone, message) => {
   console.info(`[SMS] Sent to ${maskPhone(phone)}`);
 };
 
+// ── WhatsApp via Twilio ───────────────────────────────────────────────────────
+// Set TWILIO_WHATSAPP_FROM in .env to your WhatsApp-enabled number (E.164).
+// e.g.  TWILIO_WHATSAPP_FROM=+14155238886   (Twilio sandbox)
+//       TWILIO_WHATSAPP_FROM=+91XXXXXXXXXX  (your approved WABA number)
+const _waFrom = process.env.TWILIO_WHATSAPP_FROM;
+
+/**
+ * Send a WhatsApp message via Twilio.
+ * @param {string} toPhone  - Recipient E.164 number, e.g. "+919912483990"
+ * @param {string} message  - Plain-text body
+ */
+const sendWhatsApp = async (toPhone, message) => {
+  if (!_twilioClient || !_waFrom) {
+    console.warn(`[WhatsApp disabled] Set TWILIO_WHATSAPP_FROM to enable. To: ${maskPhone(toPhone)}`);
+    return;
+  }
+  try {
+    await _twilioClient.messages.create({
+      body: message,
+      from: `whatsapp:${_waFrom}`,
+      to:   `whatsapp:${toPhone}`,
+    });
+    console.info(`[WhatsApp] Sent to ${maskPhone(toPhone)}`);
+  } catch (e) {
+    // Non-fatal — groomer still gets email + FCM push
+    console.error(`[WhatsApp] Failed to ${maskPhone(toPhone)}: ${e.message}`);
+  }
+};
+
 // ── FCM push alias — normalises call-site signature differences ───────────────
 const sendPushNotification = async (fcmToken, title, body) => sendPush(fcmToken, title, body);
 
@@ -535,7 +564,51 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
   if (proEmail) {
     sendEmail(proEmail, `🐾 New Booking Request — ${svc} · Respond in ${RESPONSE_TIMEOUT_MINS} min`, notifHtml).catch(console.error);
   }
-  // FCM push notification to professional
+
+  // ── WhatsApp notification to professional ─────────────────────────────────
+  // Matches the format groomers/trainers are used to seeing in WhatsApp.
+  if (proPhone) {
+    const custName    = bookingDetails.user_name    || bookingDetails.customer_name || 'Customer';
+    const custPhone   = bookingDetails.user_phone   || bookingDetails.customer_phone || '';
+    const petBreed    = bookingDetails.pet_breed    || 'Not specified';
+    const vaccinated  = bookingDetails.vaccinated   != null ? (bookingDetails.vaccinated  ? 'Yes' : 'No') : 'Unknown';
+    const aggressive  = bookingDetails.aggressive   != null ? (bookingDetails.aggressive   ? 'Yes' : 'No') : 'Unknown';
+    const pkgCost     = bookingDetails.package_price || bookingDetails.total_amount || '';
+    const fullAddress = bookingDetails.address      || bookingDetails.city || 'TBD';
+    const mapsLink    = bookingDetails.location_url || bookingDetails.maps_link || '';
+
+    // Scheduled date + time slot (e.g. "17 May 2026, 1pm–3pm")
+    const scheduledDate = bookingDetails.scheduled_at
+      ? new Date(bookingDetails.scheduled_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
+      : (bookingDetails.preferred_date || 'TBD');
+    const timeSlot = bookingDetails.time_slot || bookingDetails.preferred_time || '';
+
+    const waMsg = [
+      `🐾 *New PETclub Booking — Respond in ${RESPONSE_TIMEOUT_MINS} min*`,
+      ``,
+      `*Name:* ${custName}`,
+      custPhone ? `*Number:* ${custPhone}` : null,
+      `*Scheduled Date:* ${scheduledDate}`,
+      timeSlot  ? `*Time:* ${timeSlot}`   : null,
+      `*Breed:* ${petBreed}`,
+      `*Vaccinated:* ${vaccinated}`,
+      `*Aggressive:* ${aggressive}`,
+      `*Service:* ${svc}`,
+      pkgCost   ? `*Package Cost:* ₹${pkgCost}` : null,
+      `*Address:* ${fullAddress}`,
+      mapsLink  ? `*Location:* ${mapsLink}` : null,
+      `*Payment Status:* Not paid`,
+      ``,
+      `Open the app to Accept or Reject 👇`,
+      WEB_APP_URL,
+    ].filter(Boolean).join('\n');
+
+    // Normalise to E.164: assume +91 if no country prefix
+    const e164 = proPhone.startsWith('+') ? proPhone : `+91${proPhone}`;
+    sendWhatsApp(e164, waMsg).catch(console.error);
+  }
+
+  // ── FCM push notification to professional ─────────────────────────────────
   const { data: proUser } = await Promise.resolve(supabase.from('users').select('fcm_token').eq('id', pro.user_id).single()).catch(() => ({ data: null }));
   if (proUser?.fcm_token) {
     sendPush(proUser.fcm_token, `🐾 New ${svc} Request!`, `${petName} · ${dateStr} · Respond in ${RESPONSE_TIMEOUT_MINS} min`, { bookingId: bookingId, type: 'new_booking' }).catch(() => {});
