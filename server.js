@@ -1133,7 +1133,7 @@ app.post('/api/users/set-role', auth, async (req, res) => {
       }
     }
 
-    res.json({ success: true, token, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
+    res.json({ success: true, token, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
   } catch (err) {
     console.error('Set role error:', err.message);
     res.status(500).json({ error: 'Failed to set role.' });
