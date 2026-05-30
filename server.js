@@ -2264,6 +2264,7 @@ app.post('/api/bookings', auth, async (req, res) => {
 });
 
 app.put('/api/bookings/:id/status', auth, async (req, res) => {
+  try {
   const { data: booking } = await supabase
     .from('bookings')
     .select('customer_id, professional_id, pet_id, service_type, service_name, scheduled_at, status, total_amount, currency, city, address_lat, address_lng, pets(name, health_notes)')
@@ -2388,11 +2389,18 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
           .update({ status: 'cancelled', responded_at: new Date().toISOString() })
           .eq('booking_id', req.params.id)
           .eq('professional_id', booking.professional_id)
-          .then(() => {
-            // Re-trigger dispatch (async, non-blocking)
-            const excludeIds = [];
+          .then(async () => {
+            // Fetch ALL pros who already tried this booking so they're all excluded from re-dispatch
+            const { data: tried } = await supabase
+              .from('booking_assignments')
+              .select('professional_id')
+              .eq('booking_id', req.params.id)
+              .in('status', ['rejected', 'timed_out', 'accepted', 'cancelled'])
+              .catch(() => ({ data: [] }));
+            const excludeIds = (tried || []).map(t => t.professional_id).filter(Boolean);
+
             findNextPro(booking.city || '', booking.service_type || '',
-              [booking.professional_id, ...excludeIds],
+              excludeIds,
               booking.address_lat, booking.address_lng
             ).then(async nextPro => {
               if (nextPro) {
@@ -2421,7 +2429,7 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
   // ── Auto-create pet service record when booking is completed ─────────────
   // Writes to the correct records table based on service_type so the history
   // appears automatically under the pet's profile without manual entry.
-  if (req.body.status === 'completed' && booking.status !== 'completed' && booking.pet_id) {
+  if (newStatus === 'completed' && booking.status !== 'completed' && booking.pet_id) {
     try {
       const svcType = booking.service_type || '';
       const svcName = booking.service_name || svcType || 'Service';
@@ -2473,6 +2481,10 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
   }
 
   res.json({ success: true, booking: data });
+  } catch (err) {
+    console.error('[PUT /bookings/:id/status]', err.message);
+    res.status(500).json({ error: 'Failed to update booking status. Please try again.' });
+  }
 });
 
 // Pro: Accept or Reject a booking offer
