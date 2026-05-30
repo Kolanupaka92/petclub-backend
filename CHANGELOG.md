@@ -1,3 +1,10 @@
+## [1.22.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.2...v1.22.3) (2026-05-30)
+
+
+### Bug Fixes
+
+* **pro-profile:** stop JSON.stringify on services array, surface update errors ([186b3ab](https://github.com/Kolanupaka92/petclub-backend/commit/186b3ab509445b3f26eb7bac8064b5516eb707d6))
+
 ## [1.22.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.1...v1.22.2) (2026-05-30)
 
 
