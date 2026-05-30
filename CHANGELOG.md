@@ -1,3 +1,10 @@
+## [1.22.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.0...v1.22.1) (2026-05-30)
+
+
+### Bug Fixes
+
+* **e2e:** 3 bugs found in E2E verification ([59deecd](https://github.com/Kolanupaka92/petclub-backend/commit/59deecddba7121ff9ae6a5e772445f30dd685eb6))
+
 # [1.22.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.21.0...v1.22.0) (2026-05-29)
 
 
