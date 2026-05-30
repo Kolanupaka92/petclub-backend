@@ -1778,8 +1778,10 @@ app.put('/api/professionals/me', auth, async (req, res) => {
   const pet_types = req.body.pet_types;
   const updatePayload = {
     city, area, address, bio, experience,
-    services: Array.isArray(services) ? JSON.stringify(services) : services,
-    pet_types: Array.isArray(pet_types) ? JSON.stringify(pet_types) : pet_types,
+    // services is text[] in Postgres — pass as native array, NOT JSON.stringify.
+    // JSON.stringify caused a type error that silently failed the entire update.
+    services:   Array.isArray(services)   ? services   : undefined,
+    pet_types:  Array.isArray(pet_types)  ? pet_types  : undefined,
     service_areas, langs, price_basic, price_full, price_custom,
     certification, license_number, clinic_name,
   };
@@ -1797,8 +1799,12 @@ app.put('/api/professionals/me', auth, async (req, res) => {
   const wasIncomplete = !existingProf?.bio && !existingProf?.experience;
   const willBeComplete = !!(bio && experience);
 
-  const { data } = await supabase.from('professional_profiles').update(updatePayload)
+  const { data, error: updateErr } = await supabase.from('professional_profiles').update(updatePayload)
     .eq('user_id', req.user.id).select().single();
+  if (updateErr) {
+    console.error('[ProProfile PUT] Supabase update error:', updateErr.message);
+    return res.status(500).json({ error: 'Failed to update profile: ' + updateErr.message });
+  }
 
   // Notify admin when professional completes their profile for the first time (in-review)
   if (wasIncomplete && willBeComplete) {
