@@ -29,24 +29,14 @@ const PLATFORM_DISCOUNT = 150; // ₹150 PETclub platform subsidy
 
 // ── Grooming ───────────────────────────────────────────────────────────────
 const GROOMING_PACKAGES = [
-  {
-    name:   'Basic Bath',
-    icon:   '🛁',
-    desc:   'Shampoo, blow-dry & ear clean',
-    prices: { Small: 800, Medium: 1000, Large: 1300, Cat: 900 },
-  },
-  {
-    name:   'Trimming & Hygiene',
-    icon:   '✂️',
-    desc:   'Bath + full trim, nail & paw care',
-    prices: { Small: 1300, Medium: 1500, Large: 1800, Cat: 1400 },
-  },
-  {
-    name:   'Complete Makeover',
-    icon:   '✨',
-    desc:   'Full groom + styling + spa finish',
-    prices: { Small: 1900, Medium: 2200, Large: 2600, Cat: 1600 },
-  },
+  { name: 'Essential Bath+',   icon: '🛁', desc: 'Premium shampoo · Blow dry · FREE ear cleaning & nail trim · 45–60 min', prices: { Small: 800,  Medium: 900,  Large: 1000, Cat: 1000 } },
+  { name: 'Premium Bath+',     icon: '✨', desc: 'Plus Puppy shampoo · Premium blow dry · FREE ear cleaning & nail trim',    prices: { Small: 2000, Medium: 2200, Large: 2500, Cat: 2000 } },
+  { name: 'Complete Makeover', icon: '💆', desc: 'Full groom · Premium shampoo · Nail trim + grind · Deshedding · 1.5–2 hrs', prices: { Small: 1700, Medium: 1750, Large: 1800, Cat: 1500 } },
+  { name: 'Luxury Makeover',   icon: '👑', desc: 'Premium spa · Plus Puppy shampoo · Coat-specific care · Salon-quality finish', prices: { Small: 3000, Medium: 3100, Large: 3200, Cat: 3000 } },
+  { name: 'Trim & Style',      icon: '✂️', desc: 'Haircut any size · Dog or cat',                                             prices: { Small: 1300, Medium: 1400, Large: 1500, Cat: 1300 } },
+  { name: 'Care Combo',        icon: '💅', desc: 'Nails + ear cleaning + face trim',                                          prices: { Small: 500,  Medium: 500,  Large: 500,  Cat: 500  } },
+  { name: 'Puppy Dry Spa',     icon: '🐾', desc: 'Gentle dry bath for tiny puppies',                                         prices: { Small: 600,  Medium: 600,  Large: 600,  Cat: 600  } },
+  { name: 'Puppy Wet Bath',    icon: '🐶', desc: 'Gentle wet bath for puppies',                                               prices: { Small: 800,  Medium: 800,  Large: 900,  Cat: 800  } },
 ];
 
 const PET_SIZES = ['Small', 'Medium', 'Large', 'Cat'];
@@ -69,6 +59,22 @@ const TRAINING_PACKAGES = [
   { name: 'Agility Training',              price: 1500,  icon: '⚡', desc: 'Per session — obstacle & agility course' },
   { name: 'Advanced Obedience',            price: 1800,  icon: '🏆', desc: 'Per session — off-leash & complex commands' },
   { name: 'Basic Obedience (10 Sessions)', price: 10000, icon: '🎓', desc: 'Full package — sit, stay, recall & leash basics' },
+];
+
+// ── Dog Walking — duration-based ───────────────────────────────────────────
+const WALKING_PACKAGES = [
+  { name: '30-min Walk',             price: 250,  icon: '🦮', desc: 'GPS-tracked 30-minute walk, solo' },
+  { name: '60-min Walk',             price: 400,  icon: '🐕', desc: 'GPS-tracked 60-minute walk, solo' },
+  { name: '5-Walk Weekly Pack',      price: 1600, icon: '📅', desc: '5 × 30-min walks, Mon–Fri (save ₹650)' },
+  { name: 'Monthly Pack (22 Walks)', price: 5500, icon: '🏆', desc: '22 daily walks — best value per walk' },
+];
+
+// ── Pet Boarding — cage-free, home-based ───────────────────────────────────
+const BOARDING_PACKAGES = [
+  { name: 'Overnight Stay',          price: 800,  icon: '🌙', desc: '1 night · cage-free home · updates sent' },
+  { name: 'Weekend Stay',            price: 1400, icon: '📅', desc: 'Fri eve to Sun eve · 2 nights' },
+  { name: '5-Night Stay',            price: 3200, icon: '🏠', desc: '5 nights · daily photo updates' },
+  { name: 'Weekly Stay (7 Nights)',  price: 4200, icon: '⭐', desc: '7 nights · best rate · holiday special' },
 ];
 
 // ── Vet ────────────────────────────────────────────────────────────────────
@@ -120,6 +126,26 @@ function calculateAmount({ serviceType, serviceName, petSize, addons = [] }) {
       total:    Math.max(0, pkg.price - PLATFORM_DISCOUNT),
     };
   }
+  if (serviceType === 'Walker') {
+    const pkg = WALKING_PACKAGES.find(p => p.name === serviceName);
+    if (!pkg) return null;
+    return {
+      base:     pkg.price,
+      addonSum: 0,
+      discount: PLATFORM_DISCOUNT,
+      total:    Math.max(0, pkg.price - PLATFORM_DISCOUNT),
+    };
+  }
+  if (serviceType === 'Boarding') {
+    const pkg = BOARDING_PACKAGES.find(p => p.name === serviceName);
+    if (!pkg) return null;
+    return {
+      base:     pkg.price,
+      addonSum: 0,
+      discount: PLATFORM_DISCOUNT,
+      total:    Math.max(0, pkg.price - PLATFORM_DISCOUNT),
+    };
+  }
   return null; // Vet — quoted on-site
 }
 
@@ -148,7 +174,10 @@ module.exports = {
   GROOMING_ADDONS,
   PET_SIZES,
   TRAINING_PACKAGES,
+  WALKING_PACKAGES,
+  BOARDING_PACKAGES,
   VET_SERVICES,
   calculateAmount,
   validateAmount,
+  creditsFromAmount: (amount) => Math.floor(parseFloat(amount || 0) / 10),
 };

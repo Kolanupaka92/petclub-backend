@@ -1457,13 +1457,15 @@ app.get('/api/services/catalog', auth, (req, res) => {
   }
   const {
     PLATFORM_DISCOUNT, GROOMING_PACKAGES, GROOMING_ADDONS,
-    PET_SIZES, TRAINING_PACKAGES, VET_SERVICES,
+    PET_SIZES, TRAINING_PACKAGES, WALKING_PACKAGES, BOARDING_PACKAGES, VET_SERVICES,
   } = pricingCatalog;
   res.json({
     success: true,
     platform_discount: PLATFORM_DISCOUNT,
     grooming: { packages: GROOMING_PACKAGES, addons: GROOMING_ADDONS, pet_sizes: PET_SIZES },
     training: { packages: TRAINING_PACKAGES },
+    walking:  { packages: WALKING_PACKAGES },
+    boarding: { packages: BOARDING_PACKAGES },
     vet:      { services: VET_SERVICES, note: 'Pricing quoted on-site after initial assessment.' },
   });
 });
