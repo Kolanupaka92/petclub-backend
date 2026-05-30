@@ -1,3 +1,10 @@
+## [1.22.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.1...v1.22.2) (2026-05-30)
+
+
+### Bug Fixes
+
+* **pricing:** update grooming packages + add walking & boarding catalog ([e3c5845](https://github.com/Kolanupaka92/petclub-backend/commit/e3c5845d31f0e24665af614ee2ced3f2d58c88e5))
+
 ## [1.22.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.0...v1.22.1) (2026-05-30)
 
 
