@@ -49,14 +49,23 @@ const { Pool } = require('pg');
 // Cloud Run service-to-service keeps the pool warm across requests.
 function buildConnectionString() {
   if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  const url  = process.env.SUPABASE_URL;
-  const key  = process.env.SUPABASE_SERVICE_KEY;
-  if (!url || !key) return null;
-  // Supabase Postgres endpoint: project ref is the subdomain of the API URL
-  // e.g. https://xxxx.supabase.co → db.xxxx.supabase.co:5432
-  const ref = url.replace('https://', '').split('.')[0];
-  // Password is the service_role JWT — valid Supabase Postgres auth
-  return `postgresql://postgres.${ref}:${key}@aws-0-ap-south-1.pooler.supabase.com:6543/postgres`;
+  const url     = process.env.SUPABASE_URL;
+  const dbPass  = process.env.SUPABASE_DB_PASSWORD;   // actual DB password, NOT the JWT
+  if (!url || !dbPass) {
+    // SUPABASE_SERVICE_KEY is a REST JWT — not a valid Postgres password.
+    // Without DATABASE_URL or SUPABASE_DB_PASSWORD we cannot connect directly.
+    return null;
+  }
+  // Supabase project ref is the subdomain of the API URL
+  // e.g. https://xxxx.supabase.co → ref = xxxx
+  const ref    = url.replace('https://', '').split('.')[0];
+  // Supabase Supavisor (pooler) region must match the project's region.
+  // Read from env so it's configurable; default to us-west-2 (this project's region).
+  const region = process.env.SUPABASE_POOLER_REGION || 'us-west-2';
+  const host   = `aws-0-${region}.pooler.supabase.com`;
+  // Transaction mode (port 6543) — stateless, safe for Cloud Run.
+  // Username format for Supavisor: postgres.{project-ref}
+  return `postgresql://postgres.${ref}:${encodeURIComponent(dbPass)}@${host}:6543/postgres`;
 }
 
 let _pool = null;
