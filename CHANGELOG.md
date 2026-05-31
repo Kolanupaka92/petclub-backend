@@ -1,3 +1,10 @@
+## [1.22.5](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.4...v1.22.5) (2026-05-31)
+
+
+### Bug Fixes
+
+* **rate-limit:** correct pooler region + use DB password not JWT ([6861c73](https://github.com/Kolanupaka92/petclub-backend/commit/6861c73ed41d74fb1f64986ffc4e76ac39353f50))
+
 ## [1.22.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.3...v1.22.4) (2026-05-31)
 
 
