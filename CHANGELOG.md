@@ -1,3 +1,10 @@
+## [1.22.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.3...v1.22.4) (2026-05-31)
+
+
+### Bug Fixes
+
+* **auth:** improve firebase-verify logging + expand email OTP rate-limit window ([1118ce3](https://github.com/Kolanupaka92/petclub-backend/commit/1118ce339466e8a2dafcbee7121dfc50595f4e3a))
+
 ## [1.22.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.2...v1.22.3) (2026-05-30)
 
 
