@@ -233,9 +233,9 @@ app.use(rateLimit({
   store: new PgRateLimitStore(),
   handler: (req, res) => res.status(429).json({ error: 'Too many requests. Please slow down.' }),
 }));
-// OTP send rate limit — max 5 sends per minute per IP
+// OTP send rate limit — max 5 sends per 3 minutes per IP
 const otpLimit = rateLimit({
-  windowMs: 60 * 1000, max: 5,
+  windowMs: 3 * 60 * 1000, max: 5,
   standardHeaders: true, legacyHeaders: false,
   store: new PgRateLimitStore(),
   // Skip rate limiting for E2E test emails (e.g. @mailinator.com) so the
@@ -247,7 +247,7 @@ const otpLimit = rateLimit({
     const email = (req.body?.email || '').toLowerCase();
     return !!(testDomain && email.endsWith(`@${testDomain}`));
   },
-  handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait 1 minute and try again.' }),
+  handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait a few minutes and try again.' }),
 });
 // Auth verify rate limit — max 10 attempts per 15 min per IP (prevents brute-force)
 const authLimit = rateLimit({
@@ -734,9 +734,14 @@ app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
     if (!phone) return res.status(400).json({ error: 'No phone number in Firebase token' });
 
     // Find or create user (same logic as /auth/verify-otp)
-    let { data: user } = await supabase.from('users').select('*').eq('phone', phone).single();
+    console.log(`[FirebaseVerify] Looking up user for ${maskPhone(phone)}`);
+    let { data: user, error: lookupErr } = await supabase.from('users').select('*').eq('phone', phone).single();
+    if (lookupErr && lookupErr.code !== 'PGRST116') {
+      console.error('[FirebaseVerify] User lookup error:', lookupErr);
+    }
     const isNew = !user;
     if (!user) {
+      console.log(`[FirebaseVerify] New user — inserting for ${maskPhone(phone)}`);
       const { data: nu, error: insertErr } = await supabase
         .from('users')
         .insert({ phone, role: 'pending_role', is_active: true })
@@ -779,11 +784,12 @@ app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
       subRole = prof?.sub_role || null;
     }
 
+    console.log(`[FirebaseVerify] Signing JWT for user ${user.id} (${maskPhone(phone)})`);
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     console.log(`[FirebaseVerify] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
     res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
   } catch (err) {
-    console.error('[FirebaseVerify] Unexpected error:', err.message);
+    console.error('[FirebaseVerify] Unexpected error at step above ↑', err);
     res.status(500).json({ error: 'Verification failed. Please try again.' });
   }
 });
