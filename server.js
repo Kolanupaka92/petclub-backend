@@ -15,6 +15,18 @@ const pricingCatalog    = require('./services/pricingCatalog');
 const loyalty           = require('./services/loyaltyService');
 const { PgRateLimitStore } = require('./services/pgRateLimitStore');
 
+// ── Sentry error tracking — active only when SENTRY_DSN is set ────────────
+const Sentry = require('@sentry/node');
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || 'development',
+    release: `petclub-backend@${API_VERSION}`,
+    tracesSampleRate: 0.1,   // 10% of requests traced — adjust once traffic grows
+  });
+  console.log('✅ Sentry error tracking initialised');
+}
+
 // ── Startup secret guard — refuse to boot without critical secrets ─────────
 const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
 const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
@@ -4337,6 +4349,8 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
 });
 
 app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
+// Sentry must capture errors before the generic handler
+if (process.env.SENTRY_DSN) app.use(Sentry.expressErrorHandler());
 app.use((err, req, res, next) => { console.error(err); res.status(500).json({ error: 'Server error' }); });
 
 // ── Startup migration: add live-tracking columns to bookings (safe, IF NOT EXISTS) ──
