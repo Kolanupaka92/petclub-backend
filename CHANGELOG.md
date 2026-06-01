@@ -1,3 +1,10 @@
+# [1.23.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.5...v1.23.0) (2026-06-01)
+
+
+### Features
+
+* **infra:** Sentry error tracking + RLS migration + Secret Manager scripts ([88ced90](https://github.com/Kolanupaka92/petclub-backend/commit/88ced906d84baa43ed6c55b921a33bf6acd0b75a))
+
 ## [1.22.5](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.4...v1.22.5) (2026-05-31)
 
 
