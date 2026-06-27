@@ -1,3 +1,10 @@
+# [1.28.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.27.0...v1.28.0) (2026-06-27)
+
+
+### Features
+
+* pet delete route, admin soft-delete filter, 90-day hard-purge cron ([22b5081](https://github.com/Kolanupaka92/petclub-backend/commit/22b5081bc2536e9c4d6f3e3c65ce4daf67d580f5))
+
 # [1.27.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.26.2...v1.27.0) (2026-06-27)
 
 
