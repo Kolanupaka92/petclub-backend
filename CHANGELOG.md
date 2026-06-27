@@ -1,3 +1,10 @@
+# [1.24.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.5...v1.24.0) (2026-06-27)
+
+
+### Features
+
+* add structured JSON logging with pino ([e0fde58](https://github.com/Kolanupaka92/petclub-backend/commit/e0fde58cf16b678e8668bf352cf86f919869b1c0))
+
 ## [1.23.5](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.4...v1.23.5) (2026-06-27)
 
 
