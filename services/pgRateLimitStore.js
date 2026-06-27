@@ -45,40 +45,31 @@
 const { Pool } = require('pg');
 
 // ── Postgres connection pool ──────────────────────────────────────────────────
-// Reuse DATABASE_URL if set (direct Postgres); otherwise build from Supabase vars.
-// Cloud Run service-to-service keeps the pool warm across requests.
-function buildConnectionString() {
-  if (process.env.DATABASE_URL) return process.env.DATABASE_URL;
-  const url     = process.env.SUPABASE_URL;
-  const dbPass  = process.env.SUPABASE_DB_PASSWORD;   // actual DB password, NOT the JWT
+// Reuse DATABASE_URL if set; otherwise connect directly to Supabase using
+// Pool options (avoids URL-encoding issues with passwords containing @ etc.).
+function buildPoolOptions() {
+  if (process.env.DATABASE_URL) return { connectionString: process.env.DATABASE_URL };
+  const url    = process.env.SUPABASE_URL;
+  const dbPass = process.env.SUPABASE_DB_PASSWORD;
   if (!url || !dbPass) {
-    // SUPABASE_SERVICE_KEY is a REST JWT — not a valid Postgres password.
-    // Without DATABASE_URL or SUPABASE_DB_PASSWORD we cannot connect directly.
+    console.warn('[RateLimit] No Postgres credentials available — using memory fallback');
     return null;
   }
-  // Supabase project ref is the subdomain of the API URL
-  // e.g. https://xxxx.supabase.co → ref = xxxx
-  const ref    = url.replace('https://', '').split('.')[0];
-  // Supabase Supavisor (pooler) region must match the project's region.
-  // Read from env so it's configurable; default to us-west-2 (this project's region).
-  const region = process.env.SUPABASE_POOLER_REGION || 'us-west-2';
-  const host   = `aws-0-${region}.pooler.supabase.com`;
-  // Transaction mode (port 6543) — stateless, safe for Cloud Run.
-  // Username format for Supavisor: postgres.{project-ref}
-  return `postgresql://postgres.${ref}:${encodeURIComponent(dbPass)}@${host}:6543/postgres`;
+  // Direct host: db.{ref}.supabase.co — always reachable from Cloud Run,
+  // avoids Supavisor pooler "tenant not found" errors.
+  const ref  = url.replace('https://', '').split('.')[0];
+  const host = `db.${ref}.supabase.co`;
+  return { host, port: 5432, user: 'postgres', password: dbPass, database: 'postgres' };
 }
 
 let _pool = null;
 function getPool() {
   if (_pool) return _pool;
-  const connectionString = buildConnectionString();
-  if (!connectionString) {
-    console.warn('[RateLimit] No Postgres connection string available — using memory fallback');
-    return null;
-  }
+  const opts = buildPoolOptions();
+  if (!opts) return null;
   _pool = new Pool({
-    connectionString,
-    max: 3,                  // small pool — rate-limit queries are tiny
+    ...opts,
+    max: 3,
     idleTimeoutMillis: 30000,
     connectionTimeoutMillis: 3000,
     ssl: { rejectUnauthorized: false },
