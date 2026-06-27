@@ -1,3 +1,10 @@
+## [1.28.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.28.0...v1.28.1) (2026-06-27)
+
+
+### Bug Fixes
+
+* repair curly-quote encoding corruption in server.js ([5701490](https://github.com/Kolanupaka92/petclub-backend/commit/5701490458ced640860cf5eee5ca91517745fdb4))
+
 # [1.28.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.27.0...v1.28.0) (2026-06-27)
 
 
