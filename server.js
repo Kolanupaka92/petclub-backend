@@ -245,9 +245,9 @@ app.use(rateLimit({
   store: new PgRateLimitStore(),
   handler: (req, res) => res.status(429).json({ error: 'Too many requests. Please slow down.' }),
 }));
-// OTP send rate limit — max 5 sends per 3 minutes per IP
+// OTP send rate limit — max 10 sends per 5 minutes per IP
 const otpLimit = rateLimit({
-  windowMs: 3 * 60 * 1000, max: 5,
+  windowMs: 5 * 60 * 1000, max: 10,
   standardHeaders: true, legacyHeaders: false,
   store: new PgRateLimitStore(),
   // Skip rate limiting for E2E test emails (e.g. @mailinator.com) so the
@@ -261,9 +261,9 @@ const otpLimit = rateLimit({
   },
   handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait a few minutes and try again.' }),
 });
-// Auth verify rate limit — max 10 attempts per 15 min per IP (prevents brute-force)
+// Auth verify rate limit — max 20 attempts per 15 min per IP (prevents brute-force)
 const authLimit = rateLimit({
-  windowMs: 15 * 60 * 1000, max: 10,
+  windowMs: 15 * 60 * 1000, max: 20,
   standardHeaders: true, legacyHeaders: false,
   store: new PgRateLimitStore(),
   handler: (req, res) => res.status(429).json({ error: 'Too many login attempts. Please wait 15 minutes.' }),
