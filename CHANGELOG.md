@@ -1,3 +1,10 @@
+# [1.25.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.24.0...v1.25.0) (2026-06-27)
+
+
+### Features
+
+* replace SSE polling with Supabase Realtime for live tracking ([9481065](https://github.com/Kolanupaka92/petclub-backend/commit/9481065b54019a1abd4d0b30bbe9f2484a820445))
+
 # [1.24.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.5...v1.24.0) (2026-06-27)
 
 
