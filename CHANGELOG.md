@@ -1,3 +1,10 @@
+## [1.23.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.3...v1.23.4) (2026-06-27)
+
+
+### Bug Fixes
+
+* **loyalty:** fix stale leaderboard entries and broken stat card field names ([770b420](https://github.com/Kolanupaka92/petclub-backend/commit/770b420d4819e14f8bcf40291408a84da60e0fa6))
+
 ## [1.23.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.2...v1.23.3) (2026-06-27)
 
 
