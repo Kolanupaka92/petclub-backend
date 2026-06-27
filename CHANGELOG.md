@@ -1,3 +1,31 @@
+## [1.26.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.26.1...v1.26.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* health check DB ping -- replace non-existent pg_sleep RPC with direct table query ([5e77dcf](https://github.com/Kolanupaka92/petclub-backend/commit/5e77dcf3b899538d7c85f6fb06cc0e75f7612131))
+
+## [1.26.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.26.0...v1.26.1) (2026-06-27)
+
+
+### Bug Fixes
+
+* pino-pretty only in development, not staging/production ([cbe8e5f](https://github.com/Kolanupaka92/petclub-backend/commit/cbe8e5f23b67e08d69841fc45a43d5bea450e46e))
+
+# [1.26.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.25.0...v1.26.0) (2026-06-27)
+
+
+### Features
+
+* add API versioning -- /api/v1/* aliases /api/* ([19788d8](https://github.com/Kolanupaka92/petclub-backend/commit/19788d88637d6cbe99b3a6f496df49b009a14d0f))
+
+# [1.25.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.24.0...v1.25.0) (2026-06-27)
+
+
+### Features
+
+* replace SSE polling with Supabase Realtime for live tracking ([9481065](https://github.com/Kolanupaka92/petclub-backend/commit/9481065b54019a1abd4d0b30bbe9f2484a820445))
+
 # [1.24.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.5...v1.24.0) (2026-06-27)
 
 
