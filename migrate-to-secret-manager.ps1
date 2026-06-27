@@ -16,19 +16,22 @@
 #  FIREBASE_SERVICE_ACCOUNT_JSON is already in Secret Manager — skipped.
 # ══════════════════════════════════════════════════════════════════
 
-$PROJECT   = "petclub-438006"   # your GCP project ID
-$REGION    = "us-west1"         # updated region (was us-central1)
+$PROJECT   = "project-c736b433-1b47-40c0-a2c"
+$REGION    = "us-central1"
 $SERVICE   = "petclub-backend"
 
-# ── Fill in current values before running ────────────────────────
+# ── Fill in NEW (rotated) values before running ───────────────────
+# Generate new JWT_SECRET: node -e "console.log(require('crypto').randomBytes(64).toString('hex'))"
+# Generate new ADMIN_SECRET / HEALTH_SECRET the same way
 $SECRETS = @{
-  "JWT_SECRET"           = "PASTE_CURRENT_JWT_SECRET_HERE"
-  "SUPABASE_SERVICE_KEY" = "PASTE_CURRENT_SUPABASE_SERVICE_KEY_HERE"
-  "SUPABASE_DB_PASSWORD" = "PASTE_SUPABASE_DB_PASSWORD_HERE"
+  "JWT_SECRET"           = "PASTE_NEW_JWT_SECRET_HERE"
+  "SUPABASE_SERVICE_KEY" = "PASTE_NEW_SUPABASE_SERVICE_KEY_HERE"
+  "SUPABASE_DB_PASSWORD" = "PASTE_NEW_SUPABASE_DB_PASSWORD_HERE"
   "RESEND_API_KEY"       = "PASTE_CURRENT_RESEND_API_KEY_HERE"
-  "TWILIO_AUTH_TOKEN"    = "PASTE_CURRENT_TWILIO_AUTH_TOKEN_HERE"
-  "ADMIN_SECRET"         = "PASTE_CURRENT_ADMIN_SECRET_HERE"
-  "HEALTH_SECRET"        = "PASTE_CURRENT_HEALTH_SECRET_HERE"
+  "TWILIO_AUTH_TOKEN"    = "PASTE_NEW_TWILIO_AUTH_TOKEN_HERE"
+  "ZOHO_SMTP_PASS"       = "PASTE_NEW_ZOHO_SMTP_PASS_HERE"
+  "ADMIN_SECRET"         = "PASTE_NEW_ADMIN_SECRET_HERE"
+  "HEALTH_SECRET"        = "PASTE_NEW_HEALTH_SECRET_HERE"
   "SENTRY_DSN"           = "PASTE_SENTRY_DSN_HERE_OR_LEAVE_BLANK"
 }
 
