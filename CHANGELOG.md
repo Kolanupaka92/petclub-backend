@@ -1,3 +1,10 @@
+## [1.26.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.26.1...v1.26.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* health check DB ping -- replace non-existent pg_sleep RPC with direct table query ([5e77dcf](https://github.com/Kolanupaka92/petclub-backend/commit/5e77dcf3b899538d7c85f6fb06cc0e75f7612131))
+
 ## [1.26.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.26.0...v1.26.1) (2026-06-27)
 
 
