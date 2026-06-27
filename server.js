@@ -4288,8 +4288,8 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
 
       let deleted = 0;
       if (orphanProfIds.length) { await supabase.from('professional_profiles').delete().in('user_id', orphanProfIds); deleted += orphanProfIds.length; }
-      if (orphanCustIds.length) { await supabase.from('customer_profiles').delete().in('user_id', orphanCustIds).catch(() => {}); deleted += orphanCustIds.length; }
-      if (orphanPetIds.length)  { await supabase.from('pets').delete().in('id', orphanPetIds).catch(() => {}); deleted += orphanPetIds.length; }
+      if (orphanCustIds.length) { await supabase.from('customer_profiles').delete().in('user_id', orphanCustIds); deleted += orphanCustIds.length; }
+      if (orphanPetIds.length)  { await supabase.from('pets').delete().in('id', orphanPetIds); deleted += orphanPetIds.length; }
       report.orphan_profiles = deleted;
     }
 
@@ -4300,11 +4300,11 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
       if (stale?.length) {
         const ids   = stale.map(u => u.id);
         const phones = stale.map(u => u.phone);
-        await supabase.from('professional_profiles').delete().in('user_id', ids).catch(() => {});
-        await supabase.from('customer_profiles').delete().in('user_id', ids).catch(() => {});
-        await supabase.from('pets').delete().in('owner_id', ids).catch(() => {});
-        await supabase.from('otp_tokens').delete().in('phone', phones).catch(() => {});
-        await supabase.from('admin_logs').delete().in('target_id', ids).catch(() => {});
+        await supabase.from('professional_profiles').delete().in('user_id', ids);
+        await supabase.from('customer_profiles').delete().in('user_id', ids);
+        await supabase.from('pets').delete().in('owner_id', ids);
+        await supabase.from('otp_tokens').delete().in('phone', phones);
+        await supabase.from('admin_logs').delete().in('target_id', ids);
         await supabase.from('users').delete().in('id', ids);
       }
       report.stale_pending_users = stale?.length || 0;
