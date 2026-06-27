@@ -4187,8 +4187,7 @@ app.get('/api/health', async (req, res) => {
   let dbMs = null;
   try {
     const t0 = Date.now();
-    const { error } = await supabase.rpc('pg_sleep', { seconds: 0 }).single()
-      .catch(() => supabase.from('users').select('id').limit(1));
+    const { error } = await supabase.from('users').select('id').limit(1);
     dbMs = Date.now() - t0;
     dbOk = !error;
   } catch { dbOk = false; }
