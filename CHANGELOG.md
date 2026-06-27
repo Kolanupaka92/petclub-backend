@@ -1,3 +1,10 @@
+## [1.23.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.1...v1.23.2) (2026-06-27)
+
+
+### Bug Fixes
+
+* **ratelimit:** use direct Supabase host instead of Supavisor pooler ([2ecaa63](https://github.com/Kolanupaka92/petclub-backend/commit/2ecaa63a04183fa9cd16c2656000187e196ac3b1))
+
 ## [1.23.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.0...v1.23.1) (2026-06-27)
 
 
