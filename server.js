@@ -3,6 +3,7 @@
 //  Stack: Node.js + Express + Firebase Auth + Nodemailer (Zoho SMTP) + Supabase + JWT
 // ═══════════════════════════════════════════════════════════
 require('dotenv').config();
+const crypto  = require('crypto');
 const { version: API_VERSION } = require('./package.json');
 const express = require('express');
 const helmet  = require('helmet');
@@ -32,6 +33,10 @@ const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
 const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missingEnv.length) {
   console.error(`\n❌ FATAL: Missing required environment variables: ${missingEnv.join(', ')}\nSet them in Cloud Run env vars and redeploy.\n`);
+  process.exit(1);
+}
+if (process.env.JWT_SECRET.length < 32) {
+  console.error('\n❌ FATAL: JWT_SECRET must be at least 32 characters. Set a strong random value.\n');
   process.exit(1);
 }
 
@@ -272,11 +277,19 @@ const authLimit = rateLimit({
 // ── Helpers ────────────────────────────────────────────
 const genOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
-const auth = (req, res, next) => {
+const auth = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Login required' });
-  try { req.user = jwt.verify(token, JWT_SECRET); next(); }
-  catch { res.status(401).json({ error: 'Session expired. Please login again.' }); }
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    const { data: u } = await supabase.from('users').select('is_active').eq('id', decoded.id).single();
+    if (!u || u.is_active === false)
+      return res.status(403).json({ error: `Account suspended. Contact ${SUPPORT_EMAIL}` });
+    req.user = decoded;
+    next();
+  } catch {
+    res.status(401).json({ error: 'Session expired. Please login again.' });
+  }
 };
 
 const adminOnly = (req, res, next) => {
@@ -863,7 +876,8 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
     if (!rec) return res.status(400).json({ error: 'OTP not found. Request a new one.' });
     if (rec.verified) return res.status(400).json({ error: 'OTP already used.' });
     if (new Date() > new Date(rec.expires_at)) return res.status(400).json({ error: 'OTP expired. Request a new one.' });
-    if (rec.otp !== otp) return res.status(400).json({ error: 'Incorrect OTP.' });
+    if (!crypto.timingSafeEqual(Buffer.from(String(rec.otp)), Buffer.from(String(otp))))
+      return res.status(400).json({ error: 'Incorrect OTP.' });
 
     await supabase.from('otp_tokens').update({ verified: true }).eq('phone', key);
 
@@ -996,7 +1010,8 @@ app.post('/api/auth/verify-phone-otp', authLimit, async (req, res) => {
     if (!rec)           return res.status(400).json({ error: 'OTP not found. Request a new one.' });
     if (rec.verified)   return res.status(400).json({ error: 'OTP already used.' });
     if (new Date() > new Date(rec.expires_at)) return res.status(400).json({ error: 'OTP expired. Request a new one.' });
-    if (rec.otp !== otp) return res.status(400).json({ error: 'Incorrect OTP. Check your SMS and try again.' });
+    if (!crypto.timingSafeEqual(Buffer.from(String(rec.otp)), Buffer.from(String(otp))))
+      return res.status(400).json({ error: 'Incorrect OTP. Check your SMS and try again.' });
 
     await supabase.from('otp_tokens').update({ verified: true }).eq('phone', phone);
 
@@ -1015,7 +1030,7 @@ app.post('/api/auth/verify-phone-otp', authLimit, async (req, res) => {
       const adminEmail = process.env.ADMIN_EMAIL;
       if (adminEmail) {
         sendEmail(adminEmail, `🐾 New PETclub Signup (Phone) — ${maskPhone(phone)}`,
-          `<p style="font-family:Arial,sans-serif">New user signed up via phone OTP: <strong>${phone}</strong></p>`
+          `<p style="font-family:Arial,sans-serif">New user signed up via phone OTP: <strong>${maskPhone(phone)}</strong></p>`
         ).catch(() => {});
       }
     }
@@ -1904,6 +1919,10 @@ app.post('/api/professionals/apply', auth, async (req, res) => {
   const { sub_role, city, address, bio, experience } = req.body;
   if (sub_role && !['Groomer', 'Trainer', 'Vet', 'Walker', 'Boarding'].includes(sub_role))
     return res.status(400).json({ error: 'sub_role must be Groomer, Trainer, Vet, Walker, or Boarding' });
+  // Block re-application if already approved — prevents role-switch fraud
+  const { data: existing } = await supabase.from('professional_profiles').select('verification_status').eq('user_id', req.user.id).single();
+  if (existing?.verification_status === 'approved')
+    return res.status(400).json({ error: 'Your profile is already verified. Contact support to update your role.' });
   const { data, error } = await supabase.from('professional_profiles').upsert({
     user_id:             req.user.id,
     verification_status: 'pending',   // always pending — never accept from client
@@ -2129,7 +2148,8 @@ app.get('/api/bookings', auth, async (req, res) => {
     q = supabase.from('bookings').select('*, pets!pet_id(name,species,health_notes), professional_profiles!professional_id(sub_role, users(name,phone))').eq('customer_id', req.user.id);
   else if (req.user.role === 'professional') {
     const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
-    q = supabase.from('bookings').select('*, pets!pet_id(name,species,breed,health_notes), users!customer_id(name,phone)').eq('professional_id', prof?.id);
+    // Phone only revealed after confirmed — prevents harvesting from unaccepted offers
+    q = supabase.from('bookings').select('*, pets!pet_id(name,species,breed,health_notes), users!customer_id(name,phone)').eq('professional_id', prof?.id).in('assignment_status', ['confirmed','in_progress','completed']);
   } else
     // Admin: include customer + professional name/phone for live tracking panel
     q = supabase.from('bookings').select('*, pets!pet_id(name,species), users!customer_id(name,phone)');
@@ -2327,9 +2347,14 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
 
   if (newStatus === 'cancelled' || newStatus === 'no_show') {
     const isNoShow = newStatus === 'no_show';
-    // Only customers can self-cancel; only professionals can mark no-show; admin can do both
+    // Only professionals assigned to the booking (or admin) can mark no-show
     if (newStatus === 'no_show' && req.user.role === 'customer')
       return res.status(403).json({ error: 'Only the professional on-site can report a no-show.' });
+    if (newStatus === 'no_show' && req.user.role === 'professional') {
+      const { data: myProf } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
+      if (!myProf || booking.professional_id !== myProf.id)
+        return res.status(403).json({ error: 'You are not the assigned professional for this booking.' });
+    }
     // Professionals CAN cancel their accepted booking (emergency/unable to attend)
     // This triggers a re-dispatch to the next available professional
 
@@ -2596,7 +2621,7 @@ app.get('/api/bookings/incoming', auth, async (req, res) => {
 
     const { data: assignments } = await supabase
       .from('booking_assignments')
-      .select('*, bookings(*, pets(name, species, breed, health_notes), users!customer_id(name, phone))')
+      .select('*, bookings(*, pets(name, species, breed, health_notes), users!customer_id(name))')
       .eq('professional_id', prof.id)
       .eq('status', 'offered')
       .gt('response_deadline', new Date().toISOString());
