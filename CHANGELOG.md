@@ -1,3 +1,10 @@
+## [1.23.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.0...v1.23.1) (2026-06-27)
+
+
+### Bug Fixes
+
+* **admin:** remove .catch() from Supabase query chains in db-cleanup ([24e0617](https://github.com/Kolanupaka92/petclub-backend/commit/24e061740aa928960456e47918ff86749269ffa4))
+
 # [1.23.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.22.5...v1.23.0) (2026-06-01)
 
 
