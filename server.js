@@ -21,7 +21,7 @@ const pino = require('pino');
 const pinoHttp = require('pino-http');
 const logger = pino({
   level: process.env.LOG_LEVEL || 'info',
-  ...(process.env.NODE_ENV !== 'production' && { transport: { target: 'pino-pretty' } }),
+  ...(process.env.NODE_ENV === 'development' && { transport: { target: 'pino-pretty' } }),
 });
 
 // â”€â”€ Sentry error tracking â€” active only when SENTRY_DSN is set â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
