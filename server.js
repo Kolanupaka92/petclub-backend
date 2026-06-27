@@ -202,6 +202,16 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
 // a restrictive policy so that if any endpoint ever accidentally returns HTML
 // (e.g. a misconfigured proxy error page) a browser won't execute scripts.
 app.use(pinoHttp({ logger }));
+
+// API versioning -- /api/v1/* is an alias for /api/* so the mobile app
+// can pin to v1 while the web frontend continues using unversioned /api/.
+// When breaking changes ship, bump to /api/v2/ and keep v1 alive.
+app.use((req, res, next) => {
+  if (req.url.startsWith('/api/v1/')) req.url = req.url.replace('/api/v1/', '/api/');
+  res.setHeader('X-API-Version', '1');
+  next();
+});
+
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
