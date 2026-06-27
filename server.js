@@ -1,7 +1,7 @@
-﻿// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  PETclub India â€” Complete Backend API v1.0
+// 
+//  PETclub India  Complete Backend API v1.0
 //  Stack: Node.js + Express + Firebase Auth + Nodemailer (Zoho SMTP) + Supabase + JWT
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 require('dotenv').config();
 const crypto  = require('crypto');
 const { version: API_VERSION } = require('./package.json');
@@ -16,7 +16,7 @@ const pricingCatalog    = require('./services/pricingCatalog');
 const loyalty           = require('./services/loyaltyService');
 const { PgRateLimitStore } = require('./services/pgRateLimitStore');
 
-// â”€â”€ Structured logging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Structured logging 
 const pino = require('pino');
 const pinoHttp = require('pino-http');
 const logger = pino({
@@ -24,59 +24,59 @@ const logger = pino({
   ...(process.env.NODE_ENV === 'development' && { transport: { target: 'pino-pretty' } }),
 });
 
-// â”€â”€ Sentry error tracking â€” active only when SENTRY_DSN is set â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Sentry error tracking  active only when SENTRY_DSN is set 
 const Sentry = require('@sentry/node');
 if (process.env.SENTRY_DSN) {
   Sentry.init({
     dsn: process.env.SENTRY_DSN,
     environment: process.env.NODE_ENV || 'development',
     release: `petclub-backend@${API_VERSION}`,
-    tracesSampleRate: 0.1,   // 10% of requests traced â€” adjust once traffic grows
+    tracesSampleRate: 0.1,   // 10% of requests traced  adjust once traffic grows
   });
-  logger.info('âœ… Sentry error tracking initialised');
+  logger.info(' Sentry error tracking initialised');
 }
 
-// â”€â”€ Startup secret guard â€” refuse to boot without critical secrets â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Startup secret guard  refuse to boot without critical secrets 
 const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
 const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missingEnv.length) {
-  logger.error(`\nâŒ FATAL: Missing required environment variables: ${missingEnv.join(', ')}\nSet them in Cloud Run env vars and redeploy.\n`);
+  logger.error(`\n FATAL: Missing required environment variables: ${missingEnv.join(', ')}\nSet them in Cloud Run env vars and redeploy.\n`);
   process.exit(1);
 }
 if (process.env.JWT_SECRET.length < 32) {
-  logger.error('\nâŒ FATAL: JWT_SECRET must be at least 32 characters. Set a strong random value.\n');
+  logger.error('\n FATAL: JWT_SECRET must be at least 32 characters. Set a strong random value.\n');
   process.exit(1);
 }
 
 const app = express();
-app.set('trust proxy', 1); // Trust Cloud Run reverse proxy â€” needed for rate-limit & real IP
+app.set('trust proxy', 1); // Trust Cloud Run reverse proxy  needed for rate-limit & real IP
 const PORT = process.env.PORT || 5000;
 const IS_PROD = process.env.NODE_ENV === 'production' || !process.env.ALLOW_DEV_TOOLS;
 const JWT_SECRET    = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';   // 7-day expiry â€” override via env var for longer sessions
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';   // 7-day expiry  override via env var for longer sessions
 const WEB_APP_URL   = process.env.WEB_APP_URL   || 'https://app.mypetclub.app';
 const WEBSITE_URL   = process.env.WEBSITE_URL   || 'https://mypetclub.app';
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@mypetclub.app';
 // Warn (don't crash) if optional-but-important vars use hardcoded fallbacks
-if (!process.env.WEB_APP_URL)   logger.warn('[Config] WEB_APP_URL not set â€” falling back to https://app.mypetclub.app');
-if (!process.env.WEBSITE_URL)   logger.warn('[Config] WEBSITE_URL not set â€” falling back to https://mypetclub.app');
-if (!process.env.SUPPORT_EMAIL) logger.warn('[Config] SUPPORT_EMAIL not set â€” falling back to support@mypetclub.app');
+if (!process.env.WEB_APP_URL)   logger.warn('[Config] WEB_APP_URL not set  falling back to https://app.mypetclub.app');
+if (!process.env.WEBSITE_URL)   logger.warn('[Config] WEBSITE_URL not set  falling back to https://mypetclub.app');
+if (!process.env.SUPPORT_EMAIL) logger.warn('[Config] SUPPORT_EMAIL not set  falling back to support@mypetclub.app');
 
-// â”€â”€ Security helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Mask phone/email in logs â€” never log full PII
-const maskPhone = p => (typeof p === 'string' && p.length > 6) ? `${p.slice(0, 4)}****${p.slice(-2)}` : 'â€”';
+//  Security helpers 
+// Mask phone/email in logs  never log full PII
+const maskPhone = p => (typeof p === 'string' && p.length > 6) ? `${p.slice(0, 4)}****${p.slice(-2)}` : '';
 const maskEmail = e => {
-  if (!e || !e.includes('@')) return 'â€”';
+  if (!e || !e.includes('@')) return '';
   const [local, domain] = e.split('@');
   return `${local.slice(0, 2)}***@${domain}`;
 };
-// Strip HTML tags from user inputs â€” prevents XSS in admin emails
+// Strip HTML tags from user inputs  prevents XSS in admin emails
 const sanitize = s => typeof s === 'string' ? s.replace(/<[^>]*>/g, '').trim().slice(0, 2000) : s;
 
-// â”€â”€ Cancellation policy â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-// Cancel â‰¥ 2 h before appointment  â†’ full refund, no fee
-// Cancel < 2 h before              â†’ â‚¹300 cancellation fee, refund rest
-// Customer no-show at location     â†’ â‚¹300 fee, refund rest
+//  Cancellation policy 
+// Cancel  2 h before appointment  ' full refund, no fee
+// Cancel < 2 h before              ' 300 cancellation fee, refund rest
+// Customer no-show at location     ' 300 fee, refund rest
 // No reschedule under any circumstances
 const CANCEL_FEE_INR   = 300;
 const CANCEL_FREE_HOURS = 2; // hours before booking that allow fee-free cancellation
@@ -97,11 +97,11 @@ function calcCancellation(totalAmount, scheduledAt, byNoShow = false) {
   };
 }
 
-// â”€â”€ Revenue split â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Revenue split 
 // Service-type-specific rates (no travel allowance, no insurance deductions):
-//   Groomer  â†’ provider 70% / platform 30%  (of net after PETclub offer)
-//   All others â†’ env-var-driven (default 45% / 55%)
-// All computation is server-side only â€” clients never receive platform_fee.
+//   Groomer  ' provider 70% / platform 30%  (of net after PETclub offer)
+//   All others ' env-var-driven (default 45% / 55%)
+// All computation is server-side only  clients never receive platform_fee.
 const PLATFORM_RATE   = parseFloat(process.env.PLATFORM_RATE)        || 0.55;
 const PROVIDER_RATE   = parseFloat(process.env.PROVIDER_RATE)        || 0.45;
 const GROOMER_PROVIDER_RATE  = 0.70;
@@ -111,14 +111,14 @@ const GROOMER_PLATFORM_RATE  = 0.30;
 const GW_PCT_USD      = parseFloat(process.env.GATEWAY_FEE_PCT_USD)  || 0.029;   // 2.9%
 const GW_FLAT_USD     = parseFloat(process.env.GATEWAY_FEE_FLAT_USD) || 0.30;    // $0.30
 const GW_PCT_INR      = parseFloat(process.env.GATEWAY_FEE_PCT_INR)  || 0.02;    // 2%
-const GW_FLAT_INR     = parseFloat(process.env.GATEWAY_FEE_FLAT_INR) || 0.03;    // â‚¹0.03
+const GW_FLAT_INR     = parseFloat(process.env.GATEWAY_FEE_FLAT_INR) || 0.03;    // 0.03
 
 // computeSplit(totalAmount, offerAmount, serviceType, currency)
-//   totalAmount  â€” what the customer paid
-//   offerAmount  â€” PETclub subsidy absorbed (e.g. â‚¹150 platform discount)
+//   totalAmount   what the customer paid
+//   offerAmount   PETclub subsidy absorbed (e.g. 150 platform discount)
 //                  deducted from split base: net = totalAmount - offerAmount
-//   serviceType  â€” 'Groomer' uses 70/30; others use PROVIDER_RATE/PLATFORM_RATE
-//   currency     â€” 'INR' | 'USD'
+//   serviceType   'Groomer' uses 70/30; others use PROVIDER_RATE/PLATFORM_RATE
+//   currency      'INR' | 'USD'
 function computeSplit(totalAmount, offerAmount = 0, serviceType = '', currency = 'INR') {
   const amt = parseFloat(totalAmount);
   if (!amt || isNaN(amt) || amt <= 0) return null;
@@ -144,7 +144,7 @@ function computeSplit(totalAmount, offerAmount = 0, serviceType = '', currency =
   };
 }
 
-// Role-based field stripping â€” never send platform economics to providers/customers
+// Role-based field stripping  never send platform economics to providers/customers
 function stripFinancials(booking, role) {
   const b = { ...booking };
   if (role === 'professional') {
@@ -160,30 +160,30 @@ function stripFinancials(booking, role) {
     delete b.payout_status;
     delete b.payout_reference;
   }
-  // admin: full data â€” no deletions
+  // admin: full data  no deletions
   return b;
 }
 
-// â”€â”€ Services â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Services 
 const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
 
-// â”€â”€ Email â€” delegated to services/emailService.js â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Email  delegated to services/emailService.js 
 // SMTP config and all template rendering live in that module.
 // Use emailService.sendRawEmail() for admin-internal notifications,
 // or the named helpers (sendOtpEmail, sendWelcomeEmail, etc.) for
 // user-facing transactional emails.
 
-// â”€â”€ Razorpay (India payment gateway) â€” live once RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET set â”€â”€
+//  Razorpay (India payment gateway)  live once RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET set 
 let razorpay = null;
 if (process.env.RAZORPAY_KEY_ID && process.env.RAZORPAY_KEY_SECRET) {
   try {
     const Razorpay = require('razorpay');
     razorpay = new Razorpay({ key_id: process.env.RAZORPAY_KEY_ID, key_secret: process.env.RAZORPAY_KEY_SECRET });
-    logger.info('âœ… Razorpay initialized (India payments live)');
-  } catch (e) { logger.warn('[Razorpay] Not loaded â€” run: npm install razorpay â†’', e.message); }
+    logger.info(' Razorpay initialized (India payments live)');
+  } catch (e) { logger.warn('[Razorpay] Not loaded -- run: npm install razorpay', e.message); }
 }
 
-// â”€â”€ Firebase Admin (FCM push notifications) â€” live once FIREBASE_SERVICE_ACCOUNT_JSON set â”€â”€
+//  Firebase Admin (FCM push notifications)  live once FIREBASE_SERVICE_ACCOUNT_JSON set 
 let firebaseAdmin = null;
 if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
   try {
@@ -191,13 +191,13 @@ if (process.env.FIREBASE_SERVICE_ACCOUNT_JSON) {
     const svcAcct = JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT_JSON);
     if (!fbAdmin.apps.length) fbAdmin.initializeApp({ credential: fbAdmin.credential.cert(svcAcct) });
     firebaseAdmin = fbAdmin;
-    logger.info('âœ… Firebase Admin initialized (push notifications live)');
-  } catch (e) { logger.warn('[Firebase] Not initialized â€” run: npm install firebase-admin â†’', e.message); }
+    logger.info(' Firebase Admin initialized (push notifications live)');
+  } catch (e) { logger.warn('[Firebase] Not initialized -- run: npm install firebase-admin', e.message); }
 }
 
-// â”€â”€ Middleware â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Middleware 
 // Security headers
-// CSP on a pure JSON API is mainly defence-in-depth â€” API responses are not
+// CSP on a pure JSON API is mainly defence-in-depth  API responses are not
 // rendered as HTML by browsers, so most directives are no-ops.  We still set
 // a restrictive policy so that if any endpoint ever accidentally returns HTML
 // (e.g. a misconfigured proxy error page) a browser won't execute scripts.
@@ -216,7 +216,7 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc:      ["'none'"],        // nothing allowed by default
-      scriptSrc:       ["'none'"],        // no scripts â€” pure JSON API
+      scriptSrc:       ["'none'"],        // no scripts  pure JSON API
       styleSrc:        ["'none'"],
       imgSrc:          ["'none'"],
       connectSrc:      ["'self'"],        // XHR/fetch only to same origin
@@ -247,33 +247,33 @@ app.use(cors({
 app.use(require('cookie-parser')());
 app.use(express.json({ limit: '10mb' }));
 
-// â”€â”€ Request ID + timing logger â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Request ID + timing logger 
 app.use((req, res, next) => {
   req.id = Math.random().toString(36).slice(2, 10).toUpperCase();
   req.startTime = Date.now();
   res.setHeader('X-Request-ID', req.id);
   res.on('finish', () => {
     const ms = Date.now() - req.startTime;
-    const lvl = res.statusCode >= 500 ? 'ðŸ”´' : res.statusCode >= 400 ? 'ðŸŸ¡' : 'ðŸŸ¢';
+    const lvl = res.statusCode >= 500 ? '' : res.statusCode >= 400 ? '' : '';
     if (!req.path.includes('/health')) {
-      logger.info(`${lvl} [${req.id}] ${req.method} ${req.path} â†’ ${res.statusCode} (${ms}ms)`);
+      logger.info(`${lvl} [${req.id}] ${req.method} ${req.path} ' ${res.statusCode} (${ms}ms)`);
     }
   });
   next();
 });
-// â”€â”€ Distributed rate limiters (Postgres-backed â€” safe across Cloud Run instances) â”€â”€
+//  Distributed rate limiters (Postgres-backed  safe across Cloud Run instances) 
 // PgRateLimitStore uses an atomic UPSERT in Supabase so limits are enforced
 // globally even when Cloud Run scales to N instances.  Falls back to in-memory
 // if the DB is unreachable so traffic is never fully blocked by a DB hiccup.
 //
-// Global rate limit â€” 300 req / 15 min per IP
+// Global rate limit  300 req / 15 min per IP
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000, max: 300,
   standardHeaders: true, legacyHeaders: false,
   store: new PgRateLimitStore(),
   handler: (req, res) => res.status(429).json({ error: 'Too many requests. Please slow down.' }),
 }));
-// OTP send rate limit â€” max 10 sends per 5 minutes per IP
+// OTP send rate limit  max 10 sends per 5 minutes per IP
 const otpLimit = rateLimit({
   windowMs: 5 * 60 * 1000, max: 10,
   standardHeaders: true, legacyHeaders: false,
@@ -281,7 +281,7 @@ const otpLimit = rateLimit({
   // Skip rate limiting for E2E test emails (e.g. @mailinator.com) so the
   // bypass handler in the route can return the fixed OTP without being blocked.
   skip: (req) => {
-    // Only bypass in non-production â€” prevents test credentials leaking into prod
+    // Only bypass in non-production  prevents test credentials leaking into prod
     if (IS_PROD) return false;
     const testDomain = process.env.E2E_TEST_EMAIL_DOMAIN;
     const email = (req.body?.email || '').toLowerCase();
@@ -289,7 +289,7 @@ const otpLimit = rateLimit({
   },
   handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait a few minutes and try again.' }),
 });
-// Auth verify rate limit â€” max 20 attempts per 15 min per IP (prevents brute-force)
+// Auth verify rate limit  max 20 attempts per 15 min per IP (prevents brute-force)
 const authLimit = rateLimit({
   windowMs: 15 * 60 * 1000, max: 20,
   standardHeaders: true, legacyHeaders: false,
@@ -297,10 +297,10 @@ const authLimit = rateLimit({
   handler: (req, res) => res.status(429).json({ error: 'Too many login attempts. Please wait 15 minutes.' }),
 });
 
-// â”€â”€ Helpers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Helpers 
 const genOTP = () => crypto.randomInt(100000, 1000000).toString();
 
-// Short-lived cache: { userId â†’ { isActive, expiresAt } }
+// Short-lived cache: { userId ' { isActive, expiresAt } }
 // Avoids a DB hit on every request while still enforcing suspension within 60s.
 const _authCache = new Map();
 const AUTH_CACHE_TTL_MS = 60_000;
@@ -319,12 +319,12 @@ const auth = async (req, res, next) => {
   const token = req.cookies?.[AUTH_COOKIE] || req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Login required' });
 
-  // Step 1: verify JWT signature â€” fast, no network
+  // Step 1: verify JWT signature  fast, no network
   let decoded;
   try { decoded = jwt.verify(token, JWT_SECRET); }
   catch { return res.status(401).json({ error: 'Session expired. Please sign in again.' }); }
 
-  // Step 2: check suspension status â€” cached, falls back to JWT-only on DB error
+  // Step 2: check suspension status  cached, falls back to JWT-only on DB error
   const cached = _authCache.get(decoded.id);
   if (cached && cached.expiresAt > Date.now()) {
     if (!cached.isActive)
@@ -337,9 +337,9 @@ const auth = async (req, res, next) => {
       if (!isActive)
         return res.status(403).json({ error: `Account suspended. Contact ${SUPPORT_EMAIL}` });
     } catch {
-      // DB unreachable â€” fail open so a Supabase blip doesn't log everyone out.
+      // DB unreachable  fail open so a Supabase blip doesn't log everyone out.
       // A suspended user may slip through for up to 60s during an outage (acceptable).
-      logger.warn('[auth] DB suspension check failed â€” falling back to JWT-only');
+      logger.warn('[auth] DB suspension check failed  falling back to JWT-only');
     }
   }
 
@@ -353,7 +353,7 @@ const adminOnly = (req, res, next) => {
 };
 
 
-// â”€â”€ Push Notification via Firebase Cloud Messaging â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Push Notification via Firebase Cloud Messaging 
 const sendPush = async (fcmToken, title, body, data = {}) => {
   if (!firebaseAdmin || !fcmToken) return;
   try {
@@ -364,11 +364,11 @@ const sendPush = async (fcmToken, title, body, data = {}) => {
       android: { priority: 'high', notification: { sound: 'default', channelId: 'petclub_bookings' } },
       apns: { payload: { aps: { sound: 'default', badge: 1 } } },
     });
-    logger.info(`[FCM] Push sent â†’ ${fcmToken.slice(0, 20)}â€¦`);
+    logger.info(`[FCM] Push sent ' ${fcmToken.slice(0, 20)}`);
   } catch (e) { logger.warn('[FCM] Send failed:', e.message); }
 };
 
-// â”€â”€ SMS via Twilio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  SMS via Twilio 
 const _twilioSid   = process.env.TWILIO_ACCOUNT_SID;
 const _twilioToken = process.env.TWILIO_AUTH_TOKEN;
 const _twilioFrom  = process.env.TWILIO_PHONE_NUMBER;
@@ -378,12 +378,12 @@ if (_twilioReady) {
   try {
     const twilio = require('twilio');
     _twilioClient = twilio(_twilioSid, _twilioToken);
-    console.info('[Twilio] SMS client initialised â€” from:', _twilioFrom);
+    console.info('[Twilio] SMS client initialised  from:', _twilioFrom);
   } catch (e) {
     logger.error('[Twilio] Failed to init client:', e.message);
   }
 } else {
-  logger.warn('[Twilio] TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER not set â€” SMS disabled');
+  logger.warn('[Twilio] TWILIO_ACCOUNT_SID / TWILIO_AUTH_TOKEN / TWILIO_PHONE_NUMBER not set  SMS disabled');
 }
 
 const sendSMS = async (phone, message) => {
@@ -395,7 +395,7 @@ const sendSMS = async (phone, message) => {
   console.info(`[SMS] Sent to ${maskPhone(phone)}`);
 };
 
-// â”€â”€ WhatsApp via Twilio â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  WhatsApp via Twilio 
 // Set TWILIO_WHATSAPP_FROM in .env to your WhatsApp-enabled number (E.164).
 // e.g.  TWILIO_WHATSAPP_FROM=+14155238886   (Twilio sandbox)
 //       TWILIO_WHATSAPP_FROM=+91XXXXXXXXXX  (your approved WABA number)
@@ -419,26 +419,26 @@ const sendWhatsApp = async (toPhone, message) => {
     });
     console.info(`[WhatsApp] Sent to ${maskPhone(toPhone)}`);
   } catch (e) {
-    // Non-fatal â€” groomer still gets email + FCM push
+    // Non-fatal  groomer still gets email + FCM push
     logger.error(`[WhatsApp] Failed to ${maskPhone(toPhone)}: ${e.message}`);
   }
 };
 
-// â”€â”€ FCM push alias â€” normalises call-site signature differences â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  FCM push alias  normalises call-site signature differences 
 const sendPushNotification = async (fcmToken, title, body) => sendPush(fcmToken, title, body);
 
-// Backward-compatible alias â€” all existing admin/internal sendEmail(to, subject, html)
+// Backward-compatible alias  all existing admin/internal sendEmail(to, subject, html)
 // callsites continue to work unchanged. New user-facing emails use named helpers below.
 const sendEmail = emailService.sendRawEmail;
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  STORAGE: init id-documents bucket on startup
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 (async () => {
   try {
-    // PRIVATE bucket â€” ID documents (Aadhar, PAN, Passport) must never be publicly accessible
+    // PRIVATE bucket  ID documents (Aadhar, PAN, Passport) must never be publicly accessible
     await supabase.storage.createBucket('id-documents', { public: false });
-    logger.info('âœ… Storage bucket ready: id-documents');
+    logger.info(' Storage bucket ready: id-documents');
   } catch (e) {
     if (!e.message?.includes('already exists') && !String(e).includes('already exists')) {
       logger.error('Storage bucket init:', e.message || e);
@@ -446,19 +446,19 @@ const sendEmail = emailService.sendRawEmail;
   }
 })();
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  BOOKING TIMEOUT CRON â€” runs every 2 minutes
+// 
+//  BOOKING TIMEOUT CRON  runs every 2 minutes
 //  (also runs lazily on booking API calls as a safety net)
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 setInterval(() => {
   processTimedOutAssignments().catch(e => logger.error('[Cron] Booking timeout check failed:', e.message));
 }, 2 * 60 * 1000);
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  SUSPENDED USER AUTO-DELETE CRON â€” runs every hour
+// 
+//  SUSPENDED USER AUTO-DELETE CRON  runs every hour
 //  Deletes users suspended >24 hrs ago (no restore since).
 //  Sends admin an email summary before deletion.
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 const autoDeleteSuspendedUsers = async () => {
   try {
     // Find the latest suspend_user log per user
@@ -482,14 +482,14 @@ const autoDeleteSuspendedUsers = async () => {
       .eq('action', 'restore_user')
       .in('target_id', candidateIds);
 
-    // Build map: userId â†’ latest restore timestamp
+    // Build map: userId ' latest restore timestamp
     const latestRestore = {};
     restoreLogs?.forEach(l => {
       if (!latestRestore[l.target_id] || l.created_at > latestRestore[l.target_id])
         latestRestore[l.target_id] = l.created_at;
     });
 
-    // Build map: userId â†’ latest suspension timestamp
+    // Build map: userId ' latest suspension timestamp
     const latestSuspend = {};
     logs.forEach(l => {
       if (!latestSuspend[l.target_id] || l.created_at > latestSuspend[l.target_id])
@@ -522,17 +522,17 @@ const autoDeleteSuspendedUsers = async () => {
     if (adminEmail) {
       const rows = toDelete.map(u =>
         `<tr style="border-bottom:1px solid #f1f5f9">
-          <td style="padding:8px 12px;font-size:13px">${u.name || 'â€”'}</td>
+          <td style="padding:8px 12px;font-size:13px">${u.name || ''}</td>
           <td style="padding:8px 12px;font-size:13px">${u.phone}</td>
-          <td style="padding:8px 12px;font-size:13px">${u.email || 'â€”'}</td>
+          <td style="padding:8px 12px;font-size:13px">${u.email || ''}</td>
           <td style="padding:8px 12px;font-size:13px;text-transform:capitalize">${u.role}</td>
         </tr>`
       ).join('');
       await sendEmail(
         adminEmail,
-        `ðŸ—‘ï¸ PETclub â€” ${toDelete.length} Suspended User(s) Auto-Deleted`,
+        `--' PETclub  ${toDelete.length} Suspended User(s) Auto-Deleted`,
         `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:560px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
-          <div style="font-size:40px;text-align:center;margin-bottom:12px">ðŸ—‘ï¸</div>
+          <div style="font-size:40px;text-align:center;margin-bottom:12px">--'</div>
           <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">Auto-Deletion Complete</h2>
           <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 24px">The following user(s) were suspended &gt;24 hours ago and have been permanently deleted.</p>
           <table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:12px;overflow:hidden">
@@ -545,7 +545,7 @@ const autoDeleteSuspendedUsers = async () => {
             <tbody>${rows}</tbody>
           </table>
           <hr style="border:none;border-top:1px solid #f1f5f9;margin:24px 0"/>
-          <p style="color:#94a3b8;font-size:12px;text-align:center">PETclub Admin Â· ${new Date().toLocaleString('en-IN')} Â· These accounts are permanently removed from the database.</p>
+          <p style="color:#94a3b8;font-size:12px;text-align:center">PETclub Admin  ${new Date().toLocaleString('en-IN')}  These accounts are permanently removed from the database.</p>
         </div>`
       ).catch(e => logger.error('[AutoDelete] Email failed:', e.message));
     }
@@ -569,7 +569,7 @@ setInterval(() => {
   autoDeleteSuspendedUsers().catch(e => logger.error('[Cron] Auto-delete suspended users failed:', e.message));
 }, 60 * 60 * 1000); // every hour
 
-// â”€â”€ Expired OTP cleanup â€” runs every hour â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Expired OTP cleanup  runs every hour 
 // Prevents otp_tokens table accumulating verified/expired codes
 setInterval(async () => {
   try {
@@ -579,7 +579,7 @@ setInterval(async () => {
   } catch (e) { logger.warn('[OTP Cleanup] Failed:', e.message); }
 }, 60 * 60 * 1000);
 
-// â"€â"€ Hard-purge soft-deleted records older than 90 days â€" runs every 24 h â"€â"€
+// "" Hard-purge soft-deleted records older than 90 days " runs every 24 h ""
 // Permanently removes rows where deleted_at < NOW() - 90 days from
 // users, bookings, and pets. Satisfies GDPR right-to-erasure obligation.
 setInterval(async () => {
@@ -595,9 +595,9 @@ setInterval(async () => {
   } catch (e) { logger.warn('[HardPurge] Failed:', e.message); }
 }, 24 * 60 * 60 * 1000);
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  BOOKING DISPATCH SYSTEM â€” Round-Robin / Uber-style
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
+//  BOOKING DISPATCH SYSTEM  Round-Robin / Uber-style
+// 
 const RESPONSE_TIMEOUT_MINS = parseInt(process.env.BOOKING_RESPONSE_TIMEOUT_MINS) || 5;
 
 // Round-robin: find next eligible professional (not already tried for this booking)
@@ -625,7 +625,7 @@ const findNextPro = async (city, subRole, excludeProIds = [], bookingLat = null,
   // GPS radius filter: keep pros within 70km of booking address
   if (bookingLat && bookingLng) {
     const inRadius = allPros.filter(p => {
-      if (!p.address_lat || !p.address_lng) return false; // no GPS â†’ exclude from GPS dispatch
+      if (!p.address_lat || !p.address_lng) return false; // no GPS ' exclude from GPS dispatch
       return haversineKm(bookingLat, bookingLng, p.address_lat, p.address_lng) <= DISPATCH_RADIUS_KM;
     });
     // Fall back to city-name match if no GPS-verified pros in radius
@@ -668,51 +668,51 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
   const proEmail = pro.users?.email;
 
   const healthNoteRow = petHealthNotes
-    ? `<tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8;width:38%">âš•ï¸ Health Notes</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#991b1b;font-weight:600">${sanitize(petHealthNotes)}</td></tr>`
+    ? `<tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8;width:38%"> Health Notes</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:13px;color:#991b1b;font-weight:600">${sanitize(petHealthNotes)}</td></tr>`
     : '';
   const custNotesRow = custNotes
-    ? `<tr><td style="padding:8px 0;font-size:12px;color:#94a3b8;width:38%">ðŸ’¬ Customer Note</td><td style="padding:8px 0;font-size:13px;color:#1e293b">${sanitize(custNotes)}</td></tr>`
+    ? `<tr><td style="padding:8px 0;font-size:12px;color:#94a3b8;width:38%">' Customer Note</td><td style="padding:8px 0;font-size:13px;color:#1e293b">${sanitize(custNotes)}</td></tr>`
     : '';
 
   const notifHtml = `
     <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;background:#fff;border-radius:16px;border:1px solid #f1f5f9;overflow:hidden;">
       <div style="background:linear-gradient(135deg,#f97316,#ea580c);padding:28px 24px;text-align:center;">
-        <div style="font-size:40px;margin-bottom:8px">ðŸ¾</div>
+        <div style="font-size:40px;margin-bottom:8px"></div>
         <h2 style="color:white;margin:0;font-size:20px;font-weight:800">New Booking Request!</h2>
         <p style="color:rgba(255,255,255,0.85);margin:6px 0 0;font-size:13px">You have <strong>${RESPONSE_TIMEOUT_MINS} minutes</strong> to respond</p>
       </div>
       <div style="padding:24px;">
         <div style="background:#fff7ed;border:2px solid #fed7aa;border-radius:12px;padding:14px;margin-bottom:20px;text-align:center;">
-          <div style="font-size:28px;margin-bottom:4px">â±ï¸</div>
+          <div style="font-size:28px;margin-bottom:4px"></div>
           <div style="font-size:24px;font-weight:900;color:#c2410c;font-family:monospace">${RESPONSE_TIMEOUT_MINS}:00</div>
           <div style="font-size:12px;color:#9a3412;margin-top:4px">minutes to Accept or Reject</div>
         </div>
         <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
           <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8;width:38%">Service</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${svc}</td></tr>
-          <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">ðŸ¾ Pet</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${petName}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8"> Pet</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${petName}</td></tr>
           ${healthNoteRow}
-          <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">ðŸ“… Date & Time</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${dateStr}</td></tr>
-          <tr><td style="padding:8px 0;${custNotesRow ? 'border-bottom:1px solid #f1f5f9;' : ''}font-size:12px;color:#94a3b8">ðŸ“ Location</td><td style="padding:8px 0;${custNotesRow ? 'border-bottom:1px solid #f1f5f9;' : ''}font-size:14px;font-weight:700;color:#1e293b">${location}</td></tr>
+          <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8"> Date & Time</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${dateStr}</td></tr>
+          <tr><td style="padding:8px 0;${custNotesRow ? 'border-bottom:1px solid #f1f5f9;' : ''}font-size:12px;color:#94a3b8"> Location</td><td style="padding:8px 0;${custNotesRow ? 'border-bottom:1px solid #f1f5f9;' : ''}font-size:14px;font-weight:700;color:#1e293b">${location}</td></tr>
           ${custNotesRow}
         </table>
-        ${petHealthNotes ? `<div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:10px;padding:12px 16px;margin-bottom:16px;"><p style="margin:0;font-size:12px;font-weight:700;color:#991b1b;">âš•ï¸ Please read the health notes above before the appointment.</p></div>` : ''}
+        ${petHealthNotes ? `<div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:10px;padding:12px 16px;margin-bottom:16px;"><p style="margin:0;font-size:12px;font-weight:700;color:#991b1b;"> Please read the health notes above before the appointment.</p></div>` : ''}
         <div style="text-align:center;margin-bottom:16px;">
-          <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;padding:14px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:14px;">âœ… Open App to Respond</a>
+          <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#22c55e,#16a34a);color:white;padding:14px 36px;border-radius:50px;text-decoration:none;font-weight:700;font-size:14px;"> Open App to Respond</a>
         </div>
-        <p style="color:#94a3b8;font-size:11px;text-align:center;margin:0;">No response in ${RESPONSE_TIMEOUT_MINS} mins â†’ request auto-passes to next professional</p>
+        <p style="color:#94a3b8;font-size:11px;text-align:center;margin:0;">No response in ${RESPONSE_TIMEOUT_MINS} mins ' request auto-passes to next professional</p>
       </div>
     </div>`;
 
   if (proEmail) {
-    sendEmail(proEmail, `ðŸ¾ New Booking Request â€” ${svc} Â· Respond in ${RESPONSE_TIMEOUT_MINS} min`, notifHtml).catch(e => logger.error(e));
+    sendEmail(proEmail, ` New Booking Request  ${svc}  Respond in ${RESPONSE_TIMEOUT_MINS} min`, notifHtml).catch(e => logger.error(e));
   }
 
-  // â”€â”€ WhatsApp notification to professional â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  //  WhatsApp notification to professional 
   // Matches the format groomers/trainers are used to seeing in WhatsApp.
   if (proPhone) {
     const custName    = bookingDetails.user_name    || bookingDetails.customer_name || 'Customer';
-    // âš  SECURITY: Do NOT include customer phone here.
-    // The professional has only been *offered* the booking â€” not yet accepted.
+    //  SECURITY: Do NOT include customer phone here.
+    // The professional has only been *offered* the booking  not yet accepted.
     // Customer contact details are shared only after acceptance (see booking accept endpoint).
     const petBreed    = bookingDetails.pet_breed    || 'Not specified';
     const vaccinated  = bookingDetails.vaccinated   != null ? (bookingDetails.vaccinated  ? 'Yes' : 'No') : 'Unknown';
@@ -721,14 +721,14 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
     const fullAddress = bookingDetails.address      || bookingDetails.city || 'TBD';
     const mapsLink    = bookingDetails.location_url || bookingDetails.maps_link || '';
 
-    // Scheduled date + time slot (e.g. "17 May 2026, 1pmâ€“3pm")
+    // Scheduled date + time slot (e.g. "17 May 2026, 1pm3pm")
     const scheduledDate = bookingDetails.scheduled_at
       ? new Date(bookingDetails.scheduled_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })
       : (bookingDetails.preferred_date || 'TBD');
     const timeSlot = bookingDetails.time_slot || bookingDetails.preferred_time || '';
 
     const waMsg = [
-      `ðŸ¾ *New PETclub Booking â€” Respond in ${RESPONSE_TIMEOUT_MINS} min*`,
+      ` *New PETclub Booking  Respond in ${RESPONSE_TIMEOUT_MINS} min*`,
       ``,
       `*Name:* ${custName}`,
       `*Scheduled Date:* ${scheduledDate}`,
@@ -737,12 +737,12 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
       `*Vaccinated:* ${vaccinated}`,
       `*Aggressive:* ${aggressive}`,
       `*Service:* ${svc}`,
-      pkgCost   ? `*Package Cost:* â‚¹${pkgCost}` : null,
+      pkgCost   ? `*Package Cost:* ${pkgCost}` : null,
       `*Address:* ${fullAddress}`,
       mapsLink  ? `*Location:* ${mapsLink}` : null,
       `*Payment Status:* Not paid`,
       ``,
-      `Open the app to Accept or Reject ðŸ‘‡`,
+      `Open the app to Accept or Reject '`,
       WEB_APP_URL,
     ].filter(Boolean).join('\n');
 
@@ -751,14 +751,14 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
     sendWhatsApp(e164, waMsg).catch(e => logger.error(e));
   }
 
-  // â”€â”€ FCM push notification to professional â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  //  FCM push notification to professional 
   const { data: proUser } = await Promise.resolve(supabase.from('users').select('fcm_token').eq('id', pro.user_id).single()).catch(() => ({ data: null }));
   if (proUser?.fcm_token) {
-    sendPush(proUser.fcm_token, `ðŸ¾ New ${svc} Request!`, `${petName} Â· ${dateStr} Â· Respond in ${RESPONSE_TIMEOUT_MINS} min`, { bookingId: bookingId, type: 'new_booking' }).catch(() => {});
+    sendPush(proUser.fcm_token, ` New ${svc} Request!`, `${petName}  ${dateStr}  Respond in ${RESPONSE_TIMEOUT_MINS} min`, { bookingId: bookingId, type: 'new_booking' }).catch(() => {});
   }
 };
 
-// Process timed-out offers (lazy eval â€” called on booking endpoints)
+// Process timed-out offers (lazy eval  called on booking endpoints)
 const processTimedOutAssignments = async () => {
   const { data: timedOut } = await supabase
     .from('booking_assignments')
@@ -792,12 +792,12 @@ const processTimedOutAssignments = async () => {
   }
 };
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  AUTH: LEGACY OTP ENDPOINTS â€” REMOVED
+// 
+//  AUTH: LEGACY OTP ENDPOINTS  REMOVED
 //  Replaced by:
-//    Phone â†’ Firebase Phone Auth â†’ POST /auth/firebase-verify
-//    Email â†’ POST /auth/send-email-otp + POST /auth/verify-email-otp
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+//    Phone ' Firebase Phone Auth ' POST /auth/firebase-verify
+//    Email ' POST /auth/send-email-otp + POST /auth/verify-email-otp
+// 
 app.post('/api/auth/send-otp', (req, res) => res.status(410).json({
   error: 'This endpoint has been removed. Use Firebase Phone Auth (app) or /auth/send-email-otp for email login.',
 }));
@@ -805,12 +805,12 @@ app.post('/api/auth/verify-otp', (req, res) => res.status(410).json({
   error: 'This endpoint has been removed. Use /auth/firebase-verify (phone) or /auth/verify-email-otp (email).',
 }));
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  AUTH: FIREBASE PHONE AUTH â€” verify ID token â†’ issue JWT
+// 
+//  AUTH: FIREBASE PHONE AUTH  verify ID token ' issue JWT
 //  Frontend sends Firebase ID token after successful phone OTP.
 //  We verify it with Firebase Admin, then find/create the user
 //  in Supabase and return our own JWT (same shape as verify-otp).
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
   try {
     const { idToken } = req.body;
@@ -837,7 +837,7 @@ app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
     }
     const isNew = !user;
     if (!user) {
-      logger.info(`[FirebaseVerify] New user â€” inserting for ${maskPhone(phone)}`);
+      logger.info(`[FirebaseVerify] New user  inserting for ${maskPhone(phone)}`);
       const { data: nu, error: insertErr } = await supabase
         .from('users')
         .insert({ phone, role: 'pending_role', is_active: true })
@@ -851,13 +851,13 @@ app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
       // Notify admin of new signup
       const adminEmail = process.env.ADMIN_EMAIL;
       if (adminEmail) {
-        sendEmail(adminEmail, `ðŸ¾ New PETclub Signup â€” ${phone}`,
+        sendEmail(adminEmail, ` New PETclub Signup  ${phone}`,
           `<div style="font-family:Arial,sans-serif;max-width:480px;margin:0 auto;padding:24px;background:#fff;border-radius:16px;border:2px solid #f97316;">
-            <h2 style="color:#f97316;margin:0 0 12px">ðŸ¾ New User Signed Up</h2>
+            <h2 style="color:#f97316;margin:0 0 12px"> New User Signed Up</h2>
             <p style="margin:4px 0;color:#1e293b;font-size:14px"><strong>Phone:</strong> ${phone}</p>
-            <p style="margin:4px 0;color:#64748b;font-size:13px">Role not yet set â€” awaiting profile setup.</p>
+            <p style="margin:4px 0;color:#64748b;font-size:13px">Role not yet set  awaiting profile setup.</p>
             <hr style="border:none;border-top:1px solid #f1f5f9;margin:16px 0"/>
-            <p style="color:#94a3b8;font-size:12px">PETclub Admin Â· ${new Date().toLocaleString('en-IN')}</p>
+            <p style="color:#94a3b8;font-size:12px">PETclub Admin  ${new Date().toLocaleString('en-IN')}</p>
           </div>`
         ).catch(() => {});
       }
@@ -886,21 +886,21 @@ app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
     res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
     res.json({ success: true, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
   } catch (err) {
-    logger.error('[FirebaseVerify] Unexpected error at step above â†‘', err);
+    logger.error('[FirebaseVerify] Unexpected error at step above:', err);
     res.status(500).json({ error: 'Verification failed. Please try again.' });
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  AUTH: EMAIL OTP â€” send (for users without phone access)
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
+//  AUTH: EMAIL OTP  send (for users without phone access)
+// 
 app.post('/api/auth/send-email-otp', otpLimit, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
       return res.status(400).json({ error: 'Valid email address required' });
 
-    // â”€â”€ E2E test bypass â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  E2E test bypass 
     // When E2E_TEST_EMAIL_DOMAIN is set (e.g. "mailinator.com"), requests to
     // that domain get a fixed OTP (123456), skip real email sending, and bypass
     // the rate limiter.  ONLY active in non-production environments.
@@ -912,10 +912,10 @@ app.post('/api/auth/send-email-otp', otpLimit, async (req, res) => {
         { phone: email.toLowerCase(), otp: fixedOtp, expires_at: expires, verified: false },
         { onConflict: 'phone' }
       );
-      logger.info(`[EmailOTP][E2E] Test bypass for ${email} â€” OTP: ${fixedOtp}`);
+      logger.info(`[EmailOTP][E2E] Test bypass for ${email}  OTP: ${fixedOtp}`);
       return res.json({ success: true, message: `OTP sent to ${email}` });
     }
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // 
 
     const otp = genOTP();
     const expires = new Date(Date.now() + 10 * 60000).toISOString();
@@ -935,9 +935,9 @@ app.post('/api/auth/send-email-otp', otpLimit, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  AUTH: EMAIL OTP â€” verify â†’ issue JWT
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
+//  AUTH: EMAIL OTP  verify ' issue JWT
+// 
 app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
   try {
     const { email, otp } = req.body;
@@ -957,7 +957,7 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
     let { data: user } = await supabase.from('users').select('*').eq('email', key).single();
     const isNew = !user;
     if (!user) {
-      // phone column is NOT NULL â€” use a unique placeholder for email-only accounts
+      // phone column is NOT NULL  use a unique placeholder for email-only accounts
       const emailPhone = `email_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
       const { data: nu, error: insertErr } = await supabase
         .from('users')
@@ -972,7 +972,7 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
       // Admin notification for new email signup
       const adminEmail = process.env.ADMIN_EMAIL;
       if (adminEmail) {
-        sendEmail(adminEmail, `ðŸ¾ New PETclub Signup (Email) â€” ${email}`,
+        sendEmail(adminEmail, ` New PETclub Signup (Email)  ${email}`,
           `<p style="font-family:Arial,sans-serif">New user signed up via email OTP: <strong>${email}</strong><br/>Role not yet set.</p>`
         ).catch(() => {});
       }
@@ -1000,7 +1000,7 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  AUTH: PHONE OTP via Twilio SMS (replaces Firebase reCAPTCHA)
 //  POST /api/auth/send-phone-otp   { phone: '+91XXXXXXXXXX' }
 //  POST /api/auth/verify-phone-otp { phone, otp }
@@ -1009,7 +1009,7 @@ app.post('/api/auth/logout', (req, res) => {
   res.json({ success: true });
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.post('/api/auth/send-phone-otp', otpLimit, async (req, res) => {
   try {
     const { phone, email: fallbackEmail } = req.body;
@@ -1027,13 +1027,13 @@ app.post('/api/auth/send-phone-otp', otpLimit, async (req, res) => {
       { onConflict: 'phone' }
     );
 
-    // â”€â”€ Try SMS first, fall back to email if SMS fails â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Try SMS first, fall back to email if SMS fails 
     try {
       await sendSMS(phone, `Your PETclub OTP is: ${otp}  Valid 10 min. Do not share.`);
       logger.info(`[PhoneOTP] SMS sent to ${maskPhone(phone)}`);
       return res.json({ success: true, via: 'sms', message: `OTP sent via SMS to ${phone}` });
     } catch (smsErr) {
-      logger.warn(`[PhoneOTP] SMS failed (${smsErr.code || smsErr.message}) â€” trying email fallback`);
+      logger.warn(`[PhoneOTP] SMS failed (${smsErr.code || smsErr.message})  trying email fallback`);
 
       // Resolve email: use request-provided email, or look up from existing user record
       let deliveryEmail = fallbackEmail;
@@ -1046,27 +1046,27 @@ app.post('/api/auth/send-phone-otp', otpLimit, async (req, res) => {
         try {
           await emailService.sendRawEmail(
             deliveryEmail,
-            `ðŸ” Your PETclub OTP Code`,
+            ` Your PETclub OTP Code`,
             `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
-              <div style="font-size:40px;text-align:center;margin-bottom:12px">ðŸ”</div>
+              <div style="font-size:40px;text-align:center;margin-bottom:12px"></div>
               <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">Your PETclub OTP</h2>
-              <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">SMS delivery failed â€” your OTP has been sent to this email instead.</p>
+              <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">SMS delivery failed  your OTP has been sent to this email instead.</p>
               <div style="background:#fff7ed;border:2px solid #fed7aa;border-radius:14px;padding:24px;text-align:center">
                 <span style="font-size:36px;font-weight:900;letter-spacing:10px;color:#ea580c;font-family:monospace">${otp}</span>
               </div>
-              <p style="color:#94a3b8;font-size:12px;text-align:center;margin-top:20px">Valid for 10 minutes Â· Do not share</p>
+              <p style="color:#94a3b8;font-size:12px;text-align:center;margin-top:20px">Valid for 10 minutes  Do not share</p>
               <hr style="border:none;border-top:1px solid #f1f5f9;margin:20px 0"/>
-              <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Â· ${new Date().toLocaleString('en-IN')}</p>
+              <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub  ${new Date().toLocaleString('en-IN')}</p>
             </div>`
           );
           logger.info(`[PhoneOTP] Email fallback sent to ${deliveryEmail} for ${maskPhone(phone)}`);
-          return res.json({ success: true, via: 'email', email: deliveryEmail, message: `SMS unavailable â€” OTP sent to ${deliveryEmail}` });
+          return res.json({ success: true, via: 'email', email: deliveryEmail, message: `SMS unavailable  OTP sent to ${deliveryEmail}` });
         } catch (emailErr) {
           logger.error('[PhoneOTP] Email fallback also failed:', emailErr.message);
         }
       }
 
-      // Both SMS and email failed â€” surface the original SMS error
+      // Both SMS and email failed  surface the original SMS error
       if (smsErr.code === 21211 || (smsErr.message || '').includes('not a valid phone number'))
         return res.status(400).json({ error: 'Invalid phone number. Check the country code and digits.' });
       if (smsErr.code === 21608 || (smsErr.message || '').includes('unverified'))
@@ -1107,7 +1107,7 @@ app.post('/api/auth/verify-phone-otp', authLimit, async (req, res) => {
       user = nu;
       const adminEmail = process.env.ADMIN_EMAIL;
       if (adminEmail) {
-        sendEmail(adminEmail, `ðŸ¾ New PETclub Signup (Phone) â€” ${maskPhone(phone)}`,
+        sendEmail(adminEmail, ` New PETclub Signup (Phone)  ${maskPhone(phone)}`,
           `<p style="font-family:Arial,sans-serif">New user signed up via phone OTP: <strong>${maskPhone(phone)}</strong></p>`
         ).catch(() => {});
       }
@@ -1135,9 +1135,9 @@ app.post('/api/auth/verify-phone-otp', authLimit, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  AUTH: SET ROLE (called once for new users)
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.post('/api/users/set-role', auth, async (req, res) => {
   try {
     const { role, subRole } = req.body;
@@ -1170,17 +1170,17 @@ app.post('/api/users/set-role', auth, async (req, res) => {
         .neq('id', req.user.id)   // can't refer yourself
         .single();
       if (referrer) {
-        // It's a valid customer referral â€” record it and credit the referrer
+        // It's a valid customer referral  record it and credit the referrer
         referredByCode = referralInput;
         // Award referral bonus to the referrer (non-blocking; fail silently)
         loyalty.awardPoints(
           supabase, referrer.id, loyalty.REFERRAL_BONUS,
           'referral_bonus',
-          `Referral bonus â€” friend signed up (user ${req.user.id})`,
+          `Referral bonus  friend signed up (user ${req.user.id})`,
           null
         ).catch(e => logger.error('[Referral] award bonus error:', e.message));
       } else {
-        // Not a known referral code â€” treat as a free-text partner/clinic name
+        // Not a known referral code  treat as a free-text partner/clinic name
         // Store original casing from the user's input (before toUpperCase())
         partnerSource = sanitize(req.body.referral_input)?.trim() || null;
       }
@@ -1234,7 +1234,7 @@ app.post('/api/users/set-role', auth, async (req, res) => {
       }
     }
 
-    // For customers â€” create initial pet if provided
+    // For customers  create initial pet if provided
     if (role === 'customer' && pet?.name) {
       try {
         await supabase.from('pets').insert({
@@ -1277,9 +1277,9 @@ app.post('/api/users/set-role', auth, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  CONTACT: SEND APP LINK (website form)
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.post('/api/contact/send-link', async (req, res) => {
   try {
     const { name, phone, email, city, pettype, service, pet } = req.body;
@@ -1294,18 +1294,18 @@ app.post('/api/contact/send-link', async (req, res) => {
 
 
     if (isInquiry) {
-      // â”€â”€ Inquiry confirmation to user â”€â”€
-      const svcIcon = service === 'Pet Food' ? 'ðŸ–' : 'ðŸ ';
+      //  Inquiry confirmation to user 
+      const svcIcon = service === 'Pet Food' ? '-' : '';
       const svcColor = service === 'Pet Food' ? '#16a34a' : '#f97316';
-      await sendEmail(email, `${svcIcon} Your ${service} Inquiry â€” PETclub Will Reach Out ASAP`, `
+      await sendEmail(email, `${svcIcon} Your ${service} Inquiry  PETclub Will Reach Out ASAP`, `
         <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:560px;margin:0 auto;background:#fff;border-radius:20px;overflow:hidden;border:1px solid #f1f5f9;">
           <div style="background:linear-gradient(135deg,${svcColor},${svcColor}cc);padding:36px 32px;text-align:center;">
             <div style="font-size:52px;margin-bottom:8px">${svcIcon}</div>
             <h1 style="color:white;margin:0;font-size:24px;font-weight:800">Inquiry Received!</h1>
-            <p style="color:rgba(255,255,255,0.88);margin:8px 0 0;font-size:15px">${service} Â· PETclub</p>
+            <p style="color:rgba(255,255,255,0.88);margin:8px 0 0;font-size:15px">${service}  PETclub</p>
           </div>
           <div style="padding:32px;">
-            <p style="color:#1e293b;font-size:16px;margin:0 0 16px">Hi <b>${fn}</b>! ðŸ‘‹</p>
+            <p style="color:#1e293b;font-size:16px;margin:0 0 16px">Hi <b>${fn}</b>! '</p>
             <p style="color:#475569;font-size:15px;margin:0 0 20px;line-height:1.6">
               Thanks for your interest in <b>${service}</b>! We've received your inquiry and our team will reach out to you at <b>${email}</b> within <b>24 hours</b>.
             </p>
@@ -1314,31 +1314,31 @@ app.post('/api/contact/send-link', async (req, res) => {
               <p style="color:#1e293b;font-size:14px;margin:0;line-height:1.7;white-space:pre-wrap;">${message || '(No details provided)'}</p>
             </div>
             <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:16px;margin-bottom:24px;text-align:center;">
-              <p style="color:#c2410c;font-size:14px;margin:0;font-weight:600">â± Response within 24 hours<br/>ðŸ“§ Reach us anytime: <a href="mailto:${SUPPORT_EMAIL}" style="color:#f97316;">${SUPPORT_EMAIL}</a></p>
+              <p style="color:#c2410c;font-size:14px;margin:0;font-weight:600"> Response within 24 hours<br/> Reach us anytime: <a href="mailto:${SUPPORT_EMAIL}" style="color:#f97316;">${SUPPORT_EMAIL}</a></p>
             </div>
             <div style="text-align:center;">
-              <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:14px 32px;border-radius:14px;text-decoration:none;font-weight:800;font-size:15px;">Explore PETclub App â†’</a>
+              <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:14px 32px;border-radius:14px;text-decoration:none;font-weight:800;font-size:15px;">Explore PETclub App '</a>
             </div>
           </div>
           <div style="background:#f8fafc;padding:14px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #f1f5f9;">
-            Â© ${new Date().getFullYear()} PETclub Â· For pets, with love ðŸ¾
+             ${new Date().getFullYear()} PETclub  For pets, with love 
           </div>
         </div>`);
 
-      // â”€â”€ Admin notification â”€â”€
+      //  Admin notification 
       if (adminEmail) {
-        sendEmail(adminEmail, `ðŸ”” [${service} Inquiry] ${name} Â· ${email}`, `
+        sendEmail(adminEmail, ` [${service} Inquiry] ${name}  ${email}`, `
           <div style="font-family:Arial,sans-serif;max-width:520px;margin:0 auto;background:#fff;border-radius:16px;border:2px solid ${svcColor};overflow:hidden;">
             <div style="background:${svcColor};padding:20px 24px;">
               <h2 style="color:#fff;margin:0;font-size:18px;">${svcIcon} New ${service} Inquiry</h2>
-              <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px;">Action required â€” reach out within 24 hours</p>
+              <p style="color:rgba(255,255,255,0.85);margin:4px 0 0;font-size:13px;">Action required  reach out within 24 hours</p>
             </div>
             <div style="padding:24px;">
               <table style="width:100%;border-collapse:collapse;font-size:14px;">
                 <tr><td style="padding:6px 0;color:#64748b;width:80px;">Name</td><td style="padding:6px 0;font-weight:700;color:#1e293b;">${name}</td></tr>
                 <tr><td style="padding:6px 0;color:#64748b;">Email</td><td style="padding:6px 0;color:#1e293b;"><a href="mailto:${email}" style="color:#f97316;">${email}</a></td></tr>
                 <tr><td style="padding:6px 0;color:#64748b;">Phone</td><td style="padding:6px 0;color:#1e293b;">${fullLeadPhone}</td></tr>
-                <tr><td style="padding:6px 0;color:#64748b;">City</td><td style="padding:6px 0;color:#1e293b;">${city || 'â€”'}</td></tr>
+                <tr><td style="padding:6px 0;color:#64748b;">City</td><td style="padding:6px 0;color:#1e293b;">${city || ''}</td></tr>
               </table>
               <hr style="border:none;border-top:1px solid #f1f5f9;margin:16px 0;" />
               <p style="color:#64748b;font-size:13px;font-weight:700;margin:0 0 8px;">Their Request:</p>
@@ -1348,34 +1348,34 @@ app.post('/api/contact/send-link', async (req, res) => {
         ).catch(e => logger.error('[Inquiry] Admin notify failed:', e.message));
       }
     } else {
-      // â”€â”€ Regular signup welcome email â”€â”€
-      await sendEmail(email, `ðŸ¾ Welcome to PETclub, ${fn}!`, `
+      //  Regular signup welcome email 
+      await sendEmail(email, ` Welcome to PETclub, ${fn}!`, `
         <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:580px;margin:0 auto;background:#fff;border-radius:20px;overflow:hidden;border:1px solid #f1f5f9;">
           <div style="background:linear-gradient(135deg,#f97316,#fbbf24);padding:40px 32px;text-align:center;">
-            <div style="font-size:52px;margin-bottom:8px">ðŸ¾</div>
+            <div style="font-size:52px;margin-bottom:8px"></div>
             <h1 style="color:white;margin:0;font-size:26px;font-weight:800">Welcome to PETclub!</h1>
             <p style="color:rgba(255,255,255,0.88);margin:8px 0 0;font-size:15px">India's #1 pet care platform</p>
           </div>
           <div style="padding:32px;">
-            <p style="color:#1e293b;font-size:16px;margin:0 0 20px">Hi <b>${fn}</b>! ðŸŽ‰ You're all set. Book ${service||'grooming, training & vet care'} for ${pet||'your pet'} in ${city||'your city'} â€” right from your browser.</p>
+            <p style="color:#1e293b;font-size:16px;margin:0 0 20px">Hi <b>${fn}</b>!  You're all set. Book ${service||'grooming, training & vet care'} for ${pet||'your pet'} in ${city||'your city'}  right from your browser.</p>
             <div style="text-align:center;margin:28px 0;">
-              <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:16px 36px;border-radius:14px;text-decoration:none;font-weight:800;font-size:16px;letter-spacing:0.3px;">ðŸš€ Open PETclub App</a>
+              <a href="${WEB_APP_URL}" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:16px 36px;border-radius:14px;text-decoration:none;font-weight:800;font-size:16px;letter-spacing:0.3px;"> Open PETclub App</a>
             </div>
             <div style="background:#fff7ed;border:1px solid #fed7aa;border-radius:14px;padding:20px;margin-bottom:20px;">
-              <p style="color:#c2410c;font-weight:700;margin:0 0 10px;font-size:14px">ðŸŒŸ What you can do:</p>
+              <p style="color:#c2410c;font-weight:700;margin:0 0 10px;font-size:14px"> What you can do:</p>
               <ul style="color:#64748b;line-height:2;margin:0;padding-left:18px;font-size:14px">
                 <li>Book grooming, training, vet visits & more</li>
                 <li>Manage your pet's health records digitally</li>
                 <li>Track service professionals in real time</li>
-                <li>ðŸ›¡ï¸ â‚¹25,000 service protection guarantee</li>
+                <li> 25,000 service protection guarantee</li>
               </ul>
             </div>
             <div style="background:#f8fafc;border-radius:12px;padding:16px;text-align:center;">
-              <p style="color:#64748b;font-size:13px;margin:0">ðŸ“± <b>Native mobile apps coming soon</b> for iOS & Android.<br/>Until then, our web app works great on any device!</p>
+              <p style="color:#64748b;font-size:13px;margin:0"> <b>Native mobile apps coming soon</b> for iOS & Android.<br/>Until then, our web app works great on any device!</p>
             </div>
           </div>
           <div style="background:#f8fafc;padding:16px;text-align:center;font-size:12px;color:#94a3b8;border-top:1px solid #f1f5f9;">
-            Â© ${new Date().getFullYear()} PETclub Â· For pets, with love ðŸ¾ Â· <a href="${WEBSITE_URL}" style="color:#f97316;text-decoration:none;">mypetclub.app</a>
+             ${new Date().getFullYear()} PETclub  For pets, with love   <a href="${WEBSITE_URL}" style="color:#f97316;text-decoration:none;">mypetclub.app</a>
           </div>
         </div>`);
     }
@@ -1392,16 +1392,16 @@ app.post('/api/contact/send-link', async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  ADMIN: CREATE FIRST ADMIN (one-time, requires secret)
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 // Bootstrap-only: promote a phone number to admin role.
 // Rate-limited (authLimit) to prevent brute-force of ADMIN_SECRET.
 // After initial setup, disable by removing ADMIN_SECRET from env vars.
 app.post('/api/admin/make-admin', authLimit, async (req, res) => {
   try {
     const { phone, countryCode = '91', secret } = req.body;
-    if (!process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Bootstrap endpoint disabled â€” ADMIN_SECRET not set' });
+    if (!process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Bootstrap endpoint disabled  ADMIN_SECRET not set' });
     if (!secret || secret !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Invalid secret' });
     const fullPhone = `+${countryCode}${phone}`;
     const { data: user } = await supabase.from('users').select('*').eq('phone', fullPhone).single();
@@ -1413,9 +1413,9 @@ app.post('/api/admin/make-admin', authLimit, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  USER ROUTES
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.get('/api/users/me', auth, async (req, res) => {
   const { data } = await supabase
     .from('users')
@@ -1444,13 +1444,13 @@ app.put('/api/users/me', auth, async (req, res) => {
   const addressCity       = sanitize(req.body.addressCity)       || null;
   const addressState      = sanitize(req.body.addressState)      || null;
 
-  // Server-side email typo block (only explicit bad TLDs â€” never flag .com)
+  // Server-side email typo block (only explicit bad TLDs  never flag .com)
   if (email) {
     const domain = email.slice(email.lastIndexOf('@') + 1).toLowerCase();
     const tld = domain.includes('.') ? domain.split('.').pop() : '';
     const badTlds = ['con','conm','cmo','ocm','cim','cpm','copm'];
     if (tld && badTlds.includes(tld))
-      return res.status(400).json({ error: `"${domain}" looks like a typo â€” did you mean .com?` });
+      return res.status(400).json({ error: `"${domain}" looks like a typo  did you mean .com?` });
   }
 
   await supabase.from('users').update({ name, email }).eq('id', req.user.id);
@@ -1471,9 +1471,9 @@ app.put('/api/users/me', auth, async (req, res) => {
   res.json({ success: true, message: 'Profile updated' });
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  PET ROUTES
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.get('/api/pets', auth, async (req, res) => {
   const { data } = await supabase.from('pets').select('*').eq('owner_id', req.user.id).is('deleted_at', null).order('created_at');
   res.json({ success: true, pets: data });
@@ -1526,12 +1526,12 @@ app.delete('/api/pets/:id', auth, async (req, res) => {
   res.json({ success: true, deleted: req.params.id });
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  RECORDS: grooming / training / food / vet
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 const TABLES = { grooming: 'grooming_records', training: 'training_records', food: 'food_orders', vet: 'vet_records' };
 
-// â”€â”€ Shared pet-ownership guard (C-1 fix) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Shared pet-ownership guard (C-1 fix) 
 // Admins can access any pet. All other roles must own the pet.
 const assertPetOwnership = async (petId, userId, role) => {
   if (role === 'admin') return null; // admins skip the check
@@ -1560,7 +1560,7 @@ app.post('/api/pets/:petId/records/:type', auth, async (req, res) => {
   const denied = await assertPetOwnership(req.params.petId, req.user.id, req.user.role);
   if (denied) return res.status(denied.status).json({ error: denied.error });
 
-  // Remove any client-supplied pet_id â€” always use the authenticated route parameter
+  // Remove any client-supplied pet_id  always use the authenticated route parameter
   const { pet_id: _ignored, id: _id, ...safeBody } = req.body;
   const { data, error } = await supabase.from(tbl)
     .insert({ pet_id: req.params.petId, ...safeBody }).select().single();
@@ -1568,9 +1568,9 @@ app.post('/api/pets/:petId/records/:type', auth, async (req, res) => {
   res.json({ success: true, record: data });
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  SERVICE CATALOG â€” public pricing for customers
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
+//  SERVICE CATALOG  public pricing for customers
+// 
 // Returns the full service catalog with tiered prices.
 // Accessible to authenticated customers only (never to SPs).
 app.get('/api/services/catalog', auth, (req, res) => {
@@ -1592,11 +1592,11 @@ app.get('/api/services/catalog', auth, (req, res) => {
   });
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  LOYALTY â€” Credits earn, redeem, and coupon system
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
+//  LOYALTY  Credits earn, redeem, and coupon system
+// 
 
-// GET /api/loyalty â€” balance, progress, transactions, active coupons
+// GET /api/loyalty  balance, progress, transactions, active coupons
 app.get('/api/loyalty', auth, async (req, res) => {
   try {
     const summary = await loyalty.getLoyaltySummary(supabase, req.user.id);
@@ -1607,7 +1607,7 @@ app.get('/api/loyalty', auth, async (req, res) => {
   }
 });
 
-// POST /api/loyalty/redeem â€” redeem 1,000 credits for a free service coupon
+// POST /api/loyalty/redeem  redeem 1,000 credits for a free service coupon
 app.post('/api/loyalty/redeem', auth, async (req, res) => {
   if (req.user.role === 'professional') {
     return res.status(403).json({ error: 'Loyalty credits are for customers only.' });
@@ -1629,7 +1629,7 @@ app.post('/api/loyalty/redeem', auth, async (req, res) => {
   }
 });
 
-// POST /api/loyalty/validate-coupon â€” check coupon before booking (customer only)
+// POST /api/loyalty/validate-coupon  check coupon before booking (customer only)
 app.post('/api/loyalty/validate-coupon', auth, async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ error: 'Coupon code required' });
@@ -1638,24 +1638,24 @@ app.post('/api/loyalty/validate-coupon', auth, async (req, res) => {
   res.json({ success: true, coupon: { service_name: result.coupon.service_name, discount_pct: result.coupon.discount_pct, expires_at: result.coupon.expires_at } });
 });
 
-// POST /api/admin/loyalty/award â€” manual award (admin only)
+// POST /api/admin/loyalty/award  manual award (admin only)
 app.post('/api/admin/loyalty/award', auth, adminOnly, async (req, res) => {
   const { userId, points, type = 'admin_award', description } = req.body;
   if (!userId || !points) return res.status(400).json({ error: 'userId and points required' });
   const result = await loyalty.awardPoints(supabase, userId, points, type, description || 'Admin award');
   if (!result.success) return res.status(500).json({ error: result.error });
-  // Audit every manual credit change â€” financial operations must be traceable
+  // Audit every manual credit change  financial operations must be traceable
   await supabase.from('admin_logs').insert({
     admin_id:    req.user.id,
     action:      points > 0 ? 'award_loyalty' : 'deduct_loyalty',
     target_id:   userId,
     target_type: 'user',
-    notes:       `${points > 0 ? '+' : ''}${points} pts â€” ${description || 'Admin award'} (new balance: ${result.newBalance})`,
+    notes:       `${points > 0 ? '+' : ''}${points} pts  ${description || 'Admin award'} (new balance: ${result.newBalance})`,
   }).catch(e => logger.error('[AdminLoyalty] audit log failed:', e.message));
   res.json({ success: true, newBalance: result.newBalance, awarded: result.awarded });
 });
 
-// GET /api/admin/loyalty/stats â€” programme health dashboard (admin only)
+// GET /api/admin/loyalty/stats  programme health dashboard (admin only)
 // Returns redemption rate, top earners, anomalies, active coupons.
 // Use ?days=N to change the reporting window (default 30).
 app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
@@ -1665,8 +1665,8 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
 
     // O-5 fix: top_earners now read from the loyalty_leaderboard materialized view
     // (refreshed nightly) instead of being computed from a full loyalty_transactions
-    // scan in JS memory. The other 4 queries aggregate counters only â€” no full table
-    // scans â€” so they remain as-is.
+    // scan in JS memory. The other 4 queries aggregate counters only  no full table
+    // scans  so they remain as-is.
     const [earnRes, redeemRes, couponRes, anomalyRes, eligibleRes, leaderboardRes] = await Promise.all([
       // Total points earned in window.
       // The RPC returns a scalar number directly in data (not an array).
@@ -1702,7 +1702,7 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
         .select('id', { count: 'exact', head: true })
         .gte('loyalty_points', loyalty.REDEMPTION_THRESHOLD),
 
-      // O-5: top earners from materialized view â€” O(1) indexed scan
+      // O-5: top earners from materialized view  O(1) indexed scan
       // Only include users who have actually earned points (filters stale 0-pt entries)
       supabase.from('loyalty_leaderboard')
         .select('user_id, name, total_earned, total_spent, current_balance')
@@ -1739,7 +1739,7 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
             .map(([user_id, points_earned]) => ({ user_id, points_earned }));
         })();
 
-    // Anomaly candidates â€” users earning > threshold in last 24 h
+    // Anomaly candidates  users earning > threshold in last 24 h
     const anomalyMap = {};
     for (const row of anomalyRes.data || []) {
       anomalyMap[row.user_id] = (anomalyMap[row.user_id] || 0) + row.points;
@@ -1767,7 +1767,7 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
   }
 });
 
-// GET /api/admin/loyalty/partner-report â€” partner commission summary (admin only)
+// GET /api/admin/loyalty/partner-report  partner commission summary (admin only)
 // O-2 fix: replaced JS GROUP BY reduce() with Supabase aggregate queries.
 // Old version fetched ALL partner users + ALL referred users into Node memory
 // and grouped them with for-loops. This is replaced with two aggregate queries
@@ -1777,7 +1777,7 @@ app.get('/api/admin/loyalty/partner-report', auth, adminOnly, async (req, res) =
   try {
     const includeDetail = req.query.detail === 'true';
 
-    // â”€â”€ Partner aggregates via Supabase GROUP BY (no JS reduce needed) â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Partner aggregates via Supabase GROUP BY (no JS reduce needed) 
     const [aggRes, referralAggRes] = await Promise.all([
       // Sum signups and commission status per partner_source
       supabase
@@ -1794,8 +1794,8 @@ app.get('/api/admin/loyalty/partner-report', auth, adminOnly, async (req, res) =
     ]);
     if (aggRes.error) throw aggRes.error;
 
-    // Build partner summary â€” compact loop over a filtered result set
-    // (partner_source users only â€” typically a small number of partners)
+    // Build partner summary  compact loop over a filtered result set
+    // (partner_source users only  typically a small number of partners)
     const byPartner = {};
     for (const u of (aggRes.data || [])) {
       const key = u.partner_source;
@@ -1812,7 +1812,7 @@ app.get('/api/admin/loyalty/partner-report', auth, adminOnly, async (req, res) =
       byCode[u.referred_by_code] = (byCode[u.referred_by_code] || 0) + 1;
     }
 
-    // Fetch per-user detail rows only when explicitly requested â€” keeps default
+    // Fetch per-user detail rows only when explicitly requested  keeps default
     // response payload small for the admin dashboard overview cards.
     let detailByPartner = null;
     if (includeDetail) {
@@ -1844,7 +1844,7 @@ app.get('/api/admin/loyalty/partner-report', auth, adminOnly, async (req, res) =
   }
 });
 
-// GET /api/admin/revenue-report â€” booking revenue by professional (admin only)
+// GET /api/admin/revenue-report  booking revenue by professional (admin only)
 // Uses the partner_revenue_report() SQL aggregate function created in
 // supabase-security-hardening.sql. Accepts ?from_date= and ?to_date= (YYYY-MM-DD).
 app.get('/api/admin/revenue-report', auth, adminOnly, async (req, res) => {
@@ -1863,10 +1863,10 @@ app.get('/api/admin/revenue-report', auth, adminOnly, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  PROFESSIONAL ROUTES
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-// Public endpoint â€” intentionally unauthenticated so prospective customers can
+// 
+// Public endpoint  intentionally unauthenticated so prospective customers can
 // browse professionals before signing up. Phone numbers are NEVER returned here
 // (C-3 fix): the customer receives the professional's contact details only after
 // a booking is confirmed (via the booking detail endpoint).
@@ -1877,7 +1877,7 @@ app.get('/api/professionals', async (req, res) => {
     .select(
       'id, user_id, sub_role, city, area, rating, total_reviews, bio, ' +
       'experience, service_areas, langs, services, is_available, ' +
-      'users(name)',   // â† name only; phone/email intentionally excluded
+      'users(name)',   //  name only; phone/email intentionally excluded
     )
     .eq('verification_status', 'approved')
     .eq('is_available', true);
@@ -1909,7 +1909,7 @@ app.put('/api/professionals/me', auth, async (req, res) => {
   const price_basic = req.body.price_basic, price_full = req.body.price_full, price_custom = req.body.price_custom;
   const { sub_role } = req.body;
   const services = req.body.services;
-  // GPS address metadata from AddressPicker â€” used for 70km radius dispatch
+  // GPS address metadata from AddressPicker  used for 70km radius dispatch
   const addressLat = typeof req.body.address_lat === 'number' ? req.body.address_lat : null;
   const addressLng = typeof req.body.address_lng === 'number' ? req.body.address_lng : null;
   if (name !== undefined || email !== undefined)
@@ -1917,7 +1917,7 @@ app.put('/api/professionals/me', auth, async (req, res) => {
   const pet_types = req.body.pet_types;
   const updatePayload = {
     city, area, address, bio, experience,
-    // services is text[] in Postgres â€” pass as native array, NOT JSON.stringify.
+    // services is text[] in Postgres  pass as native array, NOT JSON.stringify.
     // JSON.stringify caused a type error that silently failed the entire update.
     services:   Array.isArray(services)   ? services   : undefined,
     pet_types:  Array.isArray(pet_types)  ? pet_types  : undefined,
@@ -1952,22 +1952,22 @@ app.put('/api/professionals/me', auth, async (req, res) => {
     const finalSubRole = updatePayload.sub_role || existingProf?.sub_role || 'Professional';
     if (adminEmail) {
       sendEmail(adminEmail,
-        `ðŸ”” PETclub â€” ${finalSubRole} Profile Ready for Review: ${u?.name || u?.phone}`,
+        ` PETclub  ${finalSubRole} Profile Ready for Review: ${u?.name || u?.phone}`,
         `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px;border:2px solid #f97316;">
-          <div style="font-size:40px;text-align:center;margin-bottom:12px">ðŸ””</div>
+          <div style="font-size:40px;text-align:center;margin-bottom:12px"></div>
           <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">New ${finalSubRole} Pending Verification</h2>
           <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">A professional has completed their profile and is awaiting your approval.</p>
           <div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:14px;padding:20px;margin-bottom:16px">
             <table style="width:100%">
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u?.name || 'â€”'}</td></tr>
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Phone</td><td style="color:#1e293b;font-size:13px;text-align:right">${u?.phone || 'â€”'}</td></tr>
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Email</td><td style="color:#1e293b;font-size:13px;text-align:right">${u?.email || 'â€”'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u?.name || ''}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Phone</td><td style="color:#1e293b;font-size:13px;text-align:right">${u?.phone || ''}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Email</td><td style="color:#1e293b;font-size:13px;text-align:right">${u?.email || ''}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Role</td><td style="color:#f97316;font-size:13px;font-weight:700;text-align:right">${finalSubRole}</td></tr>
             </table>
           </div>
-          <p style="text-align:center;margin:0"><a href="${WEB_APP_URL}" style="display:inline-block;background:#f97316;color:white;padding:12px 28px;border-radius:50px;text-decoration:none;font-weight:700;font-size:14px">Review in Admin Dashboard â†’</a></p>
+          <p style="text-align:center;margin:0"><a href="${WEB_APP_URL}" style="display:inline-block;background:#f97316;color:white;padding:12px 28px;border-radius:50px;text-decoration:none;font-weight:700;font-size:14px">Review in Admin Dashboard '</a></p>
           <hr style="border:none;border-top:1px solid #f1f5f9;margin:20px 0"/>
-          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin Â· ${new Date().toLocaleString('en-IN')}</p>
+          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin  ${new Date().toLocaleString('en-IN')}</p>
         </div>`
       ).catch(e => logger.error('[ProProfile] Admin notification failed:', e.message));
     }
@@ -1976,7 +1976,7 @@ app.put('/api/professionals/me', auth, async (req, res) => {
   res.json({ success: true, profile: data });
 });
 
-// Toggle online/offline availability â€” with admin email notification
+// Toggle online/offline availability  with admin email notification
 app.put('/api/professionals/availability', auth, async (req, res) => {
   if (req.user.role !== 'professional' && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Access restricted to professionals.' });
@@ -1995,14 +1995,14 @@ app.put('/api/professionals/availability', auth, async (req, res) => {
   const adminEmail = process.env.ADMIN_EMAIL;
   if (adminEmail && prof) {
     const proName  = prof.users?.name || 'Unknown';
-    const proPhone = prof.users?.phone || 'â€”';
+    const proPhone = prof.users?.phone || '';
     const subRole  = prof.sub_role || 'Professional';
-    const status   = is_available ? 'ðŸŸ¢ ONLINE' : 'â¸ OFFLINE';
-    const city     = prof.city || 'â€”';
+    const status   = is_available ? ' ONLINE' : ' OFFLINE';
+    const city     = prof.city || '';
 
     sendEmail(adminEmail, `PETclub: ${subRole} ${proName} is now ${status}`,
       `<div style="font-family:sans-serif;max-width:520px;margin:auto;padding:24px">
-        <h2 style="color:#f97316">ðŸ¾ PETclub â€” Professional Status Change</h2>
+        <h2 style="color:#f97316"> PETclub  Professional Status Change</h2>
         <table style="width:100%;border-collapse:collapse;margin-top:16px">
           <tr><td style="padding:8px;color:#6b7280;font-size:13px">Name</td><td style="padding:8px;font-weight:600">${proName}</td></tr>
           <tr><td style="padding:8px;color:#6b7280;font-size:13px">Phone</td><td style="padding:8px;font-weight:600">${proPhone}</td></tr>
@@ -2017,7 +2017,7 @@ app.put('/api/professionals/availability', auth, async (req, res) => {
     ).catch(e => logger.error('[Availability] Admin email failed:', e.message));
   }
 
-  res.json({ success: true, is_available, message: is_available ? 'You are now Online ðŸŸ¢' : 'You are now Offline â¸' });
+  res.json({ success: true, is_available, message: is_available ? 'You are now Online ' : 'You are now Offline ' });
 });
 
 app.post('/api/professionals/apply', auth, async (req, res) => {
@@ -2025,13 +2025,13 @@ app.post('/api/professionals/apply', auth, async (req, res) => {
   const { sub_role, city, address, bio, experience } = req.body;
   if (sub_role && !['Groomer', 'Trainer', 'Vet', 'Walker', 'Boarding'].includes(sub_role))
     return res.status(400).json({ error: 'sub_role must be Groomer, Trainer, Vet, Walker, or Boarding' });
-  // Block re-application if already approved â€” prevents role-switch fraud
+  // Block re-application if already approved  prevents role-switch fraud
   const { data: existing } = await supabase.from('professional_profiles').select('verification_status').eq('user_id', req.user.id).single();
   if (existing?.verification_status === 'approved')
     return res.status(400).json({ error: 'Your profile is already verified. Contact support to update your role.' });
   const { data, error } = await supabase.from('professional_profiles').upsert({
     user_id:             req.user.id,
-    verification_status: 'pending',   // always pending â€” never accept from client
+    verification_status: 'pending',   // always pending  never accept from client
     is_available:        false,        // always offline until approved
     sub_role:            sub_role    || null,
     city:                sanitize(city)       || null,
@@ -2058,8 +2058,8 @@ app.post('/api/professionals/upload-id', auth, async (req, res) => {
   res.json({ success: true, document: data });
 });
 
-// ID document photo upload (base64 â†’ Supabase Storage)
-// â”€â”€ Professional ID + Certification Upload â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// ID document photo upload (base64 ' Supabase Storage)
+//  Professional ID + Certification Upload 
 // SECURITY POLICY: Photos are NEVER stored in the database or cloud storage.
 // They are emailed directly to the admin as attachments and immediately discarded.
 // Only doc_type, doc_number, cert_type are stored in id_documents (metadata only).
@@ -2071,17 +2071,17 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
     const { data: prof } = await supabase.from('professional_profiles').select('id, sub_role, city').eq('user_id', req.user.id).single();
     if (!prof) return res.status(404).json({ error: 'Professional profile not found. Complete signup first.' });
 
-    // Store ONLY metadata â€” never photo paths (photos go to admin email only)
+    // Store ONLY metadata  never photo paths (photos go to admin email only)
     const docMeta = {
       prof_id: prof.id,
       doc_type: docType,
       doc_number: docNumber || null,
-      // photo_url intentionally OMITTED â€” photos are never stored
+      // photo_url intentionally OMITTED  photos are never stored
     };
     if (certType) { docMeta.cert_type = certType; docMeta.cert_number = certNumber || null; }
     await supabase.from('id_documents').upsert(docMeta, { onConflict: 'prof_id' });
 
-    // â”€â”€ Email photos directly to admin as attachments â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Email photos directly to admin as attachments 
     const adminEmail = process.env.ADMIN_EMAIL;
     if (adminEmail) {
       const { data: u } = await supabase.from('users').select('name, phone, email').eq('id', req.user.id).single();
@@ -2115,21 +2115,21 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
 
       const html = `
         <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:520px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px;border:2px solid #dc2626;">
-          <div style="font-size:40px;text-align:center;margin-bottom:12px">ðŸ”</div>
-          <h2 style="color:#1e293b;font-size:18px;text-align:center;margin:0 0 4px">ID Proof â€” Admin Eyes Only</h2>
+          <div style="font-size:40px;text-align:center;margin-bottom:12px"></div>
+          <h2 style="color:#1e293b;font-size:18px;text-align:center;margin:0 0 4px">ID Proof  Admin Eyes Only</h2>
           <p style="color:#64748b;font-size:12px;text-align:center;margin:0 0 20px">Photos are attached. They are <strong>not stored anywhere</strong> in the system.</p>
           <div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:14px;padding:20px;margin-bottom:16px">
             <table style="width:100%;border-collapse:collapse">
               <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">Full Name</td>
                   <td style="color:#1e293b;font-size:13px;font-weight:700;text-align:right">${sanitize(proName)}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">Phone</td>
-                  <td style="color:#1e293b;font-size:13px;text-align:right">${u?.phone || 'â€”'}</td></tr>
+                  <td style="color:#1e293b;font-size:13px;text-align:right">${u?.phone || ''}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">Email</td>
-                  <td style="color:#1e293b;font-size:13px;text-align:right">${u?.email || 'â€”'}</td></tr>
+                  <td style="color:#1e293b;font-size:13px;text-align:right">${u?.email || ''}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">Role</td>
-                  <td style="color:#1e293b;font-size:13px;text-align:right">${prof?.sub_role || 'â€”'}</td></tr>
+                  <td style="color:#1e293b;font-size:13px;text-align:right">${prof?.sub_role || ''}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">City</td>
-                  <td style="color:#1e293b;font-size:13px;text-align:right">${prof?.city || 'â€”'}</td></tr>
+                  <td style="color:#1e293b;font-size:13px;text-align:right">${prof?.city || ''}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:1px solid #fee2e2">ID Type</td>
                   <td style="color:#1e293b;font-size:13px;font-weight:700;text-align:right">${sanitize(docType)}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:5px 0;border-bottom:${certType ? '1px solid #fee2e2' : 'none'}">ID Number</td>
@@ -2143,7 +2143,7 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
             </table>
           </div>
           <p style="color:#dc2626;font-size:12px;text-align:center;font-weight:700;margin:0 0 16px">
-            âš ï¸ ${attachments.length} photo${attachments.length !== 1 ? 's' : ''} attached to this email.<br>
+             ${attachments.length} photo${attachments.length !== 1 ? 's' : ''} attached to this email.<br>
             Do NOT forward. Delete after verification.
           </p>
           <p style="color:#94a3b8;font-size:11px;text-align:center;margin:0">Submitted: ${ts}</p>
@@ -2151,15 +2151,15 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
 
       sendEmail(
         adminEmail,
-        `ðŸ” PETclub ID Proof â€” ${sanitize(proName)} (${sanitize(docType)}) â€” ACTION REQUIRED`,
+        ` PETclub ID Proof  ${sanitize(proName)} (${sanitize(docType)})  ACTION REQUIRED`,
         html,
         attachments
       ).catch(e => logger.error('[ID email send error]', e.message));
     } else {
-      logger.warn('[upload-id-photo] ADMIN_EMAIL not set â€” ID proof email not sent!');
+      logger.warn('[upload-id-photo] ADMIN_EMAIL not set  ID proof email not sent!');
     }
 
-    res.json({ success: true, message: 'ID submitted â€” our team will verify within 24â€“48 hours.' });
+    res.json({ success: true, message: 'ID submitted  our team will verify within 2448 hours.' });
   } catch (err) {
     logger.error('ID upload error:', err.message);
     res.status(500).json({ error: 'Failed to submit document. Try again.' });
@@ -2182,7 +2182,7 @@ app.post('/api/users/upload-id-photo', auth, async (req, res) => {
         const { error: upErr } = await supabase.storage
           .from('id-documents')
           .upload(filename, buffer, { contentType: `image/${ext}`, upsert: true });
-        if (!upErr) customerPhotoPath = filename; // store path (private bucket â€” use signed URL to view)
+        if (!upErr) customerPhotoPath = filename; // store path (private bucket  use signed URL to view)
       } catch (e) { logger.error('Customer ID photo error:', e.message); }
     }
 
@@ -2204,7 +2204,7 @@ app.post('/api/professionals/payout', auth, async (req, res) => {
   if (req.user.role !== 'professional') return res.status(403).json({ error: 'Professionals only' });
   const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
   if (!prof) return res.status(404).json({ error: 'Professional profile not found' });
-  // Allowlist payout fields â€” never accept prof_id or computed fields from client
+  // Allowlist payout fields  never accept prof_id or computed fields from client
   const { bank_name, account_number, account_holder, ifsc_code, upi_id, payment_type } = req.body;
   const { data } = await supabase.from('payout_details').upsert({
     prof_id:        prof.id,
@@ -2218,7 +2218,7 @@ app.post('/api/professionals/payout', auth, async (req, res) => {
   res.json({ success: true, payout: data });
 });
 
-// Pro: Earnings summary â€” only provider_earnings, never total_amount or platform_fee
+// Pro: Earnings summary  only provider_earnings, never total_amount or platform_fee
 app.get('/api/professionals/earnings', auth, async (req, res) => {
   try {
     if (req.user.role !== 'professional') return res.status(403).json({ error: 'Forbidden' });
@@ -2244,9 +2244,9 @@ app.get('/api/professionals/earnings', auth, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  BOOKING ROUTES
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.get('/api/bookings', auth, async (req, res) => {
   let q;
   if (req.user.role === 'customer')
@@ -2254,7 +2254,7 @@ app.get('/api/bookings', auth, async (req, res) => {
     q = supabase.from('bookings').select('*, pets!pet_id(name,species,health_notes), professional_profiles!professional_id(sub_role, users(name,phone))').eq('customer_id', req.user.id);
   else if (req.user.role === 'professional') {
     const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
-    // Phone only revealed after confirmed â€” prevents harvesting from unaccepted offers
+    // Phone only revealed after confirmed  prevents harvesting from unaccepted offers
     q = supabase.from('bookings').select('*, pets!pet_id(name,species,breed,health_notes), users!customer_id(name,phone)').eq('professional_id', prof?.id).in('assignment_status', ['confirmed','in_progress','completed']);
   } else
     // Admin: include customer + professional name/phone for live tracking panel
@@ -2269,7 +2269,7 @@ app.get('/api/bookings', auth, async (req, res) => {
   res.json({ success: true, bookings });
 });
 
-// Current Terms & Privacy Policy version â€” bump this string whenever T&C are updated.
+// Current Terms & Privacy Policy version  bump this string whenever T&C are updated.
 // All bookings store which version the user agreed to at the time they booked.
 const TERMS_VERSION = 'v1';
 
@@ -2277,7 +2277,7 @@ app.post('/api/bookings', auth, async (req, res) => {
   try {
     processTimedOutAssignments().catch(e => logger.error(e)); // background cleanup
 
-    // â”€â”€ Clickwrap consent guard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Clickwrap consent guard 
     // The client MUST send terms_accepted: true.  This is validated server-side
     // so browser "Inspect Element" tricks that bypass the checkbox are rejected.
     if (!req.body.terms_accepted) {
@@ -2291,7 +2291,7 @@ app.post('/api/bookings', auth, async (req, res) => {
     const addressLat = typeof req.body.lat === 'number' ? req.body.lat : null;
     const addressLng = typeof req.body.lng === 'number' ? req.body.lng : null;
 
-    // â”€â”€ Pet ownership guard (C-2 fix) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Pet ownership guard (C-2 fix) 
     // Prevent a customer from booking a service against another customer's pet.
     if (pet_id) {
       const { data: petCheck, error: petErr } = await supabase
@@ -2301,19 +2301,19 @@ app.post('/api/bookings', auth, async (req, res) => {
       if (petCheck.owner_id !== req.user.id)
         return res.status(403).json({ error: 'You do not own this pet' });
     }
-    // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // 
 
-    // â”€â”€ Address geocoding enforcement â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Address geocoding enforcement 
     // If an address string is provided it must have verified GPS coordinates
     // (set by AddressPicker when user selects from dropdown). This prevents
-    // fake/typo addresses from being booked â€” GPS is required for 70km dispatch.
+    // fake/typo addresses from being booked  GPS is required for 70km dispatch.
     if (address && address.trim() && (!addressLat || !addressLng)) {
       return res.status(400).json({
         error: 'Please select your address from the dropdown suggestions to verify it. This ensures we dispatch the nearest professional to you.',
       });
     }
 
-    // â”€â”€ Loyalty coupon validation (Fix 3 + Fix 4) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Loyalty coupon validation (Fix 3 + Fix 4) 
     // If customer applies a coupon code, validate it server-side.
     // Fix 4: expiry checked via WHERE expires_at > NOW() inside validateCoupon.
     const couponCode = req.body.coupon_code?.trim()?.toUpperCase() || null;
@@ -2326,18 +2326,18 @@ app.post('/api/bookings', auth, async (req, res) => {
       isLoyaltyRedemption = true;
     }
 
-    // â”€â”€ Pricing â€” server-side calculation (tamper-proof) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Pricing  server-side calculation (tamper-proof) 
     // Always recalculate from the catalog; never trust client-supplied amount.
-    // When a valid loyalty coupon is applied â†’ final amount = 0 (free service).
+    // When a valid loyalty coupon is applied ' final amount = 0 (free service).
     const pricingResult = pricingCatalog.calculateAmount({
       serviceType: service_type, serviceName: service_name,
       petSize: pet_size, addons: Array.isArray(addons) ? addons : [],
     });
     const resolvedAmount = isLoyaltyRedemption ? 0 : (pricingResult ? pricingResult.total : null);
 
-    // Derive currency from phone prefix â€” same logic as frontend
+    // Derive currency from phone prefix  same logic as frontend
     const customerCurrency = req.user.phone?.startsWith('+91') ? 'INR' : 'USD';
-    // For grooming: split base = total âˆ’ PLATFORM_DISCOUNT (â‚¹150 PETclub offer absorbed)
+    // For grooming: split base = total ' PLATFORM_DISCOUNT (150 PETclub offer absorbed)
     const offerForSplit = (service_type === 'Groomer' && !isLoyaltyRedemption && resolvedAmount > 0)
       ? (pricingResult?.discount || pricingCatalog.PLATFORM_DISCOUNT || 0)
       : 0;
@@ -2350,13 +2350,13 @@ app.post('/api/bookings', auth, async (req, res) => {
       pet_id: pet_id || null, scheduled_at: scheduled_at || null,
       city: city || null, address: address || null, notes: notes || null,
       amount: resolvedAmount,
-      // W-4 fix: GPS coords in the initial insert â€” no separate fire-and-forget
+      // W-4 fix: GPS coords in the initial insert  no separate fire-and-forget
       // update needed. The old approach silently dropped coordinates if Supabase
       // timed out on the second update, causing the 70km dispatch to fall back to
       // city-name matching and potentially dispatch the wrong professional.
       address_lat: addressLat || null,
       address_lng: addressLng || null,
-      // Accounting flags â€” let admin know this was a loyalty-redeemed job
+      // Accounting flags  let admin know this was a loyalty-redeemed job
       is_loyalty_redemption: isLoyaltyRedemption,
       coupon_code_used:      couponCode,
       // Revenue split columns (null when no amount provided or loyalty free)
@@ -2367,7 +2367,7 @@ app.post('/api/bookings', auth, async (req, res) => {
       gateway_fee:          split?.gateway_fee          ?? null,
       currency:          customerCurrency,
       payout_status:     'pending',
-      // Clickwrap consent audit trail â€” server-side timestamp, not client-supplied
+      // Clickwrap consent audit trail  server-side timestamp, not client-supplied
       terms_version:     TERMS_VERSION,
       terms_accepted_at: new Date().toISOString(),
     }).select().single();
@@ -2382,7 +2382,7 @@ app.post('/api/bookings', auth, async (req, res) => {
     if (couponCode && isLoyaltyRedemption) {
       const couponResult = await loyalty.markCouponUsed(supabase, couponCode, booking.id);
       if (!couponResult.success) {
-        // Delete the booking we just inserted â€” it was created on the assumption
+        // Delete the booking we just inserted  it was created on the assumption
         // this coupon was valid, but the atomic check says otherwise.
         await supabase.from('bookings').update({ deleted_at: new Date().toISOString() }).eq('id', booking.id);
         return res.status(409).json({
@@ -2436,12 +2436,12 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
 
   const newStatus = req.body.status;
 
-  // Whitelist allowed statuses â€” prevents state-machine manipulation from client
+  // Whitelist allowed statuses  prevents state-machine manipulation from client
   const VALID_BOOKING_STATUSES = ['upcoming', 'in_progress', 'completed', 'cancelled', 'no_show'];
   if (!VALID_BOOKING_STATUSES.includes(newStatus))
     return res.status(400).json({ error: `Invalid status. Allowed: ${VALID_BOOKING_STATUSES.join(', ')}` });
 
-  // State machine: enforce valid transitions â€” prevents rollback fraud
+  // State machine: enforce valid transitions  prevents rollback fraud
   const ALLOWED_TRANSITIONS = {
     upcoming:    ['in_progress', 'cancelled', 'no_show'],
     in_progress: ['completed', 'cancelled'],
@@ -2458,7 +2458,7 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
   if ((newStatus === 'cancelled' || newStatus === 'no_show') && booking.status === 'cancelled')
     return res.status(400).json({ error: 'Booking is already cancelled.' });
 
-  // â”€â”€ Cancellation / No-show â€” calculate refund â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  //  Cancellation / No-show  calculate refund 
   const updatePayload = { status: newStatus === 'no_show' ? 'cancelled' : newStatus };
   const assignmentStatusMap = { in_progress: 'in_progress', completed: 'completed', cancelled: 'cancelled' };
   if (assignmentStatusMap[newStatus]) updatePayload.assignment_status = assignmentStatusMap[newStatus];
@@ -2477,7 +2477,7 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
     // Professionals CAN cancel their accepted booking (emergency/unable to attend)
     // This triggers a re-dispatch to the next available professional
 
-    // 'professional' cancellations have no fee â€” pro is at fault, customer gets full refund
+    // 'professional' cancellations have no fee  pro is at fault, customer gets full refund
     const isProCancel = !isNoShow && req.user.role === 'professional';
     const cancelledBy = isNoShow ? 'no_show' : req.user.role;
     const refundCalc  = isProCancel
@@ -2491,7 +2491,7 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
     updatePayload.refund_status       = refundCalc.refund_status;
     updatePayload.cancellation_reason = sanitize(req.body.reason || '') || null;
 
-    // â”€â”€ Loyalty points reversal â€” cancel any credits earned for this booking â”€â”€
+    //  Loyalty points reversal  cancel any credits earned for this booking 
     if (booking.customer_id) {
       supabase.from('loyalty_transactions')
         .select('id, points, type')
@@ -2504,14 +2504,14 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
             loyalty.awardPoints(
               supabase, booking.customer_id,
               -totalToReverse, 'booking_cancel_reversal',
-              `Reversal of ${totalToReverse} credits â€” booking ${req.params.id} cancelled`,
+              `Reversal of ${totalToReverse} credits  booking ${req.params.id} cancelled`,
               req.params.id,
             ).catch(e => logger.error('[Loyalty] cancel reversal failed:', e.message));
           }
         }).catch(() => {});
     }
 
-    // â”€â”€ Notify professional â€” customer/admin cancelled â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Notify professional  customer/admin cancelled 
     if (booking.professional_id && !isProCancel && !isNoShow) {
       supabase.from('professional_profiles')
         .select('users(fcm_token, name)')
@@ -2520,7 +2520,7 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
           if (pp?.users?.fcm_token) {
             const svc = booking.service_name || booking.service_type || 'Service';
             const who = cancelledBy === 'customer' ? 'Customer' : 'Admin';
-            sendPush(pp.users.fcm_token, `âŒ Booking Cancelled`,
+            sendPush(pp.users.fcm_token, ` Booking Cancelled`,
               `${who} cancelled the ${svc} booking. Check your schedule.`,
               { bookingId: req.params.id, type: 'booking_cancelled' }
             ).catch(() => {});
@@ -2528,27 +2528,27 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
         }).catch(() => {});
     }
 
-    // â”€â”€ Notify customer â€” professional cancelled or no-show â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Notify customer  professional cancelled or no-show 
     if ((isProCancel || isNoShow) && booking.customer_id) {
       supabase.from('users').select('fcm_token').eq('id', booking.customer_id).single()
         .then(({ data: cu }) => {
           if (cu?.fcm_token) {
-            const title = isNoShow ? `ðŸ“‹ Booking Update` : `âš ï¸ Provider Cancelled`;
+            const title = isNoShow ? ` Booking Update` : ` Provider Cancelled`;
             const body  = isNoShow
-              ? `No-show recorded. â‚¹${refundCalc.refund_amount} refund pending. â‚¹${refundCalc.cancellation_fee} fee applied.`
+              ? `No-show recorded. ${refundCalc.refund_amount} refund pending. ${refundCalc.cancellation_fee} fee applied.`
               : `Your provider had to cancel. We're finding you another ${booking.service_type || 'professional'} now.`;
             sendPush(cu.fcm_token, title, body, { bookingId: req.params.id, type: isNoShow ? 'no_show' : 'pro_cancelled' }).catch(() => {});
           }
         }).catch(() => {});
     }
 
-    // â”€â”€ Re-dispatch when professional cancels â€” find next available pro â”€â”€â”€â”€â”€â”€â”€â”€
+    //  Re-dispatch when professional cancels  find next available pro 
     if (isProCancel) {
       // Clear the current assignment and restart search
       updatePayload.status            = 'upcoming';
       updatePayload.assignment_status = 'searching';
       updatePayload.professional_id   = null;
-      updatePayload.cancelled_by      = null; // reset â€” this is a re-dispatch, not a real cancel
+      updatePayload.cancelled_by      = null; // reset  this is a re-dispatch, not a real cancel
       updatePayload.cancelled_at      = null;
       updatePayload.cancellation_fee  = null;
       updatePayload.refund_amount     = null;
@@ -2596,7 +2596,7 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
 
   const { data } = await supabase.from('bookings').update(updatePayload).eq('id', req.params.id).select().single();
 
-  // â”€â”€ Auto-create pet service record when booking is completed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  //  Auto-create pet service record when booking is completed 
   // Writes to the correct records table based on service_type so the history
   // appears automatically under the pet's profile without manual entry.
   if (newStatus === 'completed' && booking.status !== 'completed' && booking.pet_id) {
@@ -2634,7 +2634,7 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
           booking_id: req.params.id,
         });
       } else {
-        // Groomer, Walker, Boarding â€” all go to grooming_records
+        // Groomer, Walker, Boarding  all go to grooming_records
         await supabase.from('grooming_records').insert({
           pet_id:    booking.pet_id,
           date:      dateStr,
@@ -2645,7 +2645,7 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
         });
       }
     } catch (recErr) {
-      // Non-fatal â€” log but don't fail the status update
+      // Non-fatal  log but don't fail the status update
       logger.error('[PetRecord] Auto-create failed:', recErr.message);
     }
   }
@@ -2670,7 +2670,7 @@ app.post('/api/bookings/:id/respond', auth, async (req, res) => {
       .select('*').eq('booking_id', req.params.id).eq('professional_id', prof.id).eq('status', 'offered').single();
     if (!assignment) return res.status(404).json({ error: 'No active offer found for this booking' });
     if (new Date() > new Date(assignment.response_deadline))
-      return res.status(400).json({ error: 'Response window expired â€” the request was auto-passed' });
+      return res.status(400).json({ error: 'Response window expired  the request was auto-passed' });
 
     await supabase.from('booking_assignments').update({ status: action === 'accept' ? 'accepted' : 'rejected', responded_at: new Date().toISOString() }).eq('id', assignment.id);
 
@@ -2686,21 +2686,21 @@ app.post('/api/bookings/:id/respond', auth, async (req, res) => {
       const dateStr = bk?.scheduled_at ? new Date(bk.scheduled_at).toLocaleString('en-IN', { weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' }) : 'TBD';
 
       if (custEmail) {
-        sendEmail(custEmail, `âœ… Booking Confirmed â€” ${proName} will serve you!`, `
+        sendEmail(custEmail, ` Booking Confirmed  ${proName} will serve you!`, `
           <div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:32px;background:#fff;border-radius:16px;border:1px solid #f1f5f9;">
-            <div style="text-align:center;margin-bottom:20px;"><div style="font-size:48px">âœ…</div><h2 style="color:#16a34a;margin:8px 0">Booking Confirmed!</h2></div>
+            <div style="text-align:center;margin-bottom:20px;"><div style="font-size:48px"></div><h2 style="color:#16a34a;margin:8px 0">Booking Confirmed!</h2></div>
             <table style="width:100%;border-collapse:collapse;margin-bottom:20px;">
               <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8;width:38%">Service</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${svc}</td></tr>
               <tr><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:12px;color:#94a3b8">Professional</td><td style="padding:8px 0;border-bottom:1px solid #f1f5f9;font-size:14px;font-weight:700;color:#1e293b">${proName}</td></tr>
               <tr><td style="padding:8px 0;font-size:12px;color:#94a3b8">Date & Time</td><td style="padding:8px 0;font-size:14px;font-weight:700;color:#1e293b">${dateStr}</td></tr>
             </table>
-            <div style="text-align:center;"><a href="https://app.mypetclub.app" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:14px 32px;border-radius:50px;text-decoration:none;font-weight:700;">Open PETclub App â†’</a></div>
+            <div style="text-align:center;"><a href="https://app.mypetclub.app" style="display:inline-block;background:linear-gradient(135deg,#f97316,#ea580c);color:white;padding:14px 32px;border-radius:50px;text-decoration:none;font-weight:700;">Open PETclub App '</a></div>
           </div>`).catch(e => logger.error(e));
       }
       // FCM push to customer
       const { data: custUserFcm } = await Promise.resolve(supabase.from('users').select('fcm_token').eq('id', bk?.users?.id || bk?.customer_id || '').single()).catch(() => ({ data: null }));
       if (custUserFcm?.fcm_token) {
-        sendPush(custUserFcm.fcm_token, `âœ… Booking Confirmed!`, `${proName} will be there on ${dateStr}`, { bookingId: req.params.id, type: 'booking_confirmed' }).catch(() => {});
+        sendPush(custUserFcm.fcm_token, ` Booking Confirmed!`, `${proName} will be there on ${dateStr}`, { bookingId: req.params.id, type: 'booking_confirmed' }).catch(() => {});
       }
       return res.json({ success: true, message: `Booking accepted! Customer has been notified.` });
     }
@@ -2757,10 +2757,10 @@ app.get('/api/bookings/incoming', auth, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  IN-APP CHAT â€” per-booking messages between customer and professional
+// 
+//  IN-APP CHAT  per-booking messages between customer and professional
 //  Keeps both parties' phone numbers private.
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 
 // Helper: verify the caller is the customer or assigned professional for a booking
 async function assertChatAccess(bookingId, user) {
@@ -2779,7 +2779,7 @@ async function assertChatAccess(bookingId, user) {
   return { status: 403, error: 'Not authorised for this booking chat' };
 }
 
-// GET /api/bookings/:id/cancel-preview â€” returns refund estimate before customer confirms cancel
+// GET /api/bookings/:id/cancel-preview  returns refund estimate before customer confirms cancel
 app.get('/api/bookings/:id/cancel-preview', auth, async (req, res) => {
   const { data: bk } = await supabase
     .from('bookings').select('customer_id, scheduled_at, total_amount, status').eq('id', req.params.id).single();
@@ -2791,7 +2791,7 @@ app.get('/api/bookings/:id/cancel-preview', auth, async (req, res) => {
   res.json({ success: true, ...calc, total_amount: parseFloat(bk.total_amount || 0) });
 });
 
-// PUT /api/admin/bookings/:id/refund-status â€” admin marks a refund as processed
+// PUT /api/admin/bookings/:id/refund-status  admin marks a refund as processed
 app.put('/api/admin/bookings/:id/refund-status', auth, adminOnly, async (req, res) => {
   const { status } = req.body; // 'processed' | 'not_applicable'
   if (!['processed', 'not_applicable'].includes(status))
@@ -2805,8 +2805,8 @@ app.put('/api/admin/bookings/:id/refund-status', auth, adminOnly, async (req, re
     supabase.from('users').select('fcm_token').eq('id', data.customer_id).single()
       .then(({ data: cu }) => {
         if (cu?.fcm_token) {
-          sendPush(cu.fcm_token, `âœ… Refund Processed`,
-            `Your refund of â‚¹${parseFloat(data.refund_amount || 0).toFixed(2)} has been sent. Allow 2â€“3 business days.`,
+          sendPush(cu.fcm_token, ` Refund Processed`,
+            `Your refund of ${parseFloat(data.refund_amount || 0).toFixed(2)} has been sent. Allow 23 business days.`,
             { bookingId: req.params.id, type: 'refund_processed' }
           ).catch(() => {});
         }
@@ -2815,7 +2815,7 @@ app.put('/api/admin/bookings/:id/refund-status', auth, adminOnly, async (req, re
   res.json({ success: true, booking: data });
 });
 
-// GET /api/bookings/:id/messages â€” fetch messages (newest last, limit 100)
+// GET /api/bookings/:id/messages  fetch messages (newest last, limit 100)
 app.get('/api/bookings/:id/messages', auth, async (req, res) => {
   const denied = await assertChatAccess(req.params.id, req.user);
   if (denied) return res.status(denied.status).json({ error: denied.error });
@@ -2837,7 +2837,7 @@ app.get('/api/bookings/:id/messages', auth, async (req, res) => {
   res.json({ success: true, messages: data || [] });
 });
 
-// POST /api/bookings/:id/messages â€” send a message
+// POST /api/bookings/:id/messages  send a message
 app.post('/api/bookings/:id/messages', auth, async (req, res) => {
   const denied = await assertChatAccess(req.params.id, req.user);
   if (denied) return res.status(denied.status).json({ error: denied.error });
@@ -2846,13 +2846,13 @@ app.post('/api/bookings/:id/messages', auth, async (req, res) => {
   if (!content) return res.status(400).json({ error: 'Message cannot be empty' });
   if (content.length > 1000) return res.status(400).json({ error: 'Message too long (max 1000 chars)' });
 
-  // â”€â”€ Contact masking â€” replace phone numbers / emails to keep both parties
+  //  Contact masking  replace phone numbers / emails to keep both parties
   // on the platform and prevent commission bypass. Patterns covered:
   //   +91 XXXXX XXXXX, 91-XXXXXXXXXX, 10-digit mobile, @-containing email
   content = content
-    .replace(/(\+?91[\s\-]?)?[6-9]\d{9}/g, '[ðŸ“µ contact hidden]')          // Indian mobiles
-    .replace(/\+?1[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}/g, '[ðŸ“µ contact hidden]') // US numbers
-    .replace(/\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g, '[ðŸ“§ contact hidden]'); // emails
+    .replace(/(\+?91[\s\-]?)?[6-9]\d{9}/g, '[ contact hidden]')          // Indian mobiles
+    .replace(/\+?1[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}/g, '[ contact hidden]') // US numbers
+    .replace(/\b[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}\b/g, '[ contact hidden]'); // emails
 
   // Fetch sender name from users table
   const { data: sender } = await supabase.from('users').select('name').eq('id', req.user.id).single();
@@ -2877,8 +2877,8 @@ app.post('/api/bookings/:id/messages', auth, async (req, res) => {
       supabase.from('users').select('fcm_token').eq('id', notifyUserId).single()
         .then(({ data: u }) => {
           if (u?.fcm_token) {
-            sendPush(u.fcm_token, `ðŸ’¬ New message`,
-              `${sender?.name || 'Your provider'}: ${content.slice(0, 60)}${content.length > 60 ? 'â€¦' : ''}`,
+            sendPush(u.fcm_token, `' New message`,
+              `${sender?.name || 'Your provider'}: ${content.slice(0, 60)}${content.length > 60 ? '' : ''}`,
               { bookingId: req.params.id, type: 'chat_message' }
             ).catch(() => {});
           }
@@ -2911,23 +2911,23 @@ app.put('/api/bookings/:id/assign', auth, adminOnly, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  LIVE TRACKING (SSE â€” Ola/Rapido-style)
+// 
+//  LIVE TRACKING (SSE  Ola/Rapido-style)
 //
 //  W-2 fix: replaced in-memory trackingClients Map with DB-polling SSE.
 //
 //  Old architecture (broken on scale-out):
-//    Professional POST /location â†’ DB update + push to in-memory Map
-//    Customer EventSource â†’ receives from in-memory Map
+//    Professional POST /location ' DB update + push to in-memory Map
+//    Customer EventSource ' receives from in-memory Map
 //    Problem: Map is per-process; Cloud Run instance B never sees pushes
 //             sent to instance A's Map.
 //
 //  New architecture (works on any number of instances):
-//    Professional POST /location â†’ DB update only (no in-memory push)
-//    Customer EventSource â†’ server polls DB every 3 s, sends diff to client
-//    All instances read from the same Supabase DB â†’ consistent across scale-out
+//    Professional POST /location ' DB update only (no in-memory push)
+//    Customer EventSource ' server polls DB every 3 s, sends diff to client
+//    All instances read from the same Supabase DB ' consistent across scale-out
 //    Keepalive comment every 25 s prevents proxy/Cloud Run idle timeout.
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 
 // Customer subscribes -- GET /api/bookings/:id/track
 // Browser EventSource sends cookies automatically when withCredentials:true
@@ -3018,7 +3018,7 @@ app.get('/api/bookings/:id/track', async (req, res) => {
   req.on('close', () => cleanup(channel));
 });
 
-// â”€â”€ Haversine straight-line distance in km â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Haversine straight-line distance in km 
 const haversineKm = (lat1, lon1, lat2, lon2) => {
   const R = 6371;
   const dLat = (lat2 - lat1) * Math.PI / 180;
@@ -3028,7 +3028,7 @@ const haversineKm = (lat1, lon1, lat2, lon2) => {
 };
 const TEN_MIN_KM = parseFloat(process.env.PROXIMITY_ALERT_KM) || 8; // ~10 min at avg 50 km/h road speed
 
-// Professional taps "On My Way" â€” POST /api/bookings/:id/on-my-way
+// Professional taps "On My Way"  POST /api/bookings/:id/on-my-way
 app.post('/api/bookings/:id/on-my-way', auth, async (req, res) => {
   try {
     const { data: proProfile } = await supabase.from('professional_profiles').select('id, sub_role, users(name, phone, fcm_token)').eq('user_id', req.user.id).single();
@@ -3053,21 +3053,21 @@ app.post('/api/bookings/:id/on-my-way', auth, async (req, res) => {
 
     // Notify customer via SMS
     if (booking.users?.phone) {
-      sendSMS(booking.users.phone, `ðŸ¾ PETclub: ${proName} (${svcType}) is on the way to you! Open the app to track them live.`).catch(() => {});
+      sendSMS(booking.users.phone, ` PETclub: ${proName} (${svcType}) is on the way to you! Open the app to track them live.`).catch(() => {});
     }
     // Notify customer via FCM push
     if (booking.users?.fcm_token) {
-      sendPushNotification(booking.users.fcm_token, 'ðŸš— On the Way!', `${proName} is heading to you now. Track live in the app.`).catch(() => {});
+      sendPushNotification(booking.users.fcm_token, '-- On the Way!', `${proName} is heading to you now. Track live in the app.`).catch(() => {});
     }
 
-    logger.info(`[OnMyWay] Booking ${req.params.id} â€” ${proName} started journey`);
+    logger.info(`[OnMyWay] Booking ${req.params.id}  ${proName} started journey`);
     res.json({ success: true, message: 'Journey started! Customer has been notified.' });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
 });
 
-// Professional sends GPS â€” POST /api/bookings/:id/location { lat, lng }
+// Professional sends GPS  POST /api/bookings/:id/location { lat, lng }
 app.post('/api/bookings/:id/location', auth, async (req, res) => {
   try {
     const { lat, lng } = req.body;
@@ -3103,7 +3103,7 @@ app.post('/api/bookings/:id/location', auth, async (req, res) => {
       pro_location_updated_at: new Date().toISOString(),
     }).eq('id', bookingId);
 
-    // â”€â”€ 10-minute proximity alert â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  10-minute proximity alert 
     if (!booking.ten_min_notified && booking.address_lat && booking.address_lng) {
       const distKm = haversineKm(lat, lng, booking.address_lat, booking.address_lng);
       if (distKm <= TEN_MIN_KM) {
@@ -3116,17 +3116,17 @@ app.post('/api/bookings/:id/location', auth, async (req, res) => {
         const custFcm   = booking.users?.fcm_token;
 
         if (custPhone) {
-          sendSMS(custPhone, `ðŸ¾ PETclub: ${proName} (${svcType}) will arrive in about 10 minutes! Get ready ðŸ¾`).catch(() => {});
+          sendSMS(custPhone, ` PETclub: ${proName} (${svcType}) will arrive in about 10 minutes! Get ready `).catch(() => {});
         }
         if (custFcm) {
-          sendPushNotification(custFcm, 'â±ï¸ 10 Minutes Away!', `${proName} will arrive in about 10 minutes. Get ready!`).catch(() => {});
+          sendPushNotification(custFcm, ' 10 Minutes Away!', `${proName} will arrive in about 10 minutes. Get ready!`).catch(() => {});
         }
-        logger.info(`[ProximityAlert] Booking ${bookingId} â€” ${proName} is ${distKm.toFixed(1)}km from customer, 10-min alert sent`);
+        logger.info(`[ProximityAlert] Booking ${bookingId}  ${proName} is ${distKm.toFixed(1)}km from customer, 10-min alert sent`);
       }
     }
 
     // W-2 fix: SSE clients now poll the DB directly (see GET /api/bookings/:id/track).
-    // No in-memory push needed here â€” DB write above is the single source of truth.
+    // No in-memory push needed here  DB write above is the single source of truth.
     const distKm = (booking.address_lat && booking.address_lng)
       ? +haversineKm(lat, lng, booking.address_lat, booking.address_lng).toFixed(2)
       : null;
@@ -3137,7 +3137,7 @@ app.post('/api/bookings/:id/location', auth, async (req, res) => {
   }
 });
 
-// REST snapshot fallback â€” GET /api/bookings/:id/tracking
+// REST snapshot fallback  GET /api/bookings/:id/tracking
 app.get('/api/bookings/:id/tracking', auth, async (req, res) => {
   try {
     const { data: booking } = await supabase
@@ -3147,7 +3147,7 @@ app.get('/api/bookings/:id/tracking', auth, async (req, res) => {
       .single();
     if (!booking) return res.status(404).json({ error: 'Not found' });
 
-    // Ownership check â€” customer, assigned professional, or admin only
+    // Ownership check  customer, assigned professional, or admin only
     let proProfileId = null;
     if (req.user.role === 'professional') {
       const { data: pp } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
@@ -3166,9 +3166,9 @@ app.get('/api/bookings/:id/tracking', auth, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  RATINGS & REVIEWS
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 
 // Rate a completed booking (customer only, one rating per booking)
 app.post('/api/bookings/:id/rate', auth, async (req, res) => {
@@ -3186,7 +3186,7 @@ app.post('/api/bookings/:id/rate', auth, async (req, res) => {
 
     const profUserId = booking.professional_profiles?.user_id;
 
-    // Upsert â€” one rating per booking (unique constraint on booking_id enforces this)
+    // Upsert  one rating per booking (unique constraint on booking_id enforces this)
     const { error: upsertErr } = await supabase.from('reviews').upsert({
       reviewer_id: req.user.id,
       reviewee_id: profUserId,
@@ -3202,7 +3202,7 @@ app.post('/api/bookings/:id/rate', auth, async (req, res) => {
     // W-3 fix: recalculate pro's average rating via SQL aggregation (not JS reduce).
     // The old approach fetched all reviews into Node memory, then computed AVG in JS.
     // Two concurrent rating submissions would both read the same stale set, compute
-    // the same wrong average, and overwrite each other â€” producing an incorrect count.
+    // the same wrong average, and overwrite each other  producing an incorrect count.
     // The RPC runs entirely in-database with the correct aggregate at commit time.
     if (profUserId) {
       const { error: ratingErr } = await supabase
@@ -3212,7 +3212,7 @@ app.post('/api/bookings/:id/rate', auth, async (req, res) => {
       }
     }
     // Award +50 loyalty credits for leaving a review.
-    // Fix 2 â€” dedup guard: check that no review_bonus has been awarded for this
+    // Fix 2  dedup guard: check that no review_bonus has been awarded for this
     // booking_id before awarding. The DB unique index (loyalty_txn_review_bonus_once)
     // also enforces this at the database level as a hard constraint.
     loyalty.hasEarnedReviewBonus(supabase, req.user.id, req.params.id).then(alreadyEarned => {
@@ -3224,10 +3224,10 @@ app.post('/api/bookings/:id/rate', auth, async (req, res) => {
           req.params.id,
         );
       }
-      logger.info(`[Loyalty] Review bonus skipped â€” already awarded for booking ${req.params.id}`);
+      logger.info(`[Loyalty] Review bonus skipped  already awarded for booking ${req.params.id}`);
     }).catch(e => logger.error('[Loyalty] review bonus award failed:', e.message));
 
-    res.json({ success: true, message: 'Thank you for your feedback! ðŸŒŸ', loyalty_bonus: loyalty.REVIEW_BONUS });
+    res.json({ success: true, message: 'Thank you for your feedback! ', loyalty_bonus: loyalty.REVIEW_BONUS });
   } catch (err) {
     logger.error('Rate booking error:', err.message);
     res.status(500).json({ error: 'Failed to submit rating' });
@@ -3252,11 +3252,11 @@ app.get('/api/ratings/mine', auth, async (req, res) => {
   res.json({ success: true, ratedIds: (data || []).map(r => r.booking_id) });
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  ADMIN ROUTES
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 
-// Admin OTP lookup â€” DEV ONLY. Disabled in production (set ALLOW_DEV_TOOLS=true locally).
+// Admin OTP lookup  DEV ONLY. Disabled in production (set ALLOW_DEV_TOOLS=true locally).
 // GET /api/admin/otp?phone=+919876543210  OR  ?phone=9876543210&cc=91
 app.get('/api/admin/otp', auth, adminOnly, async (req, res) => {
   if (IS_PROD) return res.status(403).json({ error: 'This debug endpoint is disabled in production. Set ALLOW_DEV_TOOLS=true in local .env to use it.' });
@@ -3280,7 +3280,7 @@ app.get('/api/admin/otp', auth, adminOnly, async (req, res) => {
       expired,
       expires_at: rec.expires_at,
       mins_left: minsLeft,
-      note: expired ? 'OTP has expired â€” request a new one' : rec.verified ? 'OTP already used' : `Valid for ${minsLeft} more min(s)`,
+      note: expired ? 'OTP has expired  request a new one' : rec.verified ? 'OTP already used' : `Valid for ${minsLeft} more min(s)`,
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -3303,7 +3303,7 @@ app.get('/api/admin/stats', auth, adminOnly, async (req, res) => {
 });
 
 // O-1 fix: paginated admin user listing.
-// Old version: fetched the entire users table on every request â€” would OOM on scale.
+// Old version: fetched the entire users table on every request  would OOM on scale.
 // New version: supports ?page=, ?limit= (max 100), and ?search= (name or phone ILIKE).
 // Requires the trigram indexes created in supabase-security-hardening.sql for fast search.
 app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
@@ -3331,7 +3331,7 @@ app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
   if (!includeDeleted) q = q.is('deleted_at', null);
 
   if (search) {
-    // ILIKE search over name and phone â€” accelerated by gin_trgm_ops indexes
+    // ILIKE search over name and phone  accelerated by gin_trgm_ops indexes
     q = q.or(`name.ilike.%${search}%,phone.ilike.%${search}%`);
   }
 
@@ -3361,7 +3361,7 @@ app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
   const normaliseEmbed = v => {
     if (!v) return [];
     if (Array.isArray(v)) return v;
-    return [v];  // PostgREST returned a plain object â€” wrap it
+    return [v];  // PostgREST returned a plain object  wrap it
   };
 
   const users = data?.map(u => ({
@@ -3374,7 +3374,7 @@ app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
 });
 
 // Admin: generate a short-lived signed URL for a private storage document
-// The URL expires in 60 seconds â€” admin must view it immediately
+// The URL expires in 60 seconds  admin must view it immediately
 app.get('/api/admin/signed-url', auth, adminOnly, async (req, res) => {
   const { path: rawPath } = req.query;
   if (!rawPath || typeof rawPath !== 'string')
@@ -3421,8 +3421,8 @@ app.put('/api/admin/verify/:id', auth, adminOnly, async (req, res) => {
   await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: `${action}_professional`, target_id: req.params.id, target_type: 'professional', notes: reason });
   if (prof?.users?.phone) {
     const sms = action === 'approve'
-      ? `âœ… Congrats! Your PETclub profile is verified. Open the app to go live and start earning! ðŸ¾`
-      : `âŒ PETclub verification not approved. Reason: ${reason||'Documents incomplete'}. Resubmit via the app.`;
+      ? ` Congrats! Your PETclub profile is verified. Open the app to go live and start earning! `
+      : ` PETclub verification not approved. Reason: ${reason||'Documents incomplete'}. Resubmit via the app.`;
     // SMS notification (existing)
     sendSMS(prof.users.phone, sms).catch(e => logger.error(e));
     // Branded verification email (new)
@@ -3475,7 +3475,7 @@ app.put('/api/admin/users/:id/set-role', auth, adminOnly, async (req, res) => {
   res.json({ success: true, subRole });
 });
 
-// â”€â”€ Admin: fix / update user profile data (email, name, address) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Admin: fix / update user profile data (email, name, address) 
 const adminEditUser = async (req, res) => {
   try {
     const { data: u } = await supabase.from('users').select('id, name, phone, email, role').eq('id', req.params.id).single();
@@ -3531,7 +3531,7 @@ app.put('/api/admin/users/:id/suspend', auth, adminOnly, async (req, res) => {
   const { data: u } = await supabase.from('users').select('id, name, phone, email, role, is_active').eq('id', req.params.id).single();
   if (!u) return res.status(404).json({ error: 'User not found' });
 
-  const nowSuspending = u.is_active; // true â†’ we're suspending; false â†’ we're restoring
+  const nowSuspending = u.is_active; // true ' we're suspending; false ' we're restoring
   await supabase.from('users').update({ is_active: !u.is_active }).eq('id', req.params.id);
   await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: nowSuspending ? 'suspend_user' : 'restore_user', target_id: req.params.id, target_type: 'user' });
 
@@ -3553,46 +3553,46 @@ app.put('/api/admin/users/:id/suspend', auth, adminOnly, async (req, res) => {
     if (adminEmail) {
       sendEmail(
         adminEmail,
-        `âš ï¸ PETclub â€” User Suspended: ${u.name || u.phone}`,
+        ` PETclub  User Suspended: ${u.name || u.phone}`,
         `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:520px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
-          <div style="font-size:40px;text-align:center;margin-bottom:12px">âš ï¸</div>
+          <div style="font-size:40px;text-align:center;margin-bottom:12px"></div>
           <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">User Suspended</h2>
           <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 24px">This user's account has been suspended by admin and will be <strong style="color:#dc2626">permanently deleted in 24 hours</strong>.</p>
           <div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:14px;padding:20px;margin-bottom:20px">
             <table style="width:100%">
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u.name || 'â€”'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u.name || ''}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Phone</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.phone}</td></tr>
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Email</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.email || 'â€”'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Email</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.email || ''}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Role</td><td style="color:#1e293b;font-size:13px;text-align:right;text-transform:capitalize">${u.role}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Deletes at</td><td style="color:#dc2626;font-size:13px;font-weight:700;text-align:right">${deleteStr} IST</td></tr>
             </table>
           </div>
           <div style="background:#fff7ed;border:1.5px solid #fed7aa;border-radius:14px;padding:16px;font-size:13px;color:#92400e">
-            <strong>To prevent deletion:</strong> Go to the Admin Dashboard â†’ Users tab â†’ find this user â†’ click <em>Restore</em> before ${deleteStr} IST.
+            <strong>To prevent deletion:</strong> Go to the Admin Dashboard ' Users tab ' find this user ' click <em>Restore</em> before ${deleteStr} IST.
           </div>
           <hr style="border:none;border-top:1px solid #f1f5f9;margin:24px 0"/>
-          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin System Â· ${new Date().toLocaleString('en-IN')}</p>
+          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin System  ${new Date().toLocaleString('en-IN')}</p>
         </div>`
       ).catch(e => logger.error('[Suspend] Email failed:', e.message));
     }
   } else {
-    // User restored â€” notify admin
+    // User restored  notify admin
     if (adminEmail) {
       sendEmail(
         adminEmail,
-        `âœ… PETclub â€” User Restored: ${u.name || u.phone}`,
+        ` PETclub  User Restored: ${u.name || u.phone}`,
         `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
-          <div style="font-size:40px;text-align:center;margin-bottom:12px">âœ…</div>
+          <div style="font-size:40px;text-align:center;margin-bottom:12px"></div>
           <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">User Restored</h2>
           <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">The following account has been reactivated and the 24-hr deletion timer has been cancelled.</p>
           <div style="background:#f0fdf4;border:1.5px solid #bbf7d0;border-radius:14px;padding:20px">
             <table style="width:100%">
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u.name || 'â€”'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u.name || ''}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Phone</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.phone}</td></tr>
             </table>
           </div>
           <hr style="border:none;border-top:1px solid #f1f5f9;margin:24px 0"/>
-          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin System Â· ${new Date().toLocaleString('en-IN')}</p>
+          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin System  ${new Date().toLocaleString('en-IN')}</p>
         </div>`
       ).catch(e => logger.error('[Restore] Email failed:', e.message));
     }
@@ -3602,10 +3602,10 @@ app.put('/api/admin/users/:id/suspend', auth, adminOnly, async (req, res) => {
   res.json({ success: true, is_active: !u.is_active, suspended_at: suspendedAt });
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  ADMIN: Purge ALL suspended users in one shot
 //  Deletes every non-admin user where is_active = false.
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, res) => {
   try {
     const { data: suspended } = await supabase
@@ -3618,36 +3618,36 @@ app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, 
 
     const ids = suspended.map(u => u.id);
 
-    // â”€â”€ Step 1: get professional_profile IDs so we can cascade their children â”€â”€
+    //  Step 1: get professional_profile IDs so we can cascade their children 
     const { data: profProfiles } = await supabase
       .from('professional_profiles')
       .select('id')
       .in('user_id', ids);
     const profIds = (profProfiles || []).map(p => p.id);
 
-    // â”€â”€ Step 2: delete every table that has a FK â†’ professional_profiles.id â”€â”€
-    // Supabase v2 returns { data, error } â€” never throws, so no .catch() needed
+    //  Step 2: delete every table that has a FK ' professional_profiles.id 
+    // Supabase v2 returns { data, error }  never throws, so no .catch() needed
     if (profIds.length) {
       await supabase.from('booking_assignments').delete().in('professional_id', profIds);
-      await supabase.from(‘bookings’).update({ deleted_at: new Date().toISOString() }).in(‘professional_id’, profIds);
-      await supabase.from(‘id_documents’).delete().in(‘prof_id’, profIds);
-      await supabase.from(‘payout_details’).delete().in(‘prof_id’, profIds);
+      await supabase.from('bookings').update({ deleted_at: new Date().toISOString() }).in('professional_id', profIds);
+      await supabase.from('id_documents').delete().in('prof_id', profIds);
+      await supabase.from('payout_details').delete().in('prof_id', profIds);
     }
 
-    // â”€â”€ Step 3: soft-delete tables that support it; hard-delete the rest â”€â”€
+    //  Step 3: soft-delete tables that support it; hard-delete the rest 
     const _now = new Date().toISOString();
-    await supabase.from(‘bookings’).update({ deleted_at: _now }).in(‘customer_id’, ids);
-    await supabase.from(‘reviews’).delete().in(‘reviewer_id’, ids);
-    await supabase.from(‘reviews’).delete().in(‘reviewee_id’, ids);
-    await supabase.from(‘payment_logs’).delete().in(‘user_id’, ids);
-    await supabase.from(‘professional_profiles’).delete().in(‘user_id’, ids);
-    await supabase.from(‘customer_profiles’).delete().in(‘user_id’, ids);
-    await supabase.from(‘pets’).update({ deleted_at: _now }).in(‘owner_id’, ids);
-    await supabase.from(‘otp_tokens’).delete().in(‘phone’, suspended.map(u => u.phone));
-    await supabase.from(‘admin_logs’).delete().in(‘target_id’, ids);
+    await supabase.from('bookings').update({ deleted_at: _now }).in('customer_id', ids);
+    await supabase.from('reviews').delete().in('reviewer_id', ids);
+    await supabase.from('reviews').delete().in('reviewee_id', ids);
+    await supabase.from('payment_logs').delete().in('user_id', ids);
+    await supabase.from('professional_profiles').delete().in('user_id', ids);
+    await supabase.from('customer_profiles').delete().in('user_id', ids);
+    await supabase.from('pets').update({ deleted_at: _now }).in('owner_id', ids);
+    await supabase.from('otp_tokens').delete().in('phone', suspended.map(u => u.phone));
+    await supabase.from('admin_logs').delete().in('target_id', ids);
 
-    // â”€â”€ Step 4: soft-delete the users themselves â”€â”€
-    const { error: delErr } = await supabase.from(‘users’).update({ deleted_at: _now }).in(‘id’, ids);
+    //  Step 4: soft-delete the users themselves 
+    const { error: delErr } = await supabase.from('users').update({ deleted_at: _now }).in('id', ids);
     if (delErr) throw new Error(delErr.message);
 
     await supabase.from('admin_logs').insert({
@@ -3665,9 +3665,9 @@ app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, 
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  ADMIN: Hard-delete a user immediately
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
   try {
     const { data: u } = await supabase.from('users').select('id, name, phone, email, role').eq('id', req.params.id).single();
@@ -3694,9 +3694,9 @@ app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
     await supabase.from('customer_profiles').delete().eq('user_id', u.id);
     await supabase.from('pets').update({ deleted_at: _delAt }).eq('owner_id', u.id);
     await supabase.from('otp_tokens').delete().eq('phone', u.phone);
-    // C-5 fix: DO NOT delete admin_logs â€” they are the compliance audit trail.
+    // C-5 fix: DO NOT delete admin_logs  they are the compliance audit trail.
     // Prior suspension, verification, and warning events must be retained for
-    // GDPR “why was this account actioned” inquiries and internal investigations.
+    // GDPR why was this account actioned inquiries and internal investigations.
     // The deletion event inserted below will sit alongside prior logs.
     await supabase.from('users').update({ deleted_at: _delAt }).eq('id', u.id);
 
@@ -3706,21 +3706,21 @@ app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
     // Notify admin email about manual deletion
     const adminEmail = process.env.ADMIN_EMAIL;
     if (adminEmail) {
-      sendEmail(adminEmail, `ðŸ—‘ï¸ PETclub â€” User Manually Deleted: ${u.name || u.phone}`,
+      sendEmail(adminEmail, `--' PETclub  User Manually Deleted: ${u.name || u.phone}`,
         `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
-          <div style="font-size:40px;text-align:center;margin-bottom:12px">ðŸ—‘ï¸</div>
+          <div style="font-size:40px;text-align:center;margin-bottom:12px">--'</div>
           <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">User Permanently Deleted</h2>
           <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">This account was manually deleted from the Admin Dashboard.</p>
           <div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:14px;padding:20px">
             <table style="width:100%">
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u.name || 'â€”'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Name</td><td style="color:#1e293b;font-size:13px;font-weight:600;text-align:right">${u.name || ''}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Phone</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.phone}</td></tr>
-              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Email</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.email || 'â€”'}</td></tr>
+              <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Email</td><td style="color:#1e293b;font-size:13px;text-align:right">${u.email || ''}</td></tr>
               <tr><td style="color:#6b7280;font-size:12px;padding:4px 0">Role</td><td style="color:#1e293b;font-size:13px;text-align:right;text-transform:capitalize">${u.role}</td></tr>
             </table>
           </div>
           <hr style="border:none;border-top:1px solid #f1f5f9;margin:20px 0"/>
-          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin Â· ${new Date().toLocaleString('en-IN')}</p>
+          <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub Admin  ${new Date().toLocaleString('en-IN')}</p>
         </div>`
       ).catch(() => {});
     }
@@ -3732,18 +3732,18 @@ app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  FCM: Save push notification token
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.post('/api/users/fcm-token', auth, async (req, res) => {
   try {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: 'FCM token required' });
-    // Store token â€” add fcm_token column via migration if not present
+    // Store token  add fcm_token column via migration if not present
     const { error } = await supabase.from('users').update({ fcm_token: token }).eq('id', req.user.id);
     if (error) {
-      logger.warn('[FCM Token] Column may not exist yet â€” run migration:', error.message);
-      return res.json({ success: false, message: 'FCM token not saved â€” run DB migration first' });
+      logger.warn('[FCM Token] Column may not exist yet  run migration:', error.message);
+      return res.json({ success: false, message: 'FCM token not saved  run DB migration first' });
     }
     res.json({ success: true, message: 'Push notifications enabled' });
   } catch (err) {
@@ -3751,10 +3751,10 @@ app.post('/api/users/fcm-token', auth, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  PAYMENTS: Razorpay (India) â€” active after LLC registration
+// 
+//  PAYMENTS: Razorpay (India)  active after LLC registration
 //  Set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET in Cloud Run env vars
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 
 // Create a Razorpay order (called before payment screen opens)
 app.post('/api/payments/create-order', auth, async (req, res) => {
@@ -3762,13 +3762,13 @@ app.post('/api/payments/create-order', auth, async (req, res) => {
     if (!razorpay) {
       return res.status(503).json({
         error: 'Payments not yet active',
-        message: 'Razorpay integration is ready â€” set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Cloud Run env vars to activate.',
+        message: 'Razorpay integration is ready  set RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET in Cloud Run env vars to activate.',
         coming_soon: true,
       });
     }
     const { amount, bookingId, currency = 'INR', notes = {} } = req.body;
     if (!amount || !bookingId) return res.status(400).json({ error: 'amount and bookingId required' });
-    if (amount < 100) return res.status(400).json({ error: 'Amount must be at least â‚¹1 (100 paise)' });
+    if (amount < 100) return res.status(400).json({ error: 'Amount must be at least 1 (100 paise)' });
 
     // Verify booking belongs to this customer
     const { data: booking } = await supabase.from('bookings').select('id, status, assignment_status').eq('id', bookingId).eq('customer_id', req.user.id).single();
@@ -3790,17 +3790,17 @@ app.post('/api/payments/create-order', auth, async (req, res) => {
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// 
 //  Shared payment finalisation helper
 //  Called by BOTH the client-facing verify endpoint AND the server-side webhook.
 //
 //  Atomically marks a booking as paid using:
-//    UPDATE bookings SET payment_status='paid' â€¦ WHERE payment_status != 'paid'
-//  If the UPDATE touches 0 rows the booking was already processed â€” idempotent.
+//    UPDATE bookings SET payment_status='paid'  WHERE payment_status != 'paid'
+//  If the UPDATE touches 0 rows the booking was already processed  idempotent.
 //  Awards booking_spend + payment_bonus loyalty credits only on first call.
 //
 //  Returns: { alreadyProcessed: boolean, split: object|null }
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// 
 async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_payment_id, amountPaise, currency = 'INR' }) {
   // Fetch current booking state (amount, currency, payment_status, customer_id)
   const { data: bk } = await supabase
@@ -3811,9 +3811,9 @@ async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_
 
   if (!bk) throw new Error(`Booking ${bookingId} not found`);
 
-  // Idempotency guard â€” already paid, nothing to do
+  // Idempotency guard  already paid, nothing to do
   if (bk.payment_status === 'paid') {
-    logger.info(`[Payment] finalisePayment: booking ${bookingId} already paid â€” skipping`);
+    logger.info(`[Payment] finalisePayment: booking ${bookingId} already paid  skipping`);
     return { alreadyProcessed: true, split: null };
   }
 
@@ -3826,7 +3826,7 @@ async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_
     ? computeSplit(confirmedAmount, storedOffer, bk.service_type || '', currency || bk.currency || 'INR')
     : null;
 
-  // Atomic update â€” only touches rows where payment_status != 'paid'
+  // Atomic update  only touches rows where payment_status != 'paid'
   // so concurrent calls (verify + webhook) can never double-process.
   const { data: updated } = await supabase
     .from('bookings')
@@ -3843,16 +3843,16 @@ async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_
       } : {}),
     })
     .eq('id', bookingId)
-    .neq('payment_status', 'paid')   // atomic guard â€” skip if already paid
+    .neq('payment_status', 'paid')   // atomic guard  skip if already paid
     .select('id');
 
-  // 0 rows updated means another concurrent call beat us here â€” idempotent exit
+  // 0 rows updated means another concurrent call beat us here  idempotent exit
   if (!updated || updated.length === 0) {
-    logger.info(`[Payment] finalisePayment: concurrent update detected for ${bookingId} â€” skipping loyalty`);
+    logger.info(`[Payment] finalisePayment: concurrent update detected for ${bookingId}  skipping loyalty`);
     return { alreadyProcessed: true, split: null };
   }
 
-  // â”€â”€ Log payment â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  //  Log payment 
   supabase.from('payment_logs').insert({
     booking_id:         bookingId,
     user_id:            userId || bk.customer_id,
@@ -3861,19 +3861,19 @@ async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_
     status:             'success',
     amount:             confirmedAmount,
     currency:           currency || bk.currency || 'INR',
-  }).catch(() => {}); // table may not exist yet â€” non-fatal
+  }).catch(() => {}); // table may not exist yet  non-fatal
 
-  // â”€â”€ Award loyalty credits (non-blocking â€” never delay the payment response) â”€
+  //  Award loyalty credits (non-blocking  never delay the payment response) 
   const loyaltyUserId = userId || bk.customer_id;
   if (loyaltyUserId && confirmedAmount > 0) {
     const spendCredits = loyalty.creditsFromAmount(confirmedAmount);
 
-    // booking_spend: 1 credit per â‚¹10 paid
+    // booking_spend: 1 credit per 10 paid
     if (spendCredits > 0) {
       loyalty.awardPoints(
         supabase, loyaltyUserId,
         spendCredits, 'booking_spend',
-        `${spendCredits} credits for â‚¹${confirmedAmount} payment on booking ${bookingId}`,
+        `${spendCredits} credits for ${confirmedAmount} payment on booking ${bookingId}`,
         bookingId,
       ).catch(e => logger.error('[Loyalty] booking_spend award failed:', e.message));
     }
@@ -3886,20 +3886,20 @@ async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_
       bookingId,
     ).catch(e => logger.error('[Loyalty] payment_bonus award failed:', e.message));
 
-    logger.info(`[Payment] Loyalty queued: ${spendCredits} booking_spend + ${loyalty.PAYMENT_BONUS} payment_bonus â†’ user ${loyaltyUserId}`);
+    logger.info(`[Payment] Loyalty queued: ${spendCredits} booking_spend + ${loyalty.PAYMENT_BONUS} payment_bonus ' user ${loyaltyUserId}`);
   }
 
   return { alreadyProcessed: false, split };
 }
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-//  POST /api/payments/verify  â€” client-facing, called right after checkout
+// 
+//  POST /api/payments/verify   client-facing, called right after checkout
 //
 //  Fast feedback path: the frontend calls this immediately after Razorpay
 //  confirms the payment so the UI can show a success screen without waiting
 //  for the webhook. We verify the HMAC signature (proves the response came
 //  from Razorpay, not a tampered client payload) then delegate to finalisePayment.
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// 
 app.post('/api/payments/verify', auth, async (req, res) => {
   try {
     if (!razorpay) {
@@ -3909,7 +3909,7 @@ app.post('/api/payments/verify', auth, async (req, res) => {
     if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !bookingId)
       return res.status(400).json({ error: 'Missing payment verification fields' });
 
-    // Verify HMAC â€” proves this payload was constructed by Razorpay
+    // Verify HMAC  proves this payload was constructed by Razorpay
     const crypto = require('crypto');
     const expected = crypto
       .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET)
@@ -3917,29 +3917,29 @@ app.post('/api/payments/verify', auth, async (req, res) => {
       .digest('hex');
 
     if (expected !== razorpay_signature)
-      return res.status(400).json({ error: 'Payment signature mismatch â€” possible tamper attempt' });
+      return res.status(400).json({ error: 'Payment signature mismatch  possible tamper attempt' });
 
     await finalisePayment({
       bookingId,
       userId:              req.user.id,
       razorpay_order_id,
       razorpay_payment_id,
-      // amount from Razorpay is in paise â€” not available here so we use booking amount
+      // amount from Razorpay is in paise  not available here so we use booking amount
       amountPaise: null,
       currency:    'INR',
     });
 
-    res.json({ success: true, message: 'âœ… Payment verified and booking confirmed!' });
+    res.json({ success: true, message: ' Payment verified and booking confirmed!' });
   } catch (err) {
     logger.error('[Razorpay] Verify error:', err.message);
     res.status(500).json({ error: 'Payment verification failed' });
   }
 });
 
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-//  POST /api/payments/webhook  â€” server-to-server from Razorpay
+// 
+//  POST /api/payments/webhook   server-to-server from Razorpay
 //
-//  Razorpay posts payment.captured events here directly â€” bypasses the client
+//  Razorpay posts payment.captured events here directly  bypasses the client
 //  entirely. This is the safety net: if the app crashes after charging the
 //  customer but before /verify is called, this webhook still fires and
 //  finalises the booking.
@@ -3948,18 +3948,18 @@ app.post('/api/payments/verify', auth, async (req, res) => {
 //  needed for HMAC verification. It is registered before express.json() runs.
 //
 //  Setup in Razorpay Dashboard:
-//    Webhooks â†’ Add Webhook URL â†’ https://petclub-backend-xxx.run.app/api/payments/webhook
+//    Webhooks ' Add Webhook URL ' https://petclub-backend-xxx.run.app/api/payments/webhook
 //    Events: payment.captured, payment.failed
 //    Secret: set RAZORPAY_WEBHOOK_SECRET in Cloud Run env vars (different from key_secret)
-// â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+// 
 app.post('/api/payments/webhook',
   express.raw({ type: 'application/json' }),   // raw body required for HMAC
   async (req, res) => {
-    // â”€â”€ 1. Verify webhook signature â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  1. Verify webhook signature 
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
     if (!webhookSecret) {
-      // Webhook secret not configured â€” log and return 200 so Razorpay doesn't retry forever
-      logger.warn('[Webhook] RAZORPAY_WEBHOOK_SECRET not set â€” skipping signature check. Set it in Cloud Run env vars.');
+      // Webhook secret not configured  log and return 200 so Razorpay doesn't retry forever
+      logger.warn('[Webhook] RAZORPAY_WEBHOOK_SECRET not set  skipping signature check. Set it in Cloud Run env vars.');
     } else {
       const crypto   = require('crypto');
       const received = req.headers['x-razorpay-signature'];
@@ -3969,12 +3969,12 @@ app.post('/api/payments/webhook',
         .digest('hex');
 
       if (received !== expected) {
-        logger.warn('[Webhook] Invalid signature â€” rejected');
+        logger.warn('[Webhook] Invalid signature  rejected');
         return res.status(400).json({ error: 'Invalid webhook signature' });
       }
     }
 
-    // â”€â”€ 2. Parse event â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  2. Parse event 
     let event;
     try {
       event = JSON.parse(req.body.toString());
@@ -3985,7 +3985,7 @@ app.post('/api/payments/webhook',
     const eventType = event.event;
     logger.info(`[Webhook] Received event: ${eventType}`);
 
-    // â”€â”€ 3. Handle payment.captured â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  3. Handle payment.captured 
     if (eventType === 'payment.captured') {
       const payment = event.payload?.payment?.entity;
       if (!payment) {
@@ -4016,7 +4016,7 @@ app.post('/api/payments/webhook',
           amountPaise,
           currency,
         });
-        logger.info(`[Webhook] payment.captured processed for booking ${bookingId} â€” alreadyProcessed: ${result.alreadyProcessed}`);
+        logger.info(`[Webhook] payment.captured processed for booking ${bookingId}  alreadyProcessed: ${result.alreadyProcessed}`);
       } catch (err) {
         logger.error('[Webhook] finalisePayment error:', err.message);
         // Return 500 so Razorpay retries (it retries for up to 24 hours)
@@ -4024,7 +4024,7 @@ app.post('/api/payments/webhook',
       }
     }
 
-    // â”€â”€ 4. Handle payment.failed â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    //  4. Handle payment.failed 
     if (eventType === 'payment.failed') {
       const payment   = event.payload?.payment?.entity;
       const orderId   = payment?.order_id;
@@ -4044,7 +4044,7 @@ app.post('/api/payments/webhook',
       }).catch(() => {});
     }
 
-    // Always return 200 to acknowledge receipt â€” Razorpay will retry on non-200
+    // Always return 200 to acknowledge receipt  Razorpay will retry on non-200
     res.status(200).json({ received: true });
   }
 );
@@ -4055,30 +4055,30 @@ app.get('/api/payments/config', auth, (req, res) => {
     enabled: !!razorpay,
     key: razorpay ? process.env.RAZORPAY_KEY_ID : null,
     coming_soon: !razorpay,
-    message: razorpay ? 'Payments active' : 'Payments coming soon â€” LLC registration in progress',
+    message: razorpay ? 'Payments active' : 'Payments coming soon  LLC registration in progress',
   });
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  LOCATION GATEWAY â€” routes geocoding by country
-//  +91 â†’ Mappls (MapmyIndia)  best India coverage
-//  +1  â†’ (Phase 2) Google     US / Canada
-//  *   â†’ Nominatim             free OSM fallback
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
+//  LOCATION GATEWAY  routes geocoding by country
+//  +91 ' Mappls (MapmyIndia)  best India coverage
+//  +1  ' (Phase 2) Google     US / Canada
+//  *   ' Nominatim             free OSM fallback
+// 
 
-/* â”€â”€ Mappls static key helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/*  Mappls static key helper  */
 // Mappls Cloud App issues a Static Key used directly as access_token.
-// No OAuth2 / token exchange needed â€” simpler and zero latency overhead.
+// No OAuth2 / token exchange needed  simpler and zero latency overhead.
 const getMapplsToken = async () => process.env.MAPPLS_STATIC_KEY || null;
 
-/* â”€â”€ Provider router â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/*  Provider router  */
 const getGeoProvider = (phone = '') => {
   if (phone.startsWith('+91')) return 'mappls';
   // Phase 2: if (phone.startsWith('+1')) return 'google';
   return 'nominatim';
 };
 
-/* â”€â”€ Mappls forward search â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/*  Mappls forward search  */
 const searchMappls = async (q, token) => {
   const url = `https://atlas.mappls.com/api/places/search/json`
     + `?query=${encodeURIComponent(q)}&region=IND&access_token=${token}`;
@@ -4095,7 +4095,7 @@ const searchMappls = async (q, token) => {
   }));
 };
 
-/* â”€â”€ Mappls reverse geocode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/*  Mappls reverse geocode  */
 const reverseMappls = async (lat, lng, token) => {
   const url = `https://atlas.mappls.com/api/places/geo_code`
     + `?lat=${lat}&lng=${lng}&access_token=${token}`;
@@ -4108,7 +4108,7 @@ const reverseMappls = async (lat, lng, token) => {
   return { full, postalCode: r.pincode || '', city: r.city || r.district || '', state: r.state || '' };
 };
 
-/* â”€â”€ Nominatim forward search (OSM fallback) â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/*  Nominatim forward search (OSM fallback)  */
 const searchNominatim = async (q) => {
   const url = `https://nominatim.openstreetmap.org/search`
     + `?q=${encodeURIComponent(q)}&format=jsonv2&addressdetails=1&limit=6&accept-language=en`;
@@ -4130,7 +4130,7 @@ const searchNominatim = async (q) => {
   });
 };
 
-/* â”€â”€ Nominatim reverse geocode â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/*  Nominatim reverse geocode  */
 const reverseNominatim = async (lat, lng) => {
   const url = `https://nominatim.openstreetmap.org/reverse`
     + `?lat=${lat}&lon=${lng}&format=jsonv2&addressdetails=1&accept-language=en`;
@@ -4146,7 +4146,7 @@ const reverseNominatim = async (lat, lng) => {
   };
 };
 
-/* â”€â”€ GET /api/geocode?q=... â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/*  GET /api/geocode?q=...  */
 app.get('/api/geocode', auth, async (req, res) => {
   const q = (req.query.q || '').trim();
   if (!q || q.length < 3) return res.json([]);
@@ -4173,7 +4173,7 @@ app.get('/api/geocode', auth, async (req, res) => {
   }
 });
 
-/* â”€â”€ GET /api/reverse-geocode?lat=...&lng=... â”€â”€â”€â”€â”€â”€â”€â”€ */
+/*  GET /api/reverse-geocode?lat=...&lng=...  */
 app.get('/api/reverse-geocode', auth, async (req, res) => {
   const lat = parseFloat(req.query.lat);
   const lng = parseFloat(req.query.lng);
@@ -4201,17 +4201,17 @@ app.get('/api/reverse-geocode', auth, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 //  HEALTH CHECK
 //  Public: status + version only (no internal config)
 //  Authenticated (X-Health-Secret header): full service map
 //  CI/CD: curl -H "X-Health-Secret: $HEALTH_SECRET" $URL/api/health
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.get('/api/health', async (req, res) => {
   const authenticated = process.env.HEALTH_SECRET
     && req.headers['x-health-secret'] === process.env.HEALTH_SECRET;
 
-  // Always ping Supabase with a lightweight query â€” keeps the free-tier project
+  // Always ping Supabase with a lightweight query  keeps the free-tier project
   // from auto-pausing (Supabase pauses after 7 days of no DB activity).
   // This runs on every health check so the 2-hour health monitor keeps us alive.
   let dbOk = false;
@@ -4224,10 +4224,10 @@ app.get('/api/health', async (req, res) => {
   } catch { dbOk = false; }
 
   const base = {
-    status:  'ðŸ¾ PETclub API running',
+    status:  ' PETclub API running',
     version: API_VERSION,
     time:    new Date(),
-    db:      dbOk ? 'âœ…' : 'âš ï¸ unreachable',
+    db:      dbOk ? '' : ' unreachable',
   };
   if (!authenticated) return res.json(base);
   // Full response for CI/CD and ops tooling only
@@ -4240,21 +4240,21 @@ app.get('/api/health', async (req, res) => {
       website_url: WEBSITE_URL,
     },
     services: {
-      supabase:      dbOk ? 'âœ…' : 'âŒ unreachable',
-      zoho_smtp:     process.env.ZOHO_SMTP_USER ? 'âœ…' : 'âš ï¸ not configured',
-      firebase_auth: firebaseAdmin ? 'âœ… live' : 'â³ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
-      razorpay:      razorpay ? 'âœ… live' : 'â³ pending (set env vars)',
-      fcm:           firebaseAdmin ? 'âœ… live' : 'â³ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
-      mappls_geo:    process.env.MAPPLS_STATIC_KEY ? 'âœ… configured' : 'âš ï¸ not set â€” using Nominatim fallback',
+      supabase:      dbOk ? '' : ' unreachable',
+      zoho_smtp:     process.env.ZOHO_SMTP_USER ? '' : ' not configured',
+      firebase_auth: firebaseAdmin ? ' live' : ' pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
+      razorpay:      razorpay ? ' live' : ' pending (set env vars)',
+      fcm:           firebaseAdmin ? ' live' : ' pending (set FIREBASE_SERVICE_ACCOUNT_JSON)',
+      mappls_geo:    process.env.MAPPLS_STATIC_KEY ? ' configured' : ' not set  using Nominatim fallback',
     },
   });
 });
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  ADMIN: Full platform health â€” powers the Platform Status widget
+// 
+//  ADMIN: Full platform health  powers the Platform Status widget
 //  Uses JWT admin auth so no secret header is needed in the browser.
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.get('/api/admin/health', auth, adminOnly, async (req, res) => {
-  // Run all service pings in parallel â€” 5 s timeout each so the endpoint
+  // Run all service pings in parallel  5 s timeout each so the endpoint
   // never hangs longer than ~5 s even if one provider is completely down.
   const ping = (promise, timeoutMs = 5000) =>
     Promise.race([
@@ -4263,37 +4263,37 @@ app.get('/api/admin/health', auth, adminOnly, async (req, res) => {
     ]);
 
   const [supOk, fbOk, smtpOk, twilioOk, razOk] = await Promise.all([
-    // Supabase â€” lightweight SELECT 1
+    // Supabase  lightweight SELECT 1
     ping(supabase.from('users').select('id', { count: 'exact', head: true }))
       .then(({ error }) => !error)
       .catch(() => false),
 
-    // Firebase Admin SDK â€” list 1 user (minimal scoped call)
+    // Firebase Admin SDK  list 1 user (minimal scoped call)
     firebaseAdmin
       ? ping(firebaseAdmin.auth().listUsers(1)).then(() => true).catch(() => false)
       : Promise.resolve(null), // null = not configured
 
-    // Zoho SMTP â€” nodemailer verify (tests TCP + auth handshake)
+    // Zoho SMTP  nodemailer verify (tests TCP + auth handshake)
     ping(emailService.pingSmtp()).catch(() => false),
 
-    // Twilio â€” fetch own account (1 API call)
+    // Twilio  fetch own account (1 API call)
     _twilioClient
       ? ping(_twilioClient.api.accounts(_twilioSid).fetch()).then(() => true).catch(() => false)
       : Promise.resolve(null), // null = not configured
 
-    // Razorpay â€” fetch order list with count:1
+    // Razorpay  fetch order list with count:1
     razorpay
       ? ping(razorpay.orders.all({ count: 1 })).then(() => true).catch(() => false)
       : Promise.resolve(null), // null = not configured (awaiting LLC)
   ]);
 
   const svc = (ok, label, pendingMsg) => {
-    if (ok === null) return pendingMsg || 'â³ pending';
-    return ok ? `âœ…` : `âš ï¸ ${label} unreachable`;
+    if (ok === null) return pendingMsg || ' pending';
+    return ok ? `` : ` ${label} unreachable`;
   };
 
   res.json({
-    status:  'ðŸ¾ PETclub API running',
+    status:  ' PETclub API running',
     version: API_VERSION,
     time:    new Date(),
     config: {
@@ -4303,19 +4303,19 @@ app.get('/api/admin/health', auth, adminOnly, async (req, res) => {
     },
     services: {
       supabase:      svc(supOk,    'Supabase'),
-      twilio_sms:    svc(twilioOk, 'Twilio',   'âš ï¸ not configured (email fallback active)'),
-      zoho_smtp:     svc(smtpOk,   'Zoho SMTP','âš ï¸ not configured'),
-      firebase_auth: svc(fbOk,     'Firebase', 'â³ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)'),
-      razorpay:      svc(razOk,    'Razorpay', 'â³ pending (set RAZORPAY env vars)'),
-      fcm:           svc(fbOk,     'Firebase', 'â³ pending (set FIREBASE_SERVICE_ACCOUNT_JSON)'),
-      mappls_geo:    process.env.MAPPLS_STATIC_KEY ? 'âœ… configured' : 'âš ï¸ not set â€” using Nominatim fallback',
+      twilio_sms:    svc(twilioOk, 'Twilio',   ' not configured (email fallback active)'),
+      zoho_smtp:     svc(smtpOk,   'Zoho SMTP',' not configured'),
+      firebase_auth: svc(fbOk,     'Firebase', ' pending (set FIREBASE_SERVICE_ACCOUNT_JSON)'),
+      razorpay:      svc(razOk,    'Razorpay', ' pending (set RAZORPAY env vars)'),
+      fcm:           svc(fbOk,     'Firebase', ' pending (set FIREBASE_SERVICE_ACCOUNT_JSON)'),
+      mappls_geo:    process.env.MAPPLS_STATIC_KEY ? ' configured' : ' not set  using Nominatim fallback',
     },
   });
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  ADMIN: DB Audit â€” scan every table for stale/orphan rows
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
+//  ADMIN: DB Audit  scan every table for stale/orphan rows
+// 
 app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
   try {
     const now = new Date();
@@ -4405,12 +4405,12 @@ app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
   }
 });
 
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-//  ADMIN: DB Cleanup â€” remove confirmed stale/orphan rows
-//  Accepts { targets: [...] } â€” array of what to clean:
+// 
+//  ADMIN: DB Cleanup  remove confirmed stale/orphan rows
+//  Accepts { targets: [...] }  array of what to clean:
 //  "expired_otps", "orphan_profiles", "stale_pending_users",
 //  "cancelled_bookings", "stale_leads"
-// â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
+// 
 app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
   const { targets = [] } = req.body;
   const report = {};
@@ -4472,7 +4472,7 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
       report.cancelled_bookings = error ? `error: ${error.message}` : 'soft-deleted';
     }
 
-    // Stale no_pros_available bookings (status=upcoming but no pro found — older than 7 days)
+    // Stale no_pros_available bookings (status=upcoming but no pro found -- older than 7 days)
     if (targets.includes('no_pros_available')) {
       const _npNow = new Date().toISOString();
       const { error } = await supabase.from('bookings')
@@ -4496,7 +4496,7 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
         admin_id: req.user.id, action: 'db_cleanup', target_type: 'system',
         notes: `Cleaned: ${JSON.stringify(report)}`,
       });
-    } catch {} // non-critical audit log â€” cleanup already completed
+    } catch {} // non-critical audit log  cleanup already completed
 
     res.json({ success: true, cleaned: report });
   } catch (e) {
@@ -4510,7 +4510,7 @@ app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
 if (process.env.SENTRY_DSN) app.use(Sentry.expressErrorHandler());
 app.use((err, req, res, next) => { logger.error(err); res.status(500).json({ error: 'Server error' }); });
 
-// â”€â”€ Startup migration: add live-tracking columns to bookings (safe, IF NOT EXISTS) â”€â”€
+//  Startup migration: add live-tracking columns to bookings (safe, IF NOT EXISTS) 
 async function runStartupMigrations() {
   const migrations = [
     // Bookings: live tracking + GPS coords
@@ -4559,20 +4559,20 @@ async function runStartupMigrations() {
   ];
   for (const sql of migrations) {
     // PostgREST can't run DDL, but Supabase service-role key can call
-    // the pg_query RPC if it's enabled â€” fallback: log and continue
+    // the pg_query RPC if it's enabled  fallback: log and continue
     const { error } = await Promise.resolve(supabase.rpc('pg_query', { query: sql })).catch(() => ({ error: { message: 'rpc_not_available' } }));
     if (error && !error.message?.includes('already exists') && !error.message?.includes('rpc_not_available')) {
-      logger.warn('[migration] Could not run:', sql.slice(0, 60), 'â†’', error.message);
+      logger.warn('[migration] Could not run:', sql.slice(0, 60), error.message);
     }
   }
 }
 
-// â”€â”€ Startup: link ADMIN_EMAIL to the admin user record â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+//  Startup: link ADMIN_EMAIL to the admin user record 
 // Ensures the admin can log in via email OTP by making sure the admin user's
 // email field in Supabase matches the ADMIN_EMAIL env var.
 // Also cleans up any stale pending_role duplicate that may have been created
 // when someone tried to log in with the admin email before it was linked.
-// Runs once at startup; safe to repeat â€” idempotent.
+// Runs once at startup; safe to repeat  idempotent.
 async function seedAdminEmail() {
   const adminEmail = process.env.ADMIN_EMAIL;
   if (!adminEmail) return; // nothing to do without ADMIN_EMAIL env var
@@ -4587,7 +4587,7 @@ async function seedAdminEmail() {
     .limit(1);
 
   if (error || !admins?.length) {
-    logger.warn('[adminSeed] No admin user found in Supabase â€” skipping email link');
+    logger.warn('[adminSeed] No admin user found in Supabase  skipping email link');
     return;
   }
 
@@ -4607,13 +4607,13 @@ async function seedAdminEmail() {
     for (const dupe of dupes) {
       if (dupe.role === 'pending_role' || dupe.role === 'customer') {
         await supabase.from('users').update({ deleted_at: new Date().toISOString() }).eq('id', dupe.id);
-        logger.info(`[adminSeed] ðŸ—‘ï¸ Removed stale duplicate user (${dupe.role}) with email ${maskEmail(targetEmail)}`);
+        logger.info(`[adminSeed] --' Removed stale duplicate user (${dupe.role}) with email ${maskEmail(targetEmail)}`);
       }
     }
   }
 
   if (existingEmail === targetEmail) {
-    // Already linked â€” nothing to do
+    // Already linked  nothing to do
     logger.info(`[adminSeed] Admin email already linked: ${maskEmail(adminEmail)}`);
     return;
   }
@@ -4627,7 +4627,7 @@ async function seedAdminEmail() {
   if (updateErr) {
     logger.warn('[adminSeed] Could not link admin email:', updateErr.message);
   } else {
-    logger.info(`[adminSeed] âœ… Admin email linked â†’ ${maskEmail(adminEmail)}`);
+    logger.info(`[adminSeed]  Admin email linked ' ${maskEmail(adminEmail)}`);
   }
 }
 
@@ -4636,8 +4636,8 @@ if (require.main !== module) {
   module.exports = { app };
 } else {
   app.listen(PORT, async () => {
-    logger.info(`ðŸ¾ PETclub API â†’ http://localhost:${PORT}`);
-    // Run migrations in background â€” won't block startup
+    logger.info(` PETclub API ' http://localhost:${PORT}`);
+    // Run migrations in background  won't block startup
     runStartupMigrations().catch(e => logger.warn('[startup migration]', e.message));
     // Link admin email so email OTP login finds the right account
     seedAdminEmail().catch(e => logger.warn('[adminSeed]', e.message));
