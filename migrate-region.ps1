@@ -3,7 +3,7 @@
 #
 #  Why: Supabase project is in AWS us-west-2 (Oregon).
 #       GCP us-west1 is also Oregon — same physical region,
-#       cutting ~20ms cross-region latency on every DB call.
+#       eliminating cross-region DB latency on every call.
 #
 #  What this does:
 #    1. Deploys a new Cloud Run service in us-west1 (same source)
@@ -17,7 +17,7 @@ $PROJECT    = "petclub-438006"
 $SERVICE    = "petclub-backend"
 $OLD_REGION = "us-central1"
 $NEW_REGION = "us-west1"
-$SOURCE_DIR = "C:\dev\petclub-backend"   # adjust if your path differs
+$SOURCE_DIR = "C:\Users\14697\petclub-backend"
 
 Write-Host "`n==> Step 1: Deploy to $NEW_REGION..." -ForegroundColor Cyan
 
@@ -26,8 +26,13 @@ gcloud run deploy $SERVICE `
   --region=$NEW_REGION `
   --source=$SOURCE_DIR `
   --allow-unauthenticated `
-  --min-instances=0 `
-  --max-instances=10
+  --min-instances=1 `
+  --max-instances=10 `
+  --memory=1Gi `
+  --cpu=1 `
+  --concurrency=80 `
+  --timeout=3600 `
+  --port=8080
 
 Write-Host "`n==> Step 2: Map api.mypetclub.app → $NEW_REGION service..." -ForegroundColor Cyan
 

@@ -26,7 +26,7 @@ steps:
       - '--image'
       - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend:$COMMIT_SHA'
       - '--region'
-      - 'us-central1'
+      - 'us-west1'
       - '--platform'
       - 'managed'
       - '--port=8080'
