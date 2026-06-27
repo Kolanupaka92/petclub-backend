@@ -2894,9 +2894,7 @@ app.put('/api/bookings/:id/assign', auth, adminOnly, async (req, res) => {
 //    Keepalive comment every 25 s prevents proxy/Cloud Run idle timeout.
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 
-const TRACKING_POLL_INTERVAL_MS = 3000; // poll DB every 3 seconds
-
-// Customer subscribes â€” GET /api/bookings/:id/track
+// Customer subscribes -- GET /api/bookings/:id/track
 // Browser EventSource sends cookies automatically when withCredentials:true
 app.get('/api/bookings/:id/track', async (req, res) => {
   const token = req.cookies?.[AUTH_COOKIE] || req.query.token; // query fallback for native clients
@@ -2925,7 +2923,7 @@ app.get('/api/bookings/:id/track', async (req, res) => {
   res.setHeader('X-Accel-Buffering', 'no');   // disable Nginx / Cloud Run proxy buffering
   res.flushHeaders();
 
-  // Send last known position immediately so the map renders without waiting 3 s
+  // Send last known position immediately so the map renders without waiting for first change
   let lastLat = booking.pro_lat;
   let lastLng = booking.pro_lng;
   if (lastLat && lastLng) {
@@ -2935,48 +2933,54 @@ app.get('/api/bookings/:id/track', async (req, res) => {
     res.write(`data: ${JSON.stringify({ lat: lastLat, lng: lastLng, distKm })}\n\n`);
   }
 
-  // Keepalive comment every 25 s â€” prevents Cloud Run/Vercel from closing idle connections
+  // Keepalive comment every 25 s -- prevents Cloud Run/proxy from closing idle connections
   const keepAlive = setInterval(() => { try { res.write(': ka\n\n'); } catch {} }, 25000);
 
-  // DB-polling loop â€” queries the same DB that every Cloud Run instance writes to,
-  // so this works correctly regardless of which instance the professional's GPS
-  // POST is hitting. Only sends a new SSE message when coordinates actually change.
-  const poll = setInterval(async () => {
-    try {
-      const { data: latest } = await supabase
-        .from('bookings')
-        .select('pro_lat, pro_lng, address_lat, address_lng, assignment_status')
-        .eq('id', bookingId)
-        .single();
+  const cleanup = (channel) => {
+    clearInterval(keepAlive);
+    if (channel) supabase.removeChannel(channel);
+  };
 
-      if (!latest) return;
+  // Supabase Realtime -- pushed instantly when the professional GPS POST updates the row.
+  // Replaces 3 s DB-polling: latency drops from ~3000 ms to ~100 ms, zero DB reads per tick.
+  const channel = supabase
+    .channel(`track-${bookingId}`)
+    .on('postgres_changes', {
+      event:  'UPDATE',
+      schema: 'public',
+      table:  'bookings',
+      filter: `id=eq.${bookingId}`,
+    }, (payload) => {
+      const { pro_lat, pro_lng, address_lat, address_lng, assignment_status } = payload.new;
 
-      // Stop polling if the booking is no longer in an active tracking state
-      if (['completed', 'cancelled', 'no_show'].includes(latest.assignment_status)) {
-        res.write(`data: ${JSON.stringify({ status: latest.assignment_status })}\n\n`);
-        clearInterval(poll);
-        clearInterval(keepAlive);
+      // Booking ended -- notify client and close
+      if (['completed', 'cancelled', 'no_show'].includes(assignment_status)) {
+        try { res.write(`data: ${JSON.stringify({ status: assignment_status })}\n\n`); } catch {}
+        cleanup(channel);
         try { res.end(); } catch {}
         return;
       }
 
       // Only emit when coordinates have actually changed (saves bandwidth)
-      if (latest.pro_lat !== null && latest.pro_lng !== null &&
-          (latest.pro_lat !== lastLat || latest.pro_lng !== lastLng)) {
-        lastLat = latest.pro_lat;
-        lastLng = latest.pro_lng;
-        const distKm = (latest.address_lat && latest.address_lng)
-          ? +haversineKm(lastLat, lastLng, latest.address_lat, latest.address_lng).toFixed(2)
+      if (pro_lat !== null && pro_lng !== null &&
+          (pro_lat !== lastLat || pro_lng !== lastLng)) {
+        lastLat = pro_lat;
+        lastLng = pro_lng;
+        const distKm = (address_lat && address_lng)
+          ? +haversineKm(lastLat, lastLng, address_lat, address_lng).toFixed(2)
           : null;
-        res.write(`data: ${JSON.stringify({ lat: lastLat, lng: lastLng, distKm })}\n\n`);
+        try { res.write(`data: ${JSON.stringify({ lat: lastLat, lng: lastLng, distKm })}\n\n`); } catch {}
       }
-    } catch { /* client probably disconnected â€” will be caught by req.on('close') */ }
-  }, TRACKING_POLL_INTERVAL_MS);
+    })
+    .subscribe((status) => {
+      if (status === 'CHANNEL_ERROR') {
+        logger.error({ bookingId }, 'Realtime channel error on booking track');
+        cleanup(channel);
+        try { res.end(); } catch {}
+      }
+    });
 
-  req.on('close', () => {
-    clearInterval(keepAlive);
-    clearInterval(poll);
-  });
+  req.on('close', () => cleanup(channel));
 });
 
 // â”€â”€ Haversine straight-line distance in km â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
