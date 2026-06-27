@@ -1,0 +1,46 @@
+steps:
+  # Build the Docker image
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging:$COMMIT_SHA'
+      - '-t'
+      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging:latest'
+      - '.'
+
+  # Push both tags
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - '--all-tags'
+      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging'
+
+  # Deploy to Cloud Run staging service
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - 'petclub-backend-staging'
+      - '--image'
+      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging:$COMMIT_SHA'
+      - '--region'
+      - 'us-west1'
+      - '--platform'
+      - 'managed'
+      - '--port=8080'
+      - '--min-instances=0'
+      - '--max-instances=2'
+      - '--memory=512Mi'
+      - '--cpu=1'
+      - '--concurrency=80'
+      - '--timeout=3600'
+      - '--set-env-vars=NODE_ENV=staging'
+      - '--quiet'
+
+images:
+  - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
