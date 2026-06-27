@@ -579,6 +579,22 @@ setInterval(async () => {
   } catch (e) { logger.warn('[OTP Cleanup] Failed:', e.message); }
 }, 60 * 60 * 1000);
 
+// â"€â"€ Hard-purge soft-deleted records older than 90 days â€" runs every 24 h â"€â"€
+// Permanently removes rows where deleted_at < NOW() - 90 days from
+// users, bookings, and pets. Satisfies GDPR right-to-erasure obligation.
+setInterval(async () => {
+  try {
+    const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+    const [{ count: uCount }, { count: bCount }, { count: pCount }] = await Promise.all([
+      supabase.from('users').delete({ count: 'exact' }).not('deleted_at', 'is', null).lt('deleted_at', cutoff),
+      supabase.from('bookings').delete({ count: 'exact' }).not('deleted_at', 'is', null).lt('deleted_at', cutoff),
+      supabase.from('pets').delete({ count: 'exact' }).not('deleted_at', 'is', null).lt('deleted_at', cutoff),
+    ]);
+    const total = (uCount || 0) + (bCount || 0) + (pCount || 0);
+    if (total > 0) logger.info(`[HardPurge] Permanently removed ${uCount || 0} user(s), ${bCount || 0} booking(s), ${pCount || 0} pet(s) (deleted >90 days ago)`);
+  } catch (e) { logger.warn('[HardPurge] Failed:', e.message); }
+}, 24 * 60 * 60 * 1000);
+
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 //  BOOKING DISPATCH SYSTEM â€” Round-Robin / Uber-style
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -1499,6 +1515,15 @@ app.put('/api/pets/:id', auth, async (req, res) => {
     .eq('id', req.params.id).eq('owner_id', req.user.id).select().single();
   if (error) return res.status(400).json({ error: error.message });
   res.json({ success: true, pet: data });
+});
+
+app.delete('/api/pets/:id', auth, async (req, res) => {
+  const { data, error } = await supabase.from('pets')
+    .update({ deleted_at: new Date().toISOString() })
+    .eq('id', req.params.id).eq('owner_id', req.user.id).is('deleted_at', null)
+    .select('id').single();
+  if (error || !data) return res.status(404).json({ error: 'Pet not found or already removed' });
+  res.json({ success: true, deleted: req.params.id });
 });
 
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -3291,6 +3316,8 @@ app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
   const from     = (page - 1) * pageSize;
   const to       = from + pageSize - 1;
 
+  const includeDeleted = req.query.deleted === 'true';
+
   let q = supabase
     .from('users')
     .select(
@@ -3300,6 +3327,8 @@ app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
     )
     .order('created_at', { ascending: false })
     .range(from, to);
+
+  if (!includeDeleted) q = q.is('deleted_at', null);
 
   if (search) {
     // ILIKE search over name and phone â€” accelerated by gin_trgm_ops indexes
