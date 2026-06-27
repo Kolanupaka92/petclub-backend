@@ -178,6 +178,7 @@ CREATE MATERIALIZED VIEW IF NOT EXISTS loyalty_leaderboard AS
   FROM loyalty_transactions lt
   JOIN users u ON u.id = lt.user_id
   GROUP BY lt.user_id, u.name, u.loyalty_points
+  HAVING SUM(CASE WHEN lt.points > 0 THEN lt.points ELSE 0 END) > 0
   ORDER BY total_earned DESC
   LIMIT 100;
 

@@ -1651,8 +1651,10 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
         .gte('loyalty_points', loyalty.REDEMPTION_THRESHOLD),
 
       // O-5: top earners from materialized view — O(1) indexed scan
+      // Only include users who have actually earned points (filters stale 0-pt entries)
       supabase.from('loyalty_leaderboard')
         .select('user_id, name, total_earned, total_spent, current_balance')
+        .gt('total_earned', 0)
         .order('total_earned', { ascending: false })
         .limit(10),
     ]);
@@ -1667,7 +1669,14 @@ app.get('/api/admin/loyalty/stats', auth, adminOnly, async (req, res) => {
 
     // Top earners: served from materialized view (falls back to JS aggregate if view not yet created)
     const topEarners = (leaderboardRes.data && leaderboardRes.data.length > 0)
-      ? leaderboardRes.data.map(r => ({ user_id: r.user_id, name: r.name, points_earned: r.total_earned }))
+      ? leaderboardRes.data.map(r => ({
+          user_id:         r.user_id,
+          name:            r.name,
+          points_earned:   r.total_earned,
+          total_earned:    r.total_earned,
+          current_balance: r.current_balance,
+          total_spent:     r.total_spent,
+        }))
       : (() => {
           // Fallback: if materialized view doesn't exist yet, compute from earnRes
           const earnerMap = {};
