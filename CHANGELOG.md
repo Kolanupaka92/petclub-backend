@@ -1,3 +1,10 @@
+# [1.26.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.25.0...v1.26.0) (2026-06-27)
+
+
+### Features
+
+* add API versioning -- /api/v1/* aliases /api/* ([19788d8](https://github.com/Kolanupaka92/petclub-backend/commit/19788d88637d6cbe99b3a6f496df49b009a14d0f))
+
 # [1.25.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.24.0...v1.25.0) (2026-06-27)
 
 
