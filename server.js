@@ -331,8 +331,8 @@ const auth = async (req, res, next) => {
       return res.status(403).json({ error: `Account suspended. Contact ${SUPPORT_EMAIL}` });
   } else {
     try {
-      const { data: u } = await supabase.from('users').select('is_active').eq('id', decoded.id).single();
-      const isActive = u ? u.is_active !== false : true;
+      const { data: u } = await supabase.from('users').select('is_active, deleted_at').eq('id', decoded.id).single();
+      const isActive = u ? (u.is_active !== false && !u.deleted_at) : true;
       _authCache.set(decoded.id, { isActive, expiresAt: Date.now() + AUTH_CACHE_TTL_MS });
       if (!isActive)
         return res.status(403).json({ error: `Account suspended. Contact ${SUPPORT_EMAIL}` });
@@ -554,10 +554,10 @@ const autoDeleteSuspendedUsers = async () => {
     const idsToDelete = toDelete.map(u => u.id);
     await supabase.from('professional_profiles').delete().in('user_id', idsToDelete);
     await supabase.from('customer_profiles').delete().in('user_id', idsToDelete).catch(() => {});
-    await supabase.from('pets').delete().in('owner_id', idsToDelete).catch(() => {});
+    await supabase.from('pets').update({ deleted_at: new Date().toISOString() }).in('owner_id', idsToDelete).catch(() => {});
     await supabase.from('otp_tokens').delete().in('phone', toDelete.map(u => u.phone)).catch(() => {});
     await supabase.from('admin_logs').delete().in('target_id', idsToDelete);
-    await supabase.from('users').delete().in('id', idsToDelete);
+    await supabase.from('users').update({ deleted_at: new Date().toISOString() }).in('id', idsToDelete);
 
     logger.info(`[AutoDelete] Deleted ${idsToDelete.length} suspended users: ${idsToDelete.join(', ')}`);
   } catch (e) {
@@ -1459,7 +1459,7 @@ app.put('/api/users/me', auth, async (req, res) => {
 //  PET ROUTES
 // â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
 app.get('/api/pets', auth, async (req, res) => {
-  const { data } = await supabase.from('pets').select('*').eq('owner_id', req.user.id).order('created_at');
+  const { data } = await supabase.from('pets').select('*').eq('owner_id', req.user.id).is('deleted_at', null).order('created_at');
   res.json({ success: true, pets: data });
 });
 
@@ -1511,7 +1511,7 @@ const TABLES = { grooming: 'grooming_records', training: 'training_records', foo
 const assertPetOwnership = async (petId, userId, role) => {
   if (role === 'admin') return null; // admins skip the check
   const { data: pet, error } = await supabase
-    .from('pets').select('owner_id').eq('id', petId).single();
+    .from('pets').select('owner_id').eq('id', petId).is('deleted_at', null).single();
   if (error || !pet) return { status: 404, error: 'Pet not found' };
   if (pet.owner_id !== userId) return { status: 403, error: 'Access denied' };
   return null; // null = access granted
@@ -2359,7 +2359,7 @@ app.post('/api/bookings', auth, async (req, res) => {
       if (!couponResult.success) {
         // Delete the booking we just inserted â€” it was created on the assumption
         // this coupon was valid, but the atomic check says otherwise.
-        await supabase.from('bookings').delete().eq('id', booking.id);
+        await supabase.from('bookings').update({ deleted_at: new Date().toISOString() }).eq('id', booking.id);
         return res.status(409).json({
           error: couponResult.error || 'Coupon has already been used. Please refresh and try again.',
         });
@@ -3600,24 +3600,25 @@ app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, 
     // Supabase v2 returns { data, error } â€” never throws, so no .catch() needed
     if (profIds.length) {
       await supabase.from('booking_assignments').delete().in('professional_id', profIds);
-      await supabase.from('bookings').delete().in('professional_id', profIds);
-      await supabase.from('id_documents').delete().in('prof_id', profIds);
-      await supabase.from('payout_details').delete().in('prof_id', profIds);
+      await supabase.from(‘bookings’).update({ deleted_at: new Date().toISOString() }).in(‘professional_id’, profIds);
+      await supabase.from(‘id_documents’).delete().in(‘prof_id’, profIds);
+      await supabase.from(‘payout_details’).delete().in(‘prof_id’, profIds);
     }
 
-    // â”€â”€ Step 3: delete every table that has a FK â†’ users.id â”€â”€
-    await supabase.from('bookings').delete().in('customer_id', ids);
-    await supabase.from('reviews').delete().in('reviewer_id', ids);
-    await supabase.from('reviews').delete().in('reviewee_id', ids);
-    await supabase.from('payment_logs').delete().in('user_id', ids);
-    await supabase.from('professional_profiles').delete().in('user_id', ids);
-    await supabase.from('customer_profiles').delete().in('user_id', ids);
-    await supabase.from('pets').delete().in('owner_id', ids);
-    await supabase.from('otp_tokens').delete().in('phone', suspended.map(u => u.phone));
-    await supabase.from('admin_logs').delete().in('target_id', ids);
+    // â”€â”€ Step 3: soft-delete tables that support it; hard-delete the rest â”€â”€
+    const _now = new Date().toISOString();
+    await supabase.from(‘bookings’).update({ deleted_at: _now }).in(‘customer_id’, ids);
+    await supabase.from(‘reviews’).delete().in(‘reviewer_id’, ids);
+    await supabase.from(‘reviews’).delete().in(‘reviewee_id’, ids);
+    await supabase.from(‘payment_logs’).delete().in(‘user_id’, ids);
+    await supabase.from(‘professional_profiles’).delete().in(‘user_id’, ids);
+    await supabase.from(‘customer_profiles’).delete().in(‘user_id’, ids);
+    await supabase.from(‘pets’).update({ deleted_at: _now }).in(‘owner_id’, ids);
+    await supabase.from(‘otp_tokens’).delete().in(‘phone’, suspended.map(u => u.phone));
+    await supabase.from(‘admin_logs’).delete().in(‘target_id’, ids);
 
-    // â”€â”€ Step 4: now it's safe to delete the users themselves â”€â”€
-    const { error: delErr } = await supabase.from('users').delete().in('id', ids);
+    // â”€â”€ Step 4: soft-delete the users themselves â”€â”€
+    const { error: delErr } = await supabase.from(‘users’).update({ deleted_at: _now }).in(‘id’, ids);
     if (delErr) throw new Error(delErr.message);
 
     await supabase.from('admin_logs').insert({
@@ -3651,23 +3652,24 @@ app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
       .maybeSingle();
     if (profRow?.id) {
       await supabase.from('booking_assignments').delete().eq('professional_id', profRow.id);
-      await supabase.from('bookings').delete().eq('professional_id', profRow.id);
+      await supabase.from('bookings').update({ deleted_at: new Date().toISOString() }).eq('professional_id', profRow.id);
       await supabase.from('id_documents').delete().eq('prof_id', profRow.id);
       await supabase.from('payout_details').delete().eq('prof_id', profRow.id);
     }
-    await supabase.from('bookings').delete().eq('customer_id', u.id);
+    const _delAt = new Date().toISOString();
+    await supabase.from('bookings').update({ deleted_at: _delAt }).eq('customer_id', u.id);
     await supabase.from('reviews').delete().eq('reviewer_id', u.id);
     await supabase.from('reviews').delete().eq('reviewee_id', u.id);
     await supabase.from('payment_logs').delete().eq('user_id', u.id);
     await supabase.from('professional_profiles').delete().eq('user_id', u.id);
     await supabase.from('customer_profiles').delete().eq('user_id', u.id);
-    await supabase.from('pets').delete().eq('owner_id', u.id);
+    await supabase.from('pets').update({ deleted_at: _delAt }).eq('owner_id', u.id);
     await supabase.from('otp_tokens').delete().eq('phone', u.phone);
     // C-5 fix: DO NOT delete admin_logs â€” they are the compliance audit trail.
     // Prior suspension, verification, and warning events must be retained for
-    // GDPR "why was this account actioned" inquiries and internal investigations.
+    // GDPR “why was this account actioned” inquiries and internal investigations.
     // The deletion event inserted below will sit alongside prior logs.
-    await supabase.from('users').delete().eq('id', u.id);
+    await supabase.from('users').update({ deleted_at: _delAt }).eq('id', u.id);
 
     await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: 'delete_user', target_id: u.id, target_type: 'user', notes: `Manual delete: ${u.name || u.phone}` });
     logger.info(`[AdminDelete] User ${u.id} (${u.phone}) deleted by admin ${req.user.id}`);
@@ -4411,7 +4413,7 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
       let deleted = 0;
       if (orphanProfIds.length) { await supabase.from('professional_profiles').delete().in('user_id', orphanProfIds); deleted += orphanProfIds.length; }
       if (orphanCustIds.length) { await supabase.from('customer_profiles').delete().in('user_id', orphanCustIds); deleted += orphanCustIds.length; }
-      if (orphanPetIds.length)  { await supabase.from('pets').delete().in('id', orphanPetIds); deleted += orphanPetIds.length; }
+      if (orphanPetIds.length)  { await supabase.from('pets').update({ deleted_at: new Date().toISOString() }).in('id', orphanPetIds); deleted += orphanPetIds.length; }
       report.orphan_profiles = deleted;
     }
 
@@ -4424,29 +4426,33 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
         const phones = stale.map(u => u.phone);
         await supabase.from('professional_profiles').delete().in('user_id', ids);
         await supabase.from('customer_profiles').delete().in('user_id', ids);
-        await supabase.from('pets').delete().in('owner_id', ids);
+        const _staleNow = new Date().toISOString();
+        await supabase.from('pets').update({ deleted_at: _staleNow }).in('owner_id', ids);
         await supabase.from('otp_tokens').delete().in('phone', phones);
         await supabase.from('admin_logs').delete().in('target_id', ids);
-        await supabase.from('users').delete().in('id', ids);
+        await supabase.from('users').update({ deleted_at: _staleNow }).in('id', ids);
       }
       report.stale_pending_users = stale?.length || 0;
     }
 
-    // Cancelled bookings
+    // Cancelled bookings (soft-delete)
     if (targets.includes('cancelled_bookings')) {
-      const { error, count } = await supabase.from('bookings')
-        .delete({ count: 'exact' }).eq('status', 'cancelled');
-      report.cancelled_bookings = error ? `error: ${error.message}` : (count || 0);
+      const _cxNow = new Date().toISOString();
+      const { error } = await supabase.from('bookings')
+        .update({ deleted_at: _cxNow }).eq('status', 'cancelled').is('deleted_at', null);
+      report.cancelled_bookings = error ? `error: ${error.message}` : 'soft-deleted';
     }
 
-    // Stale no_pros_available bookings (status=upcoming but no pro found â€” older than 7 days)
+    // Stale no_pros_available bookings (status=upcoming but no pro found — older than 7 days)
     if (targets.includes('no_pros_available')) {
-      const { error, count } = await supabase.from('bookings')
-        .delete({ count: 'exact' })
+      const _npNow = new Date().toISOString();
+      const { error } = await supabase.from('bookings')
+        .update({ deleted_at: _npNow })
         .eq('assignment_status', 'no_pros_available')
         .eq('status', 'upcoming')
-        .lt('created_at', stale7d);
-      report.no_pros_available = error ? `error: ${error.message}` : (count || 0);
+        .lt('created_at', stale7d)
+        .is('deleted_at', null);
+      report.no_pros_available = error ? `error: ${error.message}` : 'soft-deleted';
     }
 
     // Website leads older than 30 days
@@ -4571,7 +4577,7 @@ async function seedAdminEmail() {
   if (dupes?.length) {
     for (const dupe of dupes) {
       if (dupe.role === 'pending_role' || dupe.role === 'customer') {
-        await supabase.from('users').delete().eq('id', dupe.id);
+        await supabase.from('users').update({ deleted_at: new Date().toISOString() }).eq('id', dupe.id);
         logger.info(`[adminSeed] ðŸ—‘ï¸ Removed stale duplicate user (${dupe.role}) with email ${maskEmail(targetEmail)}`);
       }
     }
