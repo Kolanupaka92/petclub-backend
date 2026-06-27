@@ -29,6 +29,13 @@ steps:
       - 'us-central1'
       - '--platform'
       - 'managed'
+      - '--port=8080'
+      - '--min-instances=1'       # always warm — eliminates cold starts, keeps SSE connections alive
+      - '--max-instances=10'      # cap runaway scaling
+      - '--memory=1Gi'            # Node.js + SSE connections need headroom
+      - '--cpu=1'
+      - '--concurrency=80'        # requests per instance before scale-out triggers
+      - '--timeout=3600'          # 60 min — required for long-lived SSE tracking connections
       - '--quiet'
 
 images:

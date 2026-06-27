@@ -279,7 +279,7 @@ const authLimit = rateLimit({
 });
 
 // ── Helpers ────────────────────────────────────────────
-const genOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
+const genOTP = () => crypto.randomInt(100000, 1000000).toString();
 
 // Short-lived cache: { userId → { isActive, expiresAt } }
 // Avoids a DB hit on every request while still enforcing suspension within 60s.
@@ -1600,6 +1600,14 @@ app.post('/api/admin/loyalty/award', auth, adminOnly, async (req, res) => {
   if (!userId || !points) return res.status(400).json({ error: 'userId and points required' });
   const result = await loyalty.awardPoints(supabase, userId, points, type, description || 'Admin award');
   if (!result.success) return res.status(500).json({ error: result.error });
+  // Audit every manual credit change — financial operations must be traceable
+  await supabase.from('admin_logs').insert({
+    admin_id:    req.user.id,
+    action:      points > 0 ? 'award_loyalty' : 'deduct_loyalty',
+    target_id:   userId,
+    target_type: 'user',
+    notes:       `${points > 0 ? '+' : ''}${points} pts — ${description || 'Admin award'} (new balance: ${result.newBalance})`,
+  }).catch(e => console.error('[AdminLoyalty] audit log failed:', e.message));
   res.json({ success: true, newBalance: result.newBalance, awarded: result.awarded });
 });
 

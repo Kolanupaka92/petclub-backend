@@ -1,11 +1,11 @@
 # ---- Build stage ----
-FROM node:22-alpine AS deps
+FROM node:22.12.0-alpine3.21 AS deps
 WORKDIR /app
 COPY package*.json ./
 RUN npm ci --only=production
 
 # ---- Runtime stage ----
-FROM node:22-alpine
+FROM node:22.12.0-alpine3.21
 WORKDIR /app
 
 # Non-root user for security
