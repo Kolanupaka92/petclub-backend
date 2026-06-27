@@ -1,3 +1,10 @@
+## [1.26.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.26.0...v1.26.1) (2026-06-27)
+
+
+### Bug Fixes
+
+* pino-pretty only in development, not staging/production ([cbe8e5f](https://github.com/Kolanupaka92/petclub-backend/commit/cbe8e5f23b67e08d69841fc45a43d5bea450e46e))
+
 # [1.26.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.25.0...v1.26.0) (2026-06-27)
 
 
