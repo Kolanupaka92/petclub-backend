@@ -1,3 +1,10 @@
+# [1.27.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.26.2...v1.27.0) (2026-06-27)
+
+
+### Features
+
+* soft delete on users, bookings, pets ([b40668e](https://github.com/Kolanupaka92/petclub-backend/commit/b40668e9869d1522cf40005f3468f11989f0702c))
+
 ## [1.26.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.26.1...v1.26.2) (2026-06-27)
 
 
