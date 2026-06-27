@@ -1,3 +1,10 @@
+## [1.23.5](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.4...v1.23.5) (2026-06-27)
+
+
+### Bug Fixes
+
+* harden OTP entropy, audit loyalty awards, pin Docker image, tune Cloud Run ([ed66cb8](https://github.com/Kolanupaka92/petclub-backend/commit/ed66cb88a3144082e5aec9527c60650e12bbc2a4))
+
 ## [1.23.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.3...v1.23.4) (2026-06-27)
 
 
