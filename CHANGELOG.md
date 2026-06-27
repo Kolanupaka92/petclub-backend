@@ -1,3 +1,10 @@
+## [1.23.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.2...v1.23.3) (2026-06-27)
+
+
+### Bug Fixes
+
+* **ratelimit:** raise OTP/auth limits, switch to direct Supabase host ([f7c1490](https://github.com/Kolanupaka92/petclub-backend/commit/f7c1490852e9f1fd4982b8cab0b86d04bf09d74e))
+
 ## [1.23.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.23.1...v1.23.2) (2026-06-27)
 
 
