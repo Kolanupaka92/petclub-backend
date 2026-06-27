@@ -277,19 +277,41 @@ const authLimit = rateLimit({
 // ── Helpers ────────────────────────────────────────────
 const genOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 
+// Short-lived cache: { userId → { isActive, expiresAt } }
+// Avoids a DB hit on every request while still enforcing suspension within 60s.
+const _authCache = new Map();
+const AUTH_CACHE_TTL_MS = 60_000;
+
 const auth = async (req, res, next) => {
   const token = req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Login required' });
-  try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    const { data: u } = await supabase.from('users').select('is_active').eq('id', decoded.id).single();
-    if (!u || u.is_active === false)
+
+  // Step 1: verify JWT signature — fast, no network
+  let decoded;
+  try { decoded = jwt.verify(token, JWT_SECRET); }
+  catch { return res.status(401).json({ error: 'Session expired. Please login again.' }); }
+
+  // Step 2: check suspension status — cached, falls back to JWT-only on DB error
+  const cached = _authCache.get(decoded.id);
+  if (cached && cached.expiresAt > Date.now()) {
+    if (!cached.isActive)
       return res.status(403).json({ error: `Account suspended. Contact ${SUPPORT_EMAIL}` });
-    req.user = decoded;
-    next();
-  } catch {
-    res.status(401).json({ error: 'Session expired. Please login again.' });
+  } else {
+    try {
+      const { data: u } = await supabase.from('users').select('is_active').eq('id', decoded.id).single();
+      const isActive = u ? u.is_active !== false : true;
+      _authCache.set(decoded.id, { isActive, expiresAt: Date.now() + AUTH_CACHE_TTL_MS });
+      if (!isActive)
+        return res.status(403).json({ error: `Account suspended. Contact ${SUPPORT_EMAIL}` });
+    } catch {
+      // DB unreachable — fail open so a Supabase blip doesn't log everyone out.
+      // A suspended user may slip through for up to 60s during an outage (acceptable).
+      console.warn('[auth] DB suspension check failed — falling back to JWT-only');
+    }
   }
+
+  req.user = decoded;
+  next();
 };
 
 const adminOnly = (req, res, next) => {
