@@ -221,7 +221,11 @@ const ALLOWED_ORIGINS = [
   // Localhost allowed in dev only (set ALLOW_DEV_TOOLS=true in local .env)
   ...(IS_PROD ? [] : ['http://localhost:5173','http://localhost:5174','http://localhost:4173']),
 ].filter(Boolean);
-app.use(cors({ origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.includes(origin) ? true : false) }));
+app.use(cors({
+  origin: (origin, cb) => cb(null, !origin || ALLOWED_ORIGINS.includes(origin) ? true : false),
+  credentials: true,   // required for httpOnly cookie to be sent cross-origin
+}));
+app.use(require('cookie-parser')());
 app.use(express.json({ limit: '10mb' }));
 
 // ── Request ID + timing logger ─────────────────────────────
@@ -282,14 +286,24 @@ const genOTP = () => Math.floor(100000 + Math.random() * 900000).toString();
 const _authCache = new Map();
 const AUTH_CACHE_TTL_MS = 60_000;
 
+const AUTH_COOKIE = 'petclub_token';
+const COOKIE_OPTS = {
+  httpOnly: true,
+  secure: true,
+  sameSite: 'strict',
+  maxAge: 30 * 24 * 60 * 60 * 1000,  // 30 days in ms
+  path: '/',
+};
+
 const auth = async (req, res, next) => {
-  const token = req.headers.authorization?.split(' ')[1];
+  // Cookie takes priority; Authorization header accepted as fallback (SDK / mobile clients)
+  const token = req.cookies?.[AUTH_COOKIE] || req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'Login required' });
 
   // Step 1: verify JWT signature — fast, no network
   let decoded;
   try { decoded = jwt.verify(token, JWT_SECRET); }
-  catch { return res.status(401).json({ error: 'Session expired. Please login again.' }); }
+  catch { return res.status(401).json({ error: 'Session expired. Please sign in again.' }); }
 
   // Step 2: check suspension status — cached, falls back to JWT-only on DB error
   const cached = _authCache.get(decoded.id);
@@ -834,7 +848,8 @@ app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
     console.log(`[FirebaseVerify] Signing JWT for user ${user.id} (${maskPhone(phone)})`);
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     console.log(`[FirebaseVerify] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
-    res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
+    res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
+    res.json({ success: true, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     console.error('[FirebaseVerify] Unexpected error at step above ↑', err);
     res.status(500).json({ error: 'Verification failed. Please try again.' });
@@ -942,7 +957,8 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
 
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     console.log(`[EmailOTP] ${isNew ? 'New' : 'Returning'} user: ${maskEmail(email)}`);
-    res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
+    res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
+    res.json({ success: true, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     console.error('[EmailOTP] Verify error:', err.message);
     res.status(500).json({ error: 'Verification failed.' });
@@ -953,6 +969,11 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
 //  AUTH: PHONE OTP via Twilio SMS (replaces Firebase reCAPTCHA)
 //  POST /api/auth/send-phone-otp   { phone: '+91XXXXXXXXXX' }
 //  POST /api/auth/verify-phone-otp { phone, otp }
+app.post('/api/auth/logout', (req, res) => {
+  res.clearCookie(AUTH_COOKIE, { ...COOKIE_OPTS, maxAge: 0 });
+  res.json({ success: true });
+});
+
 // ══════════════════════════════════════════════════════
 app.post('/api/auth/send-phone-otp', otpLimit, async (req, res) => {
   try {
@@ -1071,7 +1092,8 @@ app.post('/api/auth/verify-phone-otp', authLimit, async (req, res) => {
 
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     console.log(`[PhoneOTP] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
-    res.json({ success: true, token, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
+    res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
+    res.json({ success: true, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     console.error('[PhoneOTP] Verify error:', err.message);
     res.status(500).json({ error: 'Verification failed. Please try again.' });
@@ -1194,6 +1216,7 @@ app.post('/api/users/set-role', auth, async (req, res) => {
 
     const { data: user } = await supabase.from('users').select('*').eq('id', req.user.id).single();
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
     const verificationStatus = role === 'professional' ? 'pending' : null;
     // subRole already defined above from req.body
 
@@ -1212,7 +1235,7 @@ app.post('/api/users/set-role', auth, async (req, res) => {
       }
     }
 
-    res.json({ success: true, token, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
+    res.json({ success: true, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
   } catch (err) {
     console.error('Set role error:', err.message);
     res.status(500).json({ error: 'Failed to set role.' });
@@ -2357,6 +2380,19 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
   if (!VALID_BOOKING_STATUSES.includes(newStatus))
     return res.status(400).json({ error: `Invalid status. Allowed: ${VALID_BOOKING_STATUSES.join(', ')}` });
 
+  // State machine: enforce valid transitions — prevents rollback fraud
+  const ALLOWED_TRANSITIONS = {
+    upcoming:    ['in_progress', 'cancelled', 'no_show'],
+    in_progress: ['completed', 'cancelled'],
+    completed:   [],
+    cancelled:   [],
+    no_show:     [],
+  };
+  const allowed = ALLOWED_TRANSITIONS[booking.status] ?? [];
+  const mappedNew = newStatus === 'no_show' ? 'no_show' : newStatus;
+  if (!allowed.includes(mappedNew) && req.user.role !== 'admin')
+    return res.status(400).json({ error: `Cannot transition booking from '${booking.status}' to '${newStatus}'` });
+
   // Prevent double-cancellation
   if ((newStatus === 'cancelled' || newStatus === 'no_show') && booking.status === 'cancelled')
     return res.status(400).json({ error: 'Booking is already cancelled.' });
@@ -2834,10 +2870,10 @@ app.put('/api/bookings/:id/assign', auth, adminOnly, async (req, res) => {
 
 const TRACKING_POLL_INTERVAL_MS = 3000; // poll DB every 3 seconds
 
-// Customer subscribes — GET /api/bookings/:id/track?token=<jwt>
-// Uses query-param token because EventSource doesn't support custom headers
+// Customer subscribes — GET /api/bookings/:id/track
+// Browser EventSource sends cookies automatically when withCredentials:true
 app.get('/api/bookings/:id/track', async (req, res) => {
-  const { token } = req.query;
+  const token = req.cookies?.[AUTH_COOKIE] || req.query.token; // query fallback for native clients
   if (!token) return res.status(401).json({ error: 'token required' });
 
   let userId;
