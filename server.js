@@ -317,7 +317,6 @@ const COOKIE_OPTS = {
 const auth = async (req, res, next) => {
   // Cookie takes priority; Authorization header accepted as fallback (SDK / mobile clients)
   const token = req.cookies?.[AUTH_COOKIE] || req.headers.authorization?.split(' ')[1];
-  logger.info({ cookieKeys: Object.keys(req.cookies || {}), hasAuthHeader: !!req.headers.authorization, path: req.path }, '[auth] debug');
   if (!token) return res.status(401).json({ error: 'Login required' });
 
   // Step 1: verify JWT signature  fast, no network
