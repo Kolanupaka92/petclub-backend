@@ -4631,6 +4631,202 @@ async function seedAdminEmail() {
   }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  CRON ENDPOINTS  — called by GitHub Actions (.github/workflows/cron.yml)
+//  Secured with X-Cron-Secret header (must match CRON_SECRET env var).
+//  Never expose these without the secret check — they send bulk emails.
+// ─────────────────────────────────────────────────────────────────────────────
+function cronAuth(req, res) {
+  const secret = process.env.CRON_SECRET;
+  if (!secret || req.headers['x-cron-secret'] !== secret) {
+    res.status(401).json({ error: 'Unauthorized' });
+    return false;
+  }
+  return true;
+}
+
+// POST /api/cron/refresh-leaderboard
+// Refreshes the loyalty_leaderboard materialized view via Supabase RPC.
+app.post('/api/cron/refresh-leaderboard', async (req, res) => {
+  if (!cronAuth(req, res)) return;
+  try {
+    const { error } = await supabase.rpc('refresh_loyalty_leaderboard');
+    if (error) throw error;
+    logger.info('[Cron] loyalty_leaderboard refreshed');
+    res.json({ success: true, refreshed_at: new Date().toISOString() });
+  } catch (e) {
+    logger.error('[Cron] refresh-leaderboard failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/cron/booking-reminders
+// Sends 24 h and 2 h reminder emails to customers + providers.
+// Safe to call hourly — only books in the exact window get an email.
+app.post('/api/cron/booking-reminders', async (req, res) => {
+  if (!cronAuth(req, res)) return;
+  try {
+    const now = Date.now();
+    const windows = [
+      { label: '24h', lo: now + 23 * 3600_000, hi: now + 25 * 3600_000 },
+      { label: '2h',  lo: now + 110 * 60_000,  hi: now + 130 * 60_000  },
+    ];
+    let sent = 0;
+    for (const w of windows) {
+      const { data: bookings } = await supabase
+        .from('bookings')
+        .select('id, service_name, scheduled_at, address, users!bookings_customer_id_fkey(name, email), professional_profiles!bookings_professional_id_fkey(users(name, email))')
+        .eq('status', 'confirmed')
+        .gt('scheduled_at', new Date(w.lo).toISOString())
+        .lt('scheduled_at', new Date(w.hi).toISOString())
+        .is('deleted_at', null);
+
+      for (const b of bookings || []) {
+        const svc  = b.service_name || 'service';
+        const time = new Date(b.scheduled_at).toLocaleString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+        const addr = b.address || 'your location';
+
+        const customerEmail = b.users?.email;
+        const customerName  = b.users?.name || 'there';
+        const proEmail      = b.professional_profiles?.users?.email;
+        const proName       = b.professional_profiles?.users?.name || 'your provider';
+
+        if (customerEmail) {
+          await sendEmail(
+            customerEmail,
+            `⏰ Reminder: Your ${svc} is ${w.label === '24h' ? 'tomorrow' : 'in 2 hours'} — PETclub`,
+            `<p>Hi ${customerName},</p>
+             <p>Just a reminder that your <strong>${svc}</strong> is scheduled for <strong>${time}</strong> at ${addr}.</p>
+             <p>Your provider <strong>${proName}</strong> will be there. If you need to cancel, please do so at least 2 hours before to avoid a cancellation fee.</p>
+             <p>— PETclub Team</p>`
+          ).catch(e => logger.warn('[Cron] customer reminder failed:', e.message));
+          sent++;
+        }
+        if (proEmail) {
+          await sendEmail(
+            proEmail,
+            `📋 Upcoming: ${svc} ${w.label === '24h' ? 'tomorrow' : 'in 2 hours'} — PETclub`,
+            `<p>Hi ${proName},</p>
+             <p>Reminder: you have a <strong>${svc}</strong> booking at <strong>${time}</strong> at ${addr}.</p>
+             <p>The customer is <strong>${customerName}</strong>. Please be on time.</p>
+             <p>— PETclub Team</p>`
+          ).catch(e => logger.warn('[Cron] provider reminder failed:', e.message));
+          sent++;
+        }
+      }
+    }
+    logger.info(`[Cron] booking-reminders: sent ${sent} email(s)`);
+    res.json({ success: true, emails_sent: sent });
+  } catch (e) {
+    logger.error('[Cron] booking-reminders failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/cron/coupon-expiry
+// Warns customers whose loyalty coupons expire within 3 days.
+app.post('/api/cron/coupon-expiry', async (req, res) => {
+  if (!cronAuth(req, res)) return;
+  try {
+    const lo = new Date(Date.now() + 2.5 * 86_400_000).toISOString();
+    const hi = new Date(Date.now() + 3.5 * 86_400_000).toISOString();
+    const { data: coupons } = await supabase
+      .from('loyalty_coupons')
+      .select('code, service_name, discount_pct, expires_at, users(name, email)')
+      .eq('used', false)
+      .gt('expires_at', lo)
+      .lt('expires_at', hi);
+
+    let sent = 0;
+    for (const c of coupons || []) {
+      const email = c.users?.email;
+      const name  = c.users?.name || 'there';
+      if (!email) continue;
+      const expiry = new Date(c.expires_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
+      await sendEmail(
+        email,
+        `🎟️ Your PETclub coupon expires in 3 days — use it before it's gone!`,
+        `<p>Hi ${name},</p>
+         <p>Your <strong>${c.discount_pct}% off ${c.service_name}</strong> loyalty coupon (<code>${c.code}</code>) expires on <strong>${expiry}</strong>.</p>
+         <p>Book a service before it expires and save big!</p>
+         <p><a href="https://app.mypetclub.app">Book now →</a></p>
+         <p>— PETclub Team</p>`
+      ).catch(e => logger.warn('[Cron] coupon-expiry email failed:', e.message));
+      sent++;
+    }
+    logger.info(`[Cron] coupon-expiry: sent ${sent} warning(s)`);
+    res.json({ success: true, emails_sent: sent });
+  } catch (e) {
+    logger.error('[Cron] coupon-expiry failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/cron/payout-summary
+// Emails admin a weekly summary of provider earnings pending payout.
+app.post('/api/cron/payout-summary', async (req, res) => {
+  if (!cronAuth(req, res)) return;
+  const adminEmail = process.env.ADMIN_EMAIL;
+  if (!adminEmail) return res.json({ success: false, reason: 'ADMIN_EMAIL not set' });
+  try {
+    const { data: bookings } = await supabase
+      .from('bookings')
+      .select('provider_earnings, currency, professional_profiles!bookings_professional_id_fkey(users(name, email, phone))')
+      .eq('status', 'completed')
+      .eq('payout_status', 'pending')
+      .is('deleted_at', null);
+
+    if (!bookings?.length) {
+      logger.info('[Cron] payout-summary: no pending payouts');
+      return res.json({ success: true, pending_count: 0 });
+    }
+
+    // Group by provider
+    const byPro = {};
+    for (const b of bookings) {
+      const proUser = b.professional_profiles?.users;
+      const key     = proUser?.email || 'unknown';
+      if (!byPro[key]) byPro[key] = { name: proUser?.name || 'Unknown', email: key, phone: proUser?.phone || '', totalINR: 0, totalUSD: 0, count: 0 };
+      if (b.currency === 'USD') byPro[key].totalUSD += parseFloat(b.provider_earnings || 0);
+      else                      byPro[key].totalINR += parseFloat(b.provider_earnings || 0);
+      byPro[key].count++;
+    }
+
+    const rows = Object.values(byPro).sort((a, b) => (b.totalINR + b.totalUSD * 83) - (a.totalINR + a.totalUSD * 83));
+    const tableRows = rows.map(p =>
+      `<tr><td>${sanitize(p.name)}</td><td>${sanitize(p.phone)}</td>
+       <td>${p.totalINR > 0 ? '₹' + p.totalINR.toFixed(2) : '—'}</td>
+       <td>${p.totalUSD > 0 ? '$' + p.totalUSD.toFixed(2) : '—'}</td>
+       <td>${p.count}</td></tr>`
+    ).join('');
+
+    const grandINR = rows.reduce((s, p) => s + p.totalINR, 0);
+    const grandUSD = rows.reduce((s, p) => s + p.totalUSD, 0);
+
+    await sendEmail(
+      adminEmail,
+      `💰 Weekly Payout Summary — ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })}`,
+      `<h2>PETclub — Provider Payouts Due</h2>
+       <p>${rows.length} provider(s) have pending earnings as of this week.</p>
+       <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:sans-serif;font-size:13px;">
+         <thead style="background:#f1f5f9;">
+           <tr><th>Provider</th><th>Phone</th><th>INR Earnings</th><th>USD Earnings</th><th>Bookings</th></tr>
+         </thead>
+         <tbody>${tableRows}</tbody>
+         <tfoot style="background:#f8fafc;font-weight:bold;">
+           <tr><td colspan="2">TOTAL</td><td>${grandINR > 0 ? '₹' + grandINR.toFixed(2) : '—'}</td><td>${grandUSD > 0 ? '$' + grandUSD.toFixed(2) : '—'}</td><td>${bookings.length}</td></tr>
+         </tfoot>
+       </table>
+       <p style="color:#64748b;font-size:12px;margin-top:16px;">Transfer earnings and mark bookings as payout_status='paid' in Supabase once done.</p>`
+    );
+    logger.info(`[Cron] payout-summary: emailed admin — ${rows.length} providers, ₹${grandINR.toFixed(2)} + $${grandUSD.toFixed(2)}`);
+    res.json({ success: true, providers: rows.length, pending_bookings: bookings.length, totalINR: grandINR, totalUSD: grandUSD });
+  } catch (e) {
+    logger.error('[Cron] payout-summary failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Export app for integration tests (require.main guard prevents double-listen)
 if (require.main !== module) {
   module.exports = { app };

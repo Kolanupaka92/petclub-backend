@@ -66,7 +66,22 @@ jobs:
           echo "Frontend HTTP status: $CODE"
           [ "$CODE" = "200" ] && echo "✅ Frontend alive" || echo "⚠️  Frontend returned $CODE"
 
-      # ── 4. Commit daily timestamp ─────────────────────────────────
+      # ── 4. Refresh loyalty leaderboard ──────────────────────────
+      # Belt-and-suspenders: cron.yml fires at 02:00 UTC via CRON_SECRET.
+      # This is a fallback in case pg_cron is not enabled on Supabase.
+      - name: Refresh loyalty leaderboard
+        run: |
+          if [ -n "${{ secrets.CRON_SECRET }}" ]; then
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -X POST \
+              -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+              https://api.mypetclub.app/api/cron/refresh-leaderboard)
+            echo "Leaderboard refresh: HTTP $STATUS"
+          else
+            echo "⚠️  CRON_SECRET not set — skipping leaderboard refresh"
+          fi
+
+      # ── 5. Commit daily timestamp ─────────────────────────────────
       # Prevents GitHub from disabling this scheduled workflow after
       # 60 days of zero repository activity.
       - name: Commit daily keep-alive timestamp

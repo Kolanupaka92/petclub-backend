@@ -1,0 +1,83 @@
+# ══════════════════════════════════════════════════════════════════
+#  PETclub Scheduled Cron Jobs
+#
+#  Schedules:
+#    Every hour  — booking reminders (24h + 2h windows)
+#    Daily 02:30 UTC — coupon expiry warnings (3 days out)
+#    Daily 02:00 UTC — loyalty leaderboard refresh
+#    Saturday 06:00 UTC — weekly payout summary email to admin
+#
+#  All endpoints require X-Cron-Secret header.
+#  Add CRON_SECRET to GitHub Secrets (Settings → Secrets → Actions).
+# ══════════════════════════════════════════════════════════════════
+
+name: Scheduled Cron Jobs
+
+on:
+  schedule:
+    - cron: '0 * * * *'        # every hour  (booking reminders)
+    - cron: '0 2 * * *'        # 02:00 UTC daily  (leaderboard refresh)
+    - cron: '30 2 * * *'       # 02:30 UTC daily  (coupon expiry)
+    - cron: '0 6 * * 6'        # 06:00 UTC Saturday  (payout summary)
+  workflow_dispatch:             # allow manual trigger from GitHub UI
+
+jobs:
+  booking-reminders:
+    name: Booking Reminders (24h + 2h)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Send booking reminders
+        run: |
+          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+            -X POST \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            https://api.mypetclub.app/api/cron/booking-reminders)
+          cat /tmp/resp.json
+          [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
+
+  leaderboard-refresh:
+    name: Loyalty Leaderboard Refresh
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Only run on the 02:00 UTC trigger and manual dispatch, not every hour
+    if: github.event.schedule == '0 2 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Refresh leaderboard
+        run: |
+          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+            -X POST \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            https://api.mypetclub.app/api/cron/refresh-leaderboard)
+          cat /tmp/resp.json
+          [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
+
+  coupon-expiry:
+    name: Coupon Expiry Warnings
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.schedule == '30 2 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Send coupon expiry warnings
+        run: |
+          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+            -X POST \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            https://api.mypetclub.app/api/cron/coupon-expiry)
+          cat /tmp/resp.json
+          [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
+
+  payout-summary:
+    name: Weekly Payout Summary
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.schedule == '0 6 * * 6' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Email payout summary to admin
+        run: |
+          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+            -X POST \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            https://api.mypetclub.app/api/cron/payout-summary)
+          cat /tmp/resp.json
+          [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
