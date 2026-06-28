@@ -1,3 +1,10 @@
+# [1.29.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.28.2...v1.29.0) (2026-06-28)
+
+
+### Features
+
+* **cron:** add scheduled jobs for reminders, leaderboard, and payouts ([19a6ba2](https://github.com/Kolanupaka92/petclub-backend/commit/19a6ba2e1c1aa31a924dd5d8752be3058d79bf9d))
+
 ## [1.28.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.28.1...v1.28.2) (2026-06-28)
 
 
