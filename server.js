@@ -205,6 +205,15 @@ const otpLimit = rateLimit({
   },
   handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait a few minutes and try again.' }),
 });
+// Per-user booking rate limit — max 5 bookings per 10 min per user (prevents notification/DB abuse)
+const bookingLimit = rateLimit({
+  windowMs: 10 * 60 * 1000, max: 5,
+  standardHeaders: true, legacyHeaders: false,
+  store: new PgRateLimitStore(),
+  keyGenerator: (req) => req.user?.id || req.ip, // user-keyed, falls back to IP before auth runs
+  skip: (req) => req.user?.role === 'admin', // admins exempt (test bookings)
+  handler: (req, res) => res.status(429).json({ error: 'Too many booking requests. Please wait a few minutes.' }),
+});
 // Contact form rate limit — max 5 submissions per hour per IP (prevents email spam)
 const contactLimit = rateLimit({
   windowMs: 60 * 60 * 1000, max: 5,
@@ -286,8 +295,26 @@ const adminOnly = (req, res, next) => {
 };
 
 
-//  Push Notification via Firebase Cloud Messaging 
+//  Push Notification via Firebase Cloud Messaging + persistent notification inbox
 const sendPush = async (fcmToken, title, body, data = {}) => {
+  // Persist to notifications table so users have an in-app inbox even if push wasn't received
+  if (data.userId || data.bookingId) {
+    // Resolve userId from bookingId if not provided directly
+    let userId = data.userId || null;
+    if (!userId && data.bookingId) {
+      // Best-effort: look up customer or pro from booking
+      supabase.from('bookings').select('customer_id, professional_id').eq('id', data.bookingId).single()
+        .then(({ data: bk }) => {
+          if (!bk) return;
+          const recipients = [bk.customer_id, bk.professional_id].filter(Boolean);
+          recipients.forEach(uid => {
+            supabase.from('notifications').insert({ user_id: uid, title, body, data: JSON.stringify(data) }).then(() => {});
+          });
+        }).catch(() => {});
+    } else if (userId) {
+      supabase.from('notifications').insert({ user_id: userId, title, body, data: JSON.stringify(data) }).catch(() => {});
+    }
+  }
   if (!firebaseAdmin || !fcmToken) return;
   try {
     await firebaseAdmin.messaging().send({
@@ -544,6 +571,8 @@ const findNextPro = async (city, subRole, excludeProIds = [], bookingLat = null,
   }
   // Exclude pros who already got this booking and rejected / timed out
   for (const xid of excludeProIds) q = q.neq('id', xid);
+  // Cap at 100: we only need the rotation pool, not every pro in the DB
+  q = q.limit(100);
   const { data: allPros } = await q;
   if (!allPros || allPros.length === 0) return null;
 
@@ -2323,9 +2352,19 @@ app.get('/api/bookings', auth, async (req, res) => {
     const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
     // Phone only revealed after confirmed  prevents harvesting from unaccepted offers
     q = supabase.from('bookings').select('*, pets!pet_id(name,species,breed,health_notes), users!customer_id(name,phone)').eq('professional_id', prof?.id).in('assignment_status', ['confirmed','in_progress','completed']);
-  } else
-    // Admin: include customer + professional name/phone for live tracking panel
-    q = supabase.from('bookings').select('*, pets!pet_id(name,species), users!customer_id(name,phone)');
+  } else {
+    // Admin: paginated (default 50/page) to prevent full table scans
+    const adminPage  = Math.max(1, parseInt(req.query.page) || 1);
+    const adminLimit = Math.min(100, parseInt(req.query.limit) || 50);
+    const adminFrom  = (adminPage - 1) * adminLimit;
+    const adminQ = supabase.from('bookings')
+      .select('*, pets!pet_id(name,species), users!customer_id(name,phone)', { count: 'exact' })
+      .order('scheduled_at', { ascending: false })
+      .range(adminFrom, adminFrom + adminLimit - 1);
+    const { data, error, count } = await adminQ;
+    if (error) return res.status(500).json({ error: error.message });
+    return res.json({ success: true, bookings: data || [], total: count || 0, page: adminPage, limit: adminLimit });
+  }
   const { data, error } = await q.order('scheduled_at', { ascending: false });
   if (error) {
     logger.error('[GET /bookings] Supabase query error:', error.message, error.details || '');
@@ -2340,7 +2379,7 @@ app.get('/api/bookings', auth, async (req, res) => {
 // All bookings store which version the user agreed to at the time they booked.
 const TERMS_VERSION = 'v1';
 
-app.post('/api/bookings', auth, validate(schemas.createBooking), async (req, res) => {
+app.post('/api/bookings', auth, bookingLimit, validate(schemas.createBooking), async (req, res) => {
   try {
     if (req.user.role !== 'customer' && req.user.role !== 'admin')
       return res.status(403).json({ error: 'Only customers can create bookings.' });
@@ -2787,6 +2826,43 @@ app.post('/api/bookings/:id/respond', auth, validate(schemas.respondBooking), as
   } catch (err) {
     logger.error('Respond booking error:', err.message);
     res.status(500).json({ error: 'Failed to process response' });
+  }
+});
+
+// Customer: Reschedule an upcoming booking to a new date/time
+app.put('/api/bookings/:id/reschedule', auth, async (req, res) => {
+  try {
+    const { scheduled_at } = req.body;
+    if (!scheduled_at) return res.status(400).json({ error: 'scheduled_at is required' });
+    const newDate = new Date(scheduled_at);
+    if (isNaN(newDate) || newDate <= new Date()) return res.status(400).json({ error: 'scheduled_at must be a future date/time' });
+
+    const { data: booking } = await supabase.from('bookings')
+      .select('id, customer_id, professional_id, service_name, scheduled_at, status, assignment_status, professional_profiles!professional_id(users(name, fcm_token, phone, email))')
+      .eq('id', req.params.id).single();
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    if (booking.customer_id !== req.user.id && req.user.role !== 'admin')
+      return res.status(403).json({ error: 'Not your booking' });
+    if (!['upcoming', 'searching', 'offered', 'confirmed'].includes(booking.assignment_status))
+      return res.status(400).json({ error: `Cannot reschedule a booking with status '${booking.assignment_status}'` });
+
+    const oldDate = booking.scheduled_at;
+    await supabase.from('bookings').update({ scheduled_at: newDate.toISOString(), rescheduled_from: oldDate }).eq('id', booking.id);
+
+    // Notify the professional if one is assigned
+    const proUser = booking.professional_profiles?.users;
+    const dateStr = newDate.toLocaleString('en-IN', { weekday:'short', day:'numeric', month:'short', hour:'2-digit', minute:'2-digit' });
+    const svc = booking.service_name || 'your booking';
+    if (proUser?.fcm_token) {
+      sendPush(proUser.fcm_token, '📅 Booking Rescheduled', `${svc} moved to ${dateStr}`, { bookingId: booking.id, type: 'rescheduled' }).catch(() => {});
+    }
+    if (proUser?.email) {
+      emailService.sendRawEmail({ to: proUser.email, subject: `Booking Rescheduled — ${svc}`, html: `<p>Hi ${proUser.name || 'there'},</p><p>Your booking for <strong>${sanitize(svc)}</strong> has been rescheduled to <strong>${dateStr}</strong>.</p><p>— PETclub</p>` }).catch(() => {});
+    }
+    res.json({ success: true, scheduled_at: newDate.toISOString(), rescheduled_from: oldDate });
+  } catch (err) {
+    logger.error('Reschedule booking error:', err.message);
+    res.status(500).json({ error: 'Failed to reschedule booking' });
   }
 });
 
@@ -3872,10 +3948,32 @@ app.post('/api/users/fcm-token', auth, validate(schemas.fcmToken), async (req, r
   }
 });
 
-// 
+// Notification inbox — persistent per-user history even when push is missed
+app.get('/api/notifications', auth, async (req, res) => {
+  const limit = Math.min(50, parseInt(req.query.limit) || 20);
+  const { data, error } = await supabase.from('notifications')
+    .select('id, title, body, data, read_at, created_at')
+    .eq('user_id', req.user.id)
+    .order('created_at', { ascending: false })
+    .limit(limit);
+  if (error) return res.status(500).json({ error: error.message });
+  const unread = (data || []).filter(n => !n.read_at).length;
+  res.json({ success: true, notifications: data || [], unread });
+});
+
+app.patch('/api/notifications/read', auth, async (req, res) => {
+  const { ids } = req.body; // optional: array of IDs; omit to mark all read
+  let q = supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('user_id', req.user.id).is('read_at', null);
+  if (ids?.length) q = q.in('id', ids);
+  const { error } = await q;
+  if (error) return res.status(500).json({ error: error.message });
+  res.json({ success: true });
+});
+
+//
 //  PAYMENTS: Razorpay (India)  active after LLC registration
 //  Set RAZORPAY_KEY_ID + RAZORPAY_KEY_SECRET in Cloud Run env vars
-// 
+//
 
 // Create a Razorpay order (called before payment screen opens)
 app.post('/api/payments/create-order', auth, validate(schemas.createPaymentOrder), async (req, res) => {
