@@ -4784,10 +4784,8 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
   }
 });
 
-app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
-// Sentry must capture errors before the generic handler
-if (process.env.SENTRY_DSN) app.use(Sentry.expressErrorHandler());
-app.use((err, req, res, next) => { logger.error(err); res.status(500).json({ error: 'Server error' }); });
+// NOTE: 404 and error handlers are registered AFTER all routes (including cron)
+// at the bottom of this file — do not add a catch-all here.;
 
 //  Startup migration: add live-tracking columns to bookings (safe, IF NOT EXISTS) 
 async function runStartupMigrations() {
@@ -5144,6 +5142,11 @@ app.post('/api/cron/hard-purge', async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// 404 — must be after ALL routes (including cron endpoints above)
+app.use((req, res) => res.status(404).json({ error: 'Route not found' }));
+// Sentry error capture must come before the generic error handler
+if (process.env.SENTRY_DSN) app.use(Sentry.expressErrorHandler());
 
 // Global error handler — catches any unhandled error thrown or passed to next()
 app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
