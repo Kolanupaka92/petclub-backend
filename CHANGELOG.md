@@ -1,3 +1,16 @@
+# [1.32.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.31.1...v1.32.0) (2026-06-29)
+
+
+### Bug Fixes
+
+* **billing:** make cancellation fee currency-aware (USD vs INR) ([0ce53e2](https://github.com/Kolanupaka92/petclub-backend/commit/0ce53e258091d517f71f656468a8f4948c34b0f5))
+
+
+### Features
+
+* **pricing:** add realistic USD prices and make calculateAmount currency-aware ([ab7e708](https://github.com/Kolanupaka92/petclub-backend/commit/ab7e708d36bb0d0ea1ac4778f728709cbf620f23))
+* **pricing:** competitor-benchmarked USD prices + vet care pricing ([9b6975e](https://github.com/Kolanupaka92/petclub-backend/commit/9b6975e4294b489ac32a32f547e3fce69ff801d2))
+
 ## [1.31.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.31.0...v1.31.1) (2026-06-29)
 
 
