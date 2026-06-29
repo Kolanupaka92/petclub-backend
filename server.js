@@ -3457,6 +3457,53 @@ app.get('/api/admin/signed-url', auth, adminOnly, async (req, res) => {
   res.json({ success: true, url: data.signedUrl, expiresIn: 60 });
 });
 
+// Admin: list all pending payout requests with bank/UPI details
+app.get('/api/admin/payouts', auth, adminOnly, async (req, res) => {
+  try {
+    const { data: payouts } = await supabase
+      .from('payout_details')
+      .select('*, professional_profiles(id, sub_role, users(name, phone, email))')
+      .order('updated_at', { ascending: false });
+
+    const { data: pendingBookings } = await supabase
+      .from('bookings')
+      .select('professional_id, provider_earnings, currency, payout_status')
+      .eq('status', 'completed')
+      .eq('payout_status', 'pending');
+
+    // Aggregate pending earnings per professional
+    const earningsByProfId = {};
+    for (const b of pendingBookings || []) {
+      if (!earningsByProfId[b.professional_id]) earningsByProfId[b.professional_id] = { inr: 0, usd: 0 };
+      if (b.currency === 'USD') earningsByProfId[b.professional_id].usd += parseFloat(b.provider_earnings || 0);
+      else earningsByProfId[b.professional_id].inr += parseFloat(b.provider_earnings || 0);
+    }
+
+    const result = (payouts || []).map(p => ({
+      ...p,
+      pending_inr: +(earningsByProfId[p.prof_id]?.inr || 0).toFixed(2),
+      pending_usd: +(earningsByProfId[p.prof_id]?.usd || 0).toFixed(2),
+    }));
+
+    res.json({ success: true, payouts: result });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// Admin: mark all pending bookings for a professional as paid
+app.post('/api/admin/payouts/:profId/mark-paid', auth, adminOnly, async (req, res) => {
+  try {
+    const { profId } = req.params;
+    const { error } = await supabase
+      .from('bookings')
+      .update({ payout_status: 'paid' })
+      .eq('professional_id', profId)
+      .eq('status', 'completed')
+      .eq('payout_status', 'pending');
+    if (error) return res.status(500).json({ error: error.message });
+    res.json({ success: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 app.get('/api/admin/pending-verifications', auth, adminOnly, async (req, res) => {
   const { data } = await supabase.from('professional_profiles').select('*, users(name,phone,email), id_documents(*)').eq('verification_status', 'pending');
   res.json({ success: true, pending: data });
