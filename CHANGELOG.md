@@ -1,3 +1,10 @@
+## [1.32.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.2...v1.32.3) (2026-06-29)
+
+
+### Bug Fixes
+
+* add ZOHO_SMTP_USER + ZOHO_SMTP_PASS to REQUIRED_ENV ([6666684](https://github.com/Kolanupaka92/petclub-backend/commit/6666684126ac29791b5bef648352a69b045ddd9a))
+
 ## [1.32.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.1...v1.32.2) (2026-06-29)
 
 
