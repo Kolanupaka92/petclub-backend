@@ -1,3 +1,10 @@
+# [1.31.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.30.2...v1.31.0) (2026-06-29)
+
+
+### Features
+
+* admin payout endpoints — list requests + mark paid ([178b574](https://github.com/Kolanupaka92/petclub-backend/commit/178b574fb332757f56792cac5d214671775b5638))
+
 ## [1.30.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.30.1...v1.30.2) (2026-06-29)
 
 
