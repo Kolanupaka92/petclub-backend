@@ -1,3 +1,10 @@
+## [1.32.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.3...v1.32.4) (2026-06-29)
+
+
+### Bug Fixes
+
+* address three medium findings from code review ([38f2fc1](https://github.com/Kolanupaka92/petclub-backend/commit/38f2fc17f26794d3b3c1dcc600bfb45a1c44eaa1))
+
 ## [1.32.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.2...v1.32.3) (2026-06-29)
 
 
