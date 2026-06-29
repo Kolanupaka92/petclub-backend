@@ -889,9 +889,10 @@ app.post('/api/auth/firebase-verify', authLimit, validate(schemas.firebaseVerify
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     const { rawToken: refreshRaw } = await issueRefreshToken(supabase, user.id);
     logger.info(`[FirebaseVerify] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
+    const isMobile = req.headers['x-client-type'] === 'mobile';
     res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
     res.cookie(REFRESH_COOKIE, refreshRaw, REFRESH_COOKIE_OPTS);
-    res.json({ success: true, isNew, token, refreshToken: refreshRaw, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
+    res.json({ success: true, isNew, token, refreshToken: isMobile ? refreshRaw : undefined, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     logger.error('[FirebaseVerify] Unexpected error at step above:', err);
     res.status(500).json({ error: 'Verification failed. Please try again.' });
@@ -1001,10 +1002,10 @@ app.post('/api/auth/verify-email-otp', authLimit, validate(schemas.verifyEmailOt
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     const { rawToken: refreshRaw } = await issueRefreshToken(supabase, user.id);
     logger.info(`[EmailOTP] ${isNew ? 'New' : 'Returning'} user: ${maskEmail(email)}`);
+    const isMobile = req.headers['x-client-type'] === 'mobile';
     res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
     res.cookie(REFRESH_COOKIE, refreshRaw, REFRESH_COOKIE_OPTS);
-    // refreshToken is included in the body for mobile clients that can't use httpOnly cookies
-    res.json({ success: true, isNew, token, refreshToken: refreshRaw, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
+    res.json({ success: true, isNew, token, refreshToken: isMobile ? refreshRaw : undefined, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     logger.error('[EmailOTP] Verify error:', err.message);
     res.status(500).json({ error: 'Verification failed.' });
@@ -1046,7 +1047,9 @@ app.post('/api/auth/refresh', async (req, res) => {
   const rawToken = req.cookies?.[REFRESH_COOKIE] || req.headers['x-refresh-token'];
   if (!rawToken) return res.status(401).json({ error: 'No refresh token' });
 
-  const isMobile = !req.cookies?.[REFRESH_COOKIE];
+  // Mobile clients cannot use httpOnly cookies — they send X-Client-Type: mobile
+  // and carry the refresh token in SecureStore, passing it via X-Refresh-Token header.
+  const isMobile = req.headers['x-client-type'] === 'mobile' || !req.cookies?.[REFRESH_COOKIE];
 
   try {
     const result = await rotateRefreshToken(supabase, rawToken);
@@ -1198,9 +1201,10 @@ app.post('/api/auth/verify-phone-otp', authLimit, validate(schemas.verifyPhoneOt
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     const { rawToken: refreshRaw } = await issueRefreshToken(supabase, user.id);
     logger.info(`[PhoneOTP] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
+    const isMobile = req.headers['x-client-type'] === 'mobile';
     res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
     res.cookie(REFRESH_COOKIE, refreshRaw, REFRESH_COOKIE_OPTS);
-    res.json({ success: true, isNew, token, refreshToken: refreshRaw, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
+    res.json({ success: true, isNew, token, refreshToken: isMobile ? refreshRaw : undefined, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     logger.error('[PhoneOTP] Verify error:', err.message);
     res.status(500).json({ error: 'Verification failed. Please try again.' });
@@ -1324,6 +1328,7 @@ app.post('/api/users/set-role', auth, validate(schemas.setRole), async (req, res
     const { data: user } = await supabase.from('users').select('*').eq('id', req.user.id).single();
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
     const { rawToken: refreshRaw } = await issueRefreshToken(supabase, user.id);
+    const isMobile = req.headers['x-client-type'] === 'mobile';
     res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
     res.cookie(REFRESH_COOKIE, refreshRaw, REFRESH_COOKIE_OPTS);
     const verificationStatus = role === 'professional' ? 'pending' : null;
@@ -1344,7 +1349,7 @@ app.post('/api/users/set-role', auth, validate(schemas.setRole), async (req, res
       }
     }
 
-    res.json({ success: true, token, refreshToken: refreshRaw, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
+    res.json({ success: true, token, refreshToken: isMobile ? refreshRaw : undefined, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
   } catch (err) {
     logger.error('Set role error:', err.message);
     res.status(500).json({ error: 'Failed to set role.' });
