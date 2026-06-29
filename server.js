@@ -1655,12 +1655,13 @@ app.get('/api/services/catalog', auth, (req, res) => {
   }
   res.setHeader('Cache-Control', 'private, max-age=3600'); // catalog changes rarely — cache for 1 hour per user session
   const {
-    PLATFORM_DISCOUNT, GROOMING_PACKAGES, GROOMING_ADDONS,
+    PLATFORM_DISCOUNT, PLATFORM_DISCOUNT_USD, GROOMING_PACKAGES, GROOMING_ADDONS,
     PET_SIZES, TRAINING_PACKAGES, WALKING_PACKAGES, BOARDING_PACKAGES, VET_SERVICES,
   } = pricingCatalog;
   res.json({
     success: true,
-    platform_discount: PLATFORM_DISCOUNT,
+    platform_discount:     PLATFORM_DISCOUNT,
+    platform_discount_usd: PLATFORM_DISCOUNT_USD,
     grooming: { packages: GROOMING_PACKAGES, addons: GROOMING_ADDONS, pet_sizes: PET_SIZES },
     training: { packages: TRAINING_PACKAGES },
     walking:  { packages: WALKING_PACKAGES },
@@ -2464,17 +2465,17 @@ app.post('/api/bookings', auth, bookingLimit, validate(schemas.createBooking), a
       isLoyaltyRedemption = true;
     }
 
-    //  Pricing  server-side calculation (tamper-proof) 
+    //  Pricing  server-side calculation (tamper-proof)
     // Always recalculate from the catalog; never trust client-supplied amount.
     // When a valid loyalty coupon is applied ' final amount = 0 (free service).
+    // Derive currency first — calculateAmount() needs it to select INR vs USD prices.
+    const customerCurrency = req.user.phone?.startsWith('+91') ? 'INR' : 'USD';
     const pricingResult = pricingCatalog.calculateAmount({
       serviceType: service_type, serviceName: service_name,
       petSize: pet_size, addons: Array.isArray(addons) ? addons : [],
+      currency: customerCurrency,
     });
     const resolvedAmount = isLoyaltyRedemption ? 0 : (pricingResult ? pricingResult.total : null);
-
-    // Derive currency from phone prefix  same logic as frontend
-    const customerCurrency = req.user.phone?.startsWith('+91') ? 'INR' : 'USD';
     // For grooming: split base = total ' PLATFORM_DISCOUNT (150 PETclub offer absorbed)
     const offerForSplit = (service_type === 'Groomer' && !isLoyaltyRedemption && resolvedAmount > 0)
       ? (pricingResult?.discount || pricingCatalog.PLATFORM_DISCOUNT || 0)
