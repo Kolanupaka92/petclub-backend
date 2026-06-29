@@ -11,10 +11,14 @@ const cors    = require('cors');
 const rateLimit = require('express-rate-limit');
 const jwt = require('jsonwebtoken');
 const { createClient } = require('@supabase/supabase-js');
+const ws = require('ws');
 const emailService      = require('./services/emailService');
 const pricingCatalog    = require('./services/pricingCatalog');
 const loyalty           = require('./services/loyaltyService');
 const { PgRateLimitStore } = require('./services/pgRateLimitStore');
+const { validate, schemas } = require('./middleware/validate');
+const { computeSplit, calcCancellation, stripFinancials } = require('./services/revenueService');
+const { issueRefreshToken, rotateRefreshToken, revokeAllForUser, REFRESH_COOKIE, REFRESH_COOKIE_OPTS } = require('./services/refreshTokenService');
 
 //  Structured logging 
 const pino = require('pino');
@@ -37,7 +41,7 @@ if (process.env.SENTRY_DSN) {
 }
 
 //  Startup secret guard  refuse to boot without critical secrets 
-const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY'];
+const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'CRON_SECRET'];
 const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missingEnv.length) {
   logger.error(`\n FATAL: Missing required environment variables: ${missingEnv.join(', ')}\nSet them in Cloud Run env vars and redeploy.\n`);
@@ -61,6 +65,7 @@ const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@mypetclub.app';
 if (!process.env.WEB_APP_URL)   logger.warn('[Config] WEB_APP_URL not set  falling back to https://app.mypetclub.app');
 if (!process.env.WEBSITE_URL)   logger.warn('[Config] WEBSITE_URL not set  falling back to https://mypetclub.app');
 if (!process.env.SUPPORT_EMAIL) logger.warn('[Config] SUPPORT_EMAIL not set  falling back to support@mypetclub.app');
+if (!process.env.HEALTH_SECRET)  logger.warn('[Config] HEALTH_SECRET not set — /api/health will not return version or config details to unauthenticated callers (safe, but set it for CI monitoring)');
 
 //  Security helpers 
 // Mask phone/email in logs  never log full PII
@@ -73,99 +78,10 @@ const maskEmail = e => {
 // Strip HTML tags from user inputs  prevents XSS in admin emails
 const sanitize = s => typeof s === 'string' ? s.replace(/<[^>]*>/g, '').trim().slice(0, 2000) : s;
 
-//  Cancellation policy 
-// Cancel  2 h before appointment  ' full refund, no fee
-// Cancel < 2 h before              ' 300 cancellation fee, refund rest
-// Customer no-show at location     ' 300 fee, refund rest
-// No reschedule under any circumstances
-const CANCEL_FEE_INR   = 300;
-const CANCEL_FREE_HOURS = 2; // hours before booking that allow fee-free cancellation
-
-function calcCancellation(totalAmount, scheduledAt, byNoShow = false) {
-  const total    = parseFloat(totalAmount) || 0;
-  const now      = Date.now();
-  const bookingMs = scheduledAt ? new Date(scheduledAt).getTime() : now;
-  const hoursUntil = (bookingMs - now) / 3600000;
-  const feeFree  = !byNoShow && hoursUntil >= CANCEL_FREE_HOURS;
-  const fee      = feeFree ? 0 : Math.min(CANCEL_FEE_INR, total);
-  return {
-    cancellation_fee:  +fee.toFixed(2),
-    refund_amount:     +Math.max(0, total - fee).toFixed(2),
-    refund_status:     total > 0 ? 'pending' : 'not_applicable',
-    fee_free:          feeFree,
-    hours_until:       +hoursUntil.toFixed(2),
-  };
-}
-
-//  Revenue split 
-// Service-type-specific rates (no travel allowance, no insurance deductions):
-//   Groomer  ' provider 70% / platform 30%  (of net after PETclub offer)
-//   All others ' env-var-driven (default 45% / 55%)
-// All computation is server-side only  clients never receive platform_fee.
-const PLATFORM_RATE   = parseFloat(process.env.PLATFORM_RATE)        || 0.55;
-const PROVIDER_RATE   = parseFloat(process.env.PROVIDER_RATE)        || 0.45;
-const GROOMER_PROVIDER_RATE  = 0.70;
-const GROOMER_PLATFORM_RATE  = 0.30;
-
-// Gateway fee rates (absorbed by PETclub, never charged to provider)
-const GW_PCT_USD      = parseFloat(process.env.GATEWAY_FEE_PCT_USD)  || 0.029;   // 2.9%
-const GW_FLAT_USD     = parseFloat(process.env.GATEWAY_FEE_FLAT_USD) || 0.30;    // $0.30
-const GW_PCT_INR      = parseFloat(process.env.GATEWAY_FEE_PCT_INR)  || 0.02;    // 2%
-const GW_FLAT_INR     = parseFloat(process.env.GATEWAY_FEE_FLAT_INR) || 0.03;    // 0.03
-
-// computeSplit(totalAmount, offerAmount, serviceType, currency)
-//   totalAmount   what the customer paid
-//   offerAmount   PETclub subsidy absorbed (e.g. 150 platform discount)
-//                  deducted from split base: net = totalAmount - offerAmount
-//   serviceType   'Groomer' uses 70/30; others use PROVIDER_RATE/PLATFORM_RATE
-//   currency      'INR' | 'USD'
-function computeSplit(totalAmount, offerAmount = 0, serviceType = '', currency = 'INR') {
-  const amt = parseFloat(totalAmount);
-  if (!amt || isNaN(amt) || amt <= 0) return null;
-  const offer = Math.max(0, parseFloat(offerAmount) || 0);
-  const net   = Math.max(0, +(amt - offer).toFixed(2)); // split base after PETclub offer
-
-  const isGroomer   = serviceType === 'Groomer';
-  const provRate    = isGroomer ? GROOMER_PROVIDER_RATE : PROVIDER_RATE;
-  const platRate    = isGroomer ? GROOMER_PLATFORM_RATE : PLATFORM_RATE;
-
-  // Gateway fee absorbed by PETclub (from our platform share, never from provider's cut)
-  const gatewayFee = currency === 'USD'
-    ? +(amt * GW_PCT_USD + GW_FLAT_USD).toFixed(2)
-    : +(amt * GW_PCT_INR + GW_FLAT_INR).toFixed(2);
-
-  return {
-    total_amount:         +amt.toFixed(2),
-    petclub_offer_amount: offer > 0 ? offer : null,
-    net_split_amount:     offer > 0 ? net   : null,  // null = no offer, split was on full amount
-    platform_fee:         +(net * platRate).toFixed(2),
-    provider_earnings:    +(net * provRate).toFixed(2),
-    gateway_fee:          gatewayFee,
-  };
-}
-
-// Role-based field stripping  never send platform economics to providers/customers
-function stripFinancials(booking, role) {
-  const b = { ...booking };
-  if (role === 'professional') {
-    // Provider sees their cut + payout status; nothing else
-    delete b.total_amount;
-    delete b.platform_fee;
-    delete b.gateway_fee;
-  } else if (role === 'customer') {
-    // Customer sees what they paid; internal split is hidden
-    delete b.platform_fee;
-    delete b.provider_earnings;
-    delete b.gateway_fee;
-    delete b.payout_status;
-    delete b.payout_reference;
-  }
-  // admin: full data  no deletions
-  return b;
-}
+// Cancellation policy, revenue split, stripFinancials — see services/revenueService.js
 
 //  Services 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY);
+const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_SERVICE_KEY, { realtime: { transport: ws } });
 
 //  Email  delegated to services/emailService.js 
 // SMTP config and all template rendering live in that module.
@@ -289,6 +205,13 @@ const otpLimit = rateLimit({
   },
   handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait a few minutes and try again.' }),
 });
+// Contact form rate limit — max 5 submissions per hour per IP (prevents email spam)
+const contactLimit = rateLimit({
+  windowMs: 60 * 60 * 1000, max: 5,
+  standardHeaders: true, legacyHeaders: false,
+  store: new PgRateLimitStore(),
+  handler: (req, res) => res.status(429).json({ error: 'Too many contact requests. Please try again later.' }),
+});
 // Auth verify rate limit  max 20 attempts per 15 min per IP (prevents brute-force)
 const authLimit = rateLimit({
   windowMs: 15 * 60 * 1000, max: 20,
@@ -306,11 +229,21 @@ const _authCache = new Map();
 const AUTH_CACHE_TTL_MS = 60_000;
 
 const AUTH_COOKIE = 'petclub_token';
+const JWT_EXPIRES_MS = (() => {
+  // Parse JWT_EXPIRES_IN (e.g. '7d', '24h') into milliseconds so cookie
+  // maxAge always matches token lifetime — they must not diverge.
+  const val = JWT_EXPIRES_IN;
+  if (val.endsWith('d')) return parseInt(val) * 86400 * 1000;
+  if (val.endsWith('h')) return parseInt(val) * 3600 * 1000;
+  if (val.endsWith('m')) return parseInt(val) * 60 * 1000;
+  return 7 * 86400 * 1000; // fallback: 7 days
+})();
+
 const COOKIE_OPTS = {
   httpOnly: true,
   secure: true,
-  sameSite: 'strict',
-  maxAge: 30 * 24 * 60 * 60 * 1000,  // 30 days in ms
+  sameSite: 'lax',     // 'strict' breaks redirect-based OAuth/SSO flows
+  maxAge: JWT_EXPIRES_MS,
   path: '/',
 };
 
@@ -446,13 +379,13 @@ const sendEmail = emailService.sendRawEmail;
   }
 })();
 
-// 
-//  BOOKING TIMEOUT CRON  runs every 2 minutes
-//  (also runs lazily on booking API calls as a safety net)
-// 
-setInterval(() => {
-  processTimedOutAssignments().catch(e => logger.error('[Cron] Booking timeout check failed:', e.message));
-}, 2 * 60 * 1000);
+//
+//  BOOKING TIMEOUT CRON
+//  Driven by Cloud Scheduler → POST /api/cron/booking-timeout (every 2 min)
+//  The setInterval below is intentionally removed to avoid duplicate execution
+//  on multi-instance Cloud Run deployments. The lazy safety-net call on booking
+//  API routes (processTimedOutAssignments()) is still in place.
+//
 
 // 
 //  SUSPENDED USER AUTO-DELETE CRON  runs every hour
@@ -550,13 +483,18 @@ const autoDeleteSuspendedUsers = async () => {
       ).catch(e => logger.error('[AutoDelete] Email failed:', e.message));
     }
 
-    // Delete related records then users
+    // Delete related records then soft-delete users
     const idsToDelete = toDelete.map(u => u.id);
     await supabase.from('professional_profiles').delete().in('user_id', idsToDelete);
     await supabase.from('customer_profiles').delete().in('user_id', idsToDelete).catch(() => {});
     await supabase.from('pets').update({ deleted_at: new Date().toISOString() }).in('owner_id', idsToDelete).catch(() => {});
     await supabase.from('otp_tokens').delete().in('phone', toDelete.map(u => u.phone)).catch(() => {});
-    await supabase.from('admin_logs').delete().in('target_id', idsToDelete);
+    // Preserve audit logs for compliance — anonymize PII instead of deleting.
+    // admin_logs are the compliance audit trail and must not be hard-deleted.
+    await supabase.from('admin_logs')
+      .update({ notes: '[redacted — user auto-deleted]' })
+      .in('target_id', idsToDelete)
+      .catch(e => logger.warn('[AutoDelete] Audit log anonymization failed:', e.message));
     await supabase.from('users').update({ deleted_at: new Date().toISOString() }).in('id', idsToDelete);
 
     logger.info(`[AutoDelete] Deleted ${idsToDelete.length} suspended users: ${idsToDelete.join(', ')}`);
@@ -565,19 +503,11 @@ const autoDeleteSuspendedUsers = async () => {
   }
 };
 
-setInterval(() => {
-  autoDeleteSuspendedUsers().catch(e => logger.error('[Cron] Auto-delete suspended users failed:', e.message));
-}, 60 * 60 * 1000); // every hour
-
-//  Expired OTP cleanup  runs every hour 
-// Prevents otp_tokens table accumulating verified/expired codes
-setInterval(async () => {
-  try {
-    const { count } = await supabase.from('otp_tokens')
-      .delete({ count: 'exact' }).lt('expires_at', new Date().toISOString());
-    if (count > 0) logger.info(`[OTP Cleanup] Purged ${count} expired token(s)`);
-  } catch (e) { logger.warn('[OTP Cleanup] Failed:', e.message); }
-}, 60 * 60 * 1000);
+//
+//  AUTO-DELETE, OTP CLEANUP, HARD-PURGE CRONS
+//  Driven by Cloud Scheduler → their respective /api/cron/* HTTP endpoints.
+//  setIntervals removed to prevent duplicate execution on multi-instance deployments.
+//
 
 // "" Hard-purge soft-deleted records older than 90 days " runs every 24 h ""
 // Permanently removes rows where deleted_at < NOW() - 90 days from
@@ -767,29 +697,54 @@ const processTimedOutAssignments = async () => {
     .lt('response_deadline', new Date().toISOString());
   if (!timedOut?.length) return;
 
-  for (const assignment of timedOut) {
-    await supabase.from('booking_assignments')
-      .update({ status: 'timed_out', responded_at: new Date().toISOString() }).eq('id', assignment.id);
+  const now = new Date().toISOString();
+  const bookingIds   = timedOut.map(a => a.booking_id);
+  const assignmentIds = timedOut.map(a => a.id);
+  const petIds = [...new Set(timedOut.map(a => a.bookings?.pet_id).filter(Boolean))];
+
+  // Batch all read queries in parallel
+  const [{ data: triedAll }, { data: petsAll }] = await Promise.all([
+    supabase.from('booking_assignments').select('booking_id, professional_id')
+      .in('booking_id', bookingIds).in('status', ['rejected', 'timed_out', 'accepted']),
+    petIds.length
+      ? supabase.from('pets').select('id, name, health_notes').in('id', petIds)
+      : Promise.resolve({ data: [] }),
+  ]);
+
+  // Mark all timed-out assignments in one update
+  await supabase.from('booking_assignments')
+    .update({ status: 'timed_out', responded_at: now })
+    .in('id', assignmentIds);
+
+  // Build lookup maps
+  const triedByBooking = {};
+  for (const t of triedAll || []) {
+    (triedByBooking[t.booking_id] = triedByBooking[t.booking_id] || []).push(t.professional_id);
+  }
+  const petsById = {};
+  for (const p of petsAll || []) petsById[p.id] = p;
+
+  // Process each assignment concurrently
+  await Promise.allSettled(timedOut.map(async (assignment) => {
     const bk = assignment.bookings;
-    if (!bk || bk.assignment_status === 'confirmed') continue;
-    // Fetch all previously tried pros for this booking
-    const { data: tried } = await supabase.from('booking_assignments').select('professional_id')
-      .eq('booking_id', assignment.booking_id).in('status', ['rejected', 'timed_out', 'accepted']);
-    const excludeIds = tried?.map(r => r.professional_id) || [];
-    // Get pet name + health notes for notification
-    let petName = 'Pet', petHealthNotes = null;
-    if (bk.pet_id) {
-      const { data: pet } = await supabase.from('pets').select('name, health_notes').eq('id', bk.pet_id).single();
-      petName = pet?.name || 'Pet';
-      petHealthNotes = pet?.health_notes || null;
-    }
+    if (!bk || bk.assignment_status === 'confirmed') return;
+
+    const excludeIds = triedByBooking[assignment.booking_id] || [];
+    const pet = bk.pet_id ? petsById[bk.pet_id] : null;
+
     const nextPro = await findNextPro(bk.city || '', bk.service_type || '', excludeIds, bk.address_lat, bk.address_lng);
     if (nextPro) {
-      await offerBookingToPro(assignment.booking_id, nextPro, { ...bk, pet_name: petName, pet_health_notes: petHealthNotes });
+      await offerBookingToPro(assignment.booking_id, nextPro, {
+        ...bk,
+        pet_name: pet?.name || 'Pet',
+        pet_health_notes: pet?.health_notes || null,
+      });
     } else {
-      await supabase.from('bookings').update({ assignment_status: 'no_pros_available', professional_id: null }).eq('id', assignment.booking_id);
+      await supabase.from('bookings')
+        .update({ assignment_status: 'no_pros_available', professional_id: null })
+        .eq('id', assignment.booking_id);
     }
-  }
+  }));
 };
 
 // 
@@ -811,7 +766,7 @@ app.post('/api/auth/verify-otp', (req, res) => res.status(410).json({
 //  We verify it with Firebase Admin, then find/create the user
 //  in Supabase and return our own JWT (same shape as verify-otp).
 // 
-app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
+app.post('/api/auth/firebase-verify', authLimit, validate(schemas.firebaseVerify), async (req, res) => {
   try {
     const { idToken } = req.body;
     if (!idToken) return res.status(400).json({ error: 'Firebase ID token required' });
@@ -882,9 +837,11 @@ app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
 
     logger.info(`[FirebaseVerify] Signing JWT for user ${user.id} (${maskPhone(phone)})`);
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const { rawToken: refreshRaw } = await issueRefreshToken(supabase, user.id);
     logger.info(`[FirebaseVerify] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
     res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
-    res.json({ success: true, isNew, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
+    res.cookie(REFRESH_COOKIE, refreshRaw, REFRESH_COOKIE_OPTS);
+    res.json({ success: true, isNew, token, refreshToken: refreshRaw, user: { id: user.id, name: user.name, phone: user.phone, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     logger.error('[FirebaseVerify] Unexpected error at step above:', err);
     res.status(500).json({ error: 'Verification failed. Please try again.' });
@@ -894,7 +851,7 @@ app.post('/api/auth/firebase-verify', authLimit, async (req, res) => {
 // 
 //  AUTH: EMAIL OTP  send (for users without phone access)
 // 
-app.post('/api/auth/send-email-otp', otpLimit, async (req, res) => {
+app.post('/api/auth/send-email-otp', otpLimit, validate(schemas.sendEmailOtp), async (req, res) => {
   try {
     const { email } = req.body;
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
@@ -938,7 +895,7 @@ app.post('/api/auth/send-email-otp', otpLimit, async (req, res) => {
 // 
 //  AUTH: EMAIL OTP  verify ' issue JWT
 // 
-app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
+app.post('/api/auth/verify-email-otp', authLimit, validate(schemas.verifyEmailOtp), async (req, res) => {
   try {
     const { email, otp } = req.body;
     if (!email || !otp) return res.status(400).json({ error: 'Email and OTP required' });
@@ -991,9 +948,12 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
     }
 
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const { rawToken: refreshRaw } = await issueRefreshToken(supabase, user.id);
     logger.info(`[EmailOTP] ${isNew ? 'New' : 'Returning'} user: ${maskEmail(email)}`);
     res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
-    res.json({ success: true, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
+    res.cookie(REFRESH_COOKIE, refreshRaw, REFRESH_COOKIE_OPTS);
+    // refreshToken is included in the body for mobile clients that can't use httpOnly cookies
+    res.json({ success: true, isNew, token, refreshToken: refreshRaw, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     logger.error('[EmailOTP] Verify error:', err.message);
     res.status(500).json({ error: 'Verification failed.' });
@@ -1004,13 +964,71 @@ app.post('/api/auth/verify-email-otp', authLimit, async (req, res) => {
 //  AUTH: PHONE OTP via Twilio SMS (replaces Firebase reCAPTCHA)
 //  POST /api/auth/send-phone-otp   { phone: '+91XXXXXXXXXX' }
 //  POST /api/auth/verify-phone-otp { phone, otp }
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', async (req, res) => {
+  // Revoke refresh token if present, then clear both cookies
+  const raw = req.cookies?.[REFRESH_COOKIE];
+  if (raw) {
+    // Best-effort — don't fail logout if DB is down
+    try {
+      const hash = require('crypto').createHash('sha256').update(raw).digest('hex');
+      await supabase.from('refresh_tokens').update({ revoked_at: new Date().toISOString() })
+        .eq('token_hash', hash).is('revoked_at', null);
+    } catch { /* ignore */ }
+  }
+  // Also revoke all tokens for the authenticated user (belt + suspenders)
+  if (req.cookies?.[AUTH_COOKIE]) {
+    try {
+      const tok = req.cookies[AUTH_COOKIE];
+      const decoded = require('jsonwebtoken').decode(tok);
+      if (decoded?.id) await revokeAllForUser(supabase, decoded.id);
+    } catch { /* ignore */ }
+  }
   res.clearCookie(AUTH_COOKIE, { ...COOKIE_OPTS, maxAge: 0 });
+  res.clearCookie(REFRESH_COOKIE, { ...require('./services/refreshTokenService').REFRESH_COOKIE_OPTS, maxAge: 0 });
   res.json({ success: true });
 });
 
+// POST /api/auth/refresh — exchange a valid refresh token for a new access token
+// Web:    reads token from httpOnly cookie (path-scoped to this endpoint)
+// Mobile: reads token from X-Refresh-Token header (Bearer token clients can't use cookies)
+app.post('/api/auth/refresh', async (req, res) => {
+  const rawToken = req.cookies?.[REFRESH_COOKIE] || req.headers['x-refresh-token'];
+  if (!rawToken) return res.status(401).json({ error: 'No refresh token' });
+
+  const isMobile = !req.cookies?.[REFRESH_COOKIE];
+
+  try {
+    const result = await rotateRefreshToken(supabase, rawToken);
+    if (!result) {
+      // Invalid, expired, or reuse detected — force re-login
+      res.clearCookie(AUTH_COOKIE, { ...COOKIE_OPTS, maxAge: 0 });
+      res.clearCookie(REFRESH_COOKIE, { ...require('./services/refreshTokenService').REFRESH_COOKIE_OPTS, maxAge: 0 });
+      return res.status(401).json({ error: 'Session expired. Please sign in again.' });
+    }
+
+    const { userId, rawToken: newRefreshRaw } = result;
+
+    // Load user to get role (needed for JWT claims)
+    const { data: user, error: userErr } = await supabase
+      .from('users').select('id, role').eq('id', userId).single();
+    if (userErr || !user) return res.status(401).json({ error: 'User not found' });
+
+    const newAccessToken = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+
+    if (!isMobile) {
+      res.cookie(AUTH_COOKIE, newAccessToken, COOKIE_OPTS);
+      res.cookie(REFRESH_COOKIE, newRefreshRaw, require('./services/refreshTokenService').REFRESH_COOKIE_OPTS);
+    }
+    // Always include tokens in body — mobile clients store them; web ignores them
+    res.json({ success: true, token: newAccessToken, refreshToken: isMobile ? newRefreshRaw : undefined });
+  } catch (err) {
+    logger.error('[Refresh] Token rotation failed:', err.message);
+    res.status(500).json({ error: 'Token refresh failed' });
+  }
+});
+
 // 
-app.post('/api/auth/send-phone-otp', otpLimit, async (req, res) => {
+app.post('/api/auth/send-phone-otp', otpLimit, validate(schemas.sendPhoneOtp), async (req, res) => {
   try {
     const { phone, email: fallbackEmail } = req.body;
     if (!phone || !/^\+[1-9]\d{6,14}$/.test(phone))
@@ -1079,7 +1097,7 @@ app.post('/api/auth/send-phone-otp', otpLimit, async (req, res) => {
   }
 });
 
-app.post('/api/auth/verify-phone-otp', authLimit, async (req, res) => {
+app.post('/api/auth/verify-phone-otp', authLimit, validate(schemas.verifyPhoneOtp), async (req, res) => {
   try {
     const { phone, otp } = req.body;
     if (!phone || !otp) return res.status(400).json({ error: 'Phone and OTP required' });
@@ -1126,9 +1144,11 @@ app.post('/api/auth/verify-phone-otp', authLimit, async (req, res) => {
     }
 
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const { rawToken: refreshRaw } = await issueRefreshToken(supabase, user.id);
     logger.info(`[PhoneOTP] ${isNew ? 'New' : 'Returning'} user: ${maskPhone(phone)}`);
     res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
-    res.json({ success: true, isNew, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
+    res.cookie(REFRESH_COOKIE, refreshRaw, REFRESH_COOKIE_OPTS);
+    res.json({ success: true, isNew, token, refreshToken: refreshRaw, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole } });
   } catch (err) {
     logger.error('[PhoneOTP] Verify error:', err.message);
     res.status(500).json({ error: 'Verification failed. Please try again.' });
@@ -1138,7 +1158,7 @@ app.post('/api/auth/verify-phone-otp', authLimit, async (req, res) => {
 // 
 //  AUTH: SET ROLE (called once for new users)
 // 
-app.post('/api/users/set-role', auth, async (req, res) => {
+app.post('/api/users/set-role', auth, validate(schemas.setRole), async (req, res) => {
   try {
     const { role, subRole } = req.body;
     // Sanitize all text inputs to strip HTML and limit length
@@ -1251,7 +1271,9 @@ app.post('/api/users/set-role', auth, async (req, res) => {
 
     const { data: user } = await supabase.from('users').select('*').eq('id', req.user.id).single();
     const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: JWT_EXPIRES_IN });
+    const { rawToken: refreshRaw } = await issueRefreshToken(supabase, user.id);
     res.cookie(AUTH_COOKIE, token, COOKIE_OPTS);
+    res.cookie(REFRESH_COOKIE, refreshRaw, REFRESH_COOKIE_OPTS);
     const verificationStatus = role === 'professional' ? 'pending' : null;
     // subRole already defined above from req.body
 
@@ -1270,7 +1292,7 @@ app.post('/api/users/set-role', auth, async (req, res) => {
       }
     }
 
-    res.json({ success: true, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
+    res.json({ success: true, token, refreshToken: refreshRaw, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
   } catch (err) {
     logger.error('Set role error:', err.message);
     res.status(500).json({ error: 'Failed to set role.' });
@@ -1280,7 +1302,7 @@ app.post('/api/users/set-role', auth, async (req, res) => {
 // 
 //  CONTACT: SEND APP LINK (website form)
 // 
-app.post('/api/contact/send-link', async (req, res) => {
+app.post('/api/contact/send-link', contactLimit, validate(schemas.sendLink), async (req, res) => {
   try {
     const { name, phone, email, city, pettype, service, pet } = req.body;
     // Sanitize free-text message to prevent HTML injection in admin email
@@ -1398,11 +1420,17 @@ app.post('/api/contact/send-link', async (req, res) => {
 // Bootstrap-only: promote a phone number to admin role.
 // Rate-limited (authLimit) to prevent brute-force of ADMIN_SECRET.
 // After initial setup, disable by removing ADMIN_SECRET from env vars.
-app.post('/api/admin/make-admin', authLimit, async (req, res) => {
+app.post('/api/admin/make-admin', authLimit, validate(schemas.makeAdmin), async (req, res) => {
   try {
     const { phone, countryCode = '91', secret } = req.body;
-    if (!process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Bootstrap endpoint disabled  ADMIN_SECRET not set' });
-    if (!secret || secret !== process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Invalid secret' });
+    if (!process.env.ADMIN_SECRET) return res.status(403).json({ error: 'Bootstrap endpoint disabled — ADMIN_SECRET not set' });
+    if (!secret) return res.status(403).json({ error: 'Invalid secret' });
+    // Constant-time comparison prevents timing attacks from measuring === short-circuit
+    const expected = Buffer.from(process.env.ADMIN_SECRET);
+    const provided = Buffer.from(String(secret));
+    const match = expected.length === provided.length &&
+      crypto.timingSafeEqual(expected, provided);
+    if (!match) return res.status(403).json({ error: 'Invalid secret' });
     const fullPhone = `+${countryCode}${phone}`;
     const { data: user } = await supabase.from('users').select('*').eq('phone', fullPhone).single();
     if (!user) return res.status(404).json({ error: 'User not found. Sign in first, then call this endpoint.' });
@@ -1432,7 +1460,7 @@ app.get('/api/users/me', auth, async (req, res) => {
   res.json({ success: true, user });
 });
 
-app.put('/api/users/me', auth, async (req, res) => {
+app.put('/api/users/me', auth, validate(schemas.updateMe), async (req, res) => {
   const name = sanitize(req.body.name), email = sanitize(req.body.email);
   const city = sanitize(req.body.city), area = sanitize(req.body.area);
   const address = sanitize(req.body.address), pincode = sanitize(req.body.pincode);
@@ -1479,7 +1507,7 @@ app.get('/api/pets', auth, async (req, res) => {
   res.json({ success: true, pets: data });
 });
 
-app.post('/api/pets', auth, async (req, res) => {
+app.post('/api/pets', auth, validate(schemas.createPet), async (req, res) => {
   // Allowlist: never accept owner_id, id, or any computed field from the client
   const { name, species, breed, age, gender, dob, weight, health_notes, photo_url } = req.body;
   if (!name || !species) return res.status(400).json({ error: 'Pet name and species are required' });
@@ -1499,7 +1527,7 @@ app.post('/api/pets', auth, async (req, res) => {
   res.json({ success: true, pet: data });
 });
 
-app.put('/api/pets/:id', auth, async (req, res) => {
+app.put('/api/pets/:id', auth, validate(schemas.updatePet), async (req, res) => {
   const { name, species, breed, age, gender, dob, weight, health_notes, photo_url } = req.body;
   const updates = {};
   if (name         !== undefined) updates.name         = sanitize(name);
@@ -1514,6 +1542,7 @@ app.put('/api/pets/:id', auth, async (req, res) => {
   const { data, error } = await supabase.from('pets').update(updates)
     .eq('id', req.params.id).eq('owner_id', req.user.id).select().single();
   if (error) return res.status(400).json({ error: error.message });
+  if (!data) return res.status(404).json({ error: 'Pet not found or access denied' });
   res.json({ success: true, pet: data });
 });
 
@@ -1553,15 +1582,30 @@ app.get('/api/pets/:petId/records/:type', auth, async (req, res) => {
   res.json({ success: true, records: data });
 });
 
+// Allowlisted columns per record type — never spread req.body directly into a DB insert.
+// Spreading would let a client inject arbitrary columns (created_at, pet_id override, etc.).
+const RECORD_ALLOWED_FIELDS = {
+  grooming: ['service', 'by', 'cost', 'date', 'notes', 'rating'],
+  training: ['session', 'by', 'cost', 'date', 'notes', 'rating'],
+  food:     ['product', 'brand', 'ftype', 'qty', 'cost', 'date', 'notes'],
+  vet:      ['detail', 'vet', 'clinic', 'vtype', 'next_due', 'cost', 'date', 'notes'],
+};
+
 app.post('/api/pets/:petId/records/:type', auth, async (req, res) => {
-  const tbl = TABLES[req.params.type];
+  const tbl  = TABLES[req.params.type];
+  const type = req.params.type;
   if (!tbl) return res.status(400).json({ error: 'Invalid type. Use: grooming, training, food, vet' });
 
   const denied = await assertPetOwnership(req.params.petId, req.user.id, req.user.role);
   if (denied) return res.status(denied.status).json({ error: denied.error });
 
-  // Remove any client-supplied pet_id  always use the authenticated route parameter
-  const { pet_id: _ignored, id: _id, ...safeBody } = req.body;
+  // Pick only the columns that belong to this record type
+  const allowed = RECORD_ALLOWED_FIELDS[type];
+  const safeBody = {};
+  for (const key of allowed) {
+    if (req.body[key] !== undefined) safeBody[key] = sanitize(req.body[key]);
+  }
+
   const { data, error } = await supabase.from(tbl)
     .insert({ pet_id: req.params.petId, ...safeBody }).select().single();
   if (error) return res.status(400).json({ error: error.message });
@@ -1630,7 +1674,7 @@ app.post('/api/loyalty/redeem', auth, async (req, res) => {
 });
 
 // POST /api/loyalty/validate-coupon  check coupon before booking (customer only)
-app.post('/api/loyalty/validate-coupon', auth, async (req, res) => {
+app.post('/api/loyalty/validate-coupon', auth, validate(schemas.validateCoupon), async (req, res) => {
   const { code } = req.body;
   if (!code) return res.status(400).json({ error: 'Coupon code required' });
   const result = await loyalty.validateCoupon(supabase, code, req.user.id);
@@ -1639,7 +1683,7 @@ app.post('/api/loyalty/validate-coupon', auth, async (req, res) => {
 });
 
 // POST /api/admin/loyalty/award  manual award (admin only)
-app.post('/api/admin/loyalty/award', auth, adminOnly, async (req, res) => {
+app.post('/api/admin/loyalty/award', auth, adminOnly, validate(schemas.awardLoyalty), async (req, res) => {
   const { userId, points, type = 'admin_award', description } = req.body;
   if (!userId || !points) return res.status(400).json({ error: 'userId and points required' });
   const result = await loyalty.awardPoints(supabase, userId, points, type, description || 'Admin award');
@@ -1872,19 +1916,29 @@ app.get('/api/admin/revenue-report', auth, adminOnly, async (req, res) => {
 // a booking is confirmed (via the booking detail endpoint).
 app.get('/api/professionals', async (req, res) => {
   const { city, sub_role } = req.query;
+  const page     = Math.max(1, parseInt(req.query.page)  || 1);
+  const pageSize = Math.min(50, Math.max(1, parseInt(req.query.limit) || 20));
+  const from = (page - 1) * pageSize;
+  const to   = from + pageSize - 1;
+
   let q = supabase
     .from('professional_profiles')
     .select(
       'id, user_id, sub_role, city, area, rating, total_reviews, bio, ' +
       'experience, service_areas, langs, services, is_available, ' +
-      'users(name)',   //  name only; phone/email intentionally excluded
+      'users(name)',   // name only; phone/email intentionally excluded
+      { count: 'exact' }
     )
     .eq('verification_status', 'approved')
     .eq('is_available', true);
   if (city)     q = q.ilike('city', `%${city}%`);
   if (sub_role) q = q.eq('sub_role', sub_role);
-  const { data } = await q.order('rating', { ascending: false });
-  res.json({ success: true, professionals: data });
+  const { data, count } = await q.order('rating', { ascending: false }).range(from, to);
+  res.json({
+    success: true,
+    professionals: data,
+    pagination: { page, pageSize, total: count || 0, totalPages: Math.ceil((count || 0) / pageSize) },
+  });
 });
 
 app.get('/api/professionals/me', auth, async (req, res) => {
@@ -1896,7 +1950,7 @@ app.get('/api/professionals/me', auth, async (req, res) => {
   res.json({ success: true, profile: { ...prof, ...user } });
 });
 
-app.put('/api/professionals/me', auth, async (req, res) => {
+app.put('/api/professionals/me', auth, validate(schemas.updateProfessional), async (req, res) => {
   if (req.user.role !== 'professional' && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Access restricted to professionals.' });
   }
@@ -1977,7 +2031,7 @@ app.put('/api/professionals/me', auth, async (req, res) => {
 });
 
 // Toggle online/offline availability  with admin email notification
-app.put('/api/professionals/availability', auth, async (req, res) => {
+app.put('/api/professionals/availability', auth, validate(schemas.setAvailability), async (req, res) => {
   if (req.user.role !== 'professional' && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Access restricted to professionals.' });
   }
@@ -2020,7 +2074,7 @@ app.put('/api/professionals/availability', auth, async (req, res) => {
   res.json({ success: true, is_available, message: is_available ? 'You are now Online ' : 'You are now Offline ' });
 });
 
-app.post('/api/professionals/apply', auth, async (req, res) => {
+app.post('/api/professionals/apply', auth, validate(schemas.applyProfessional), async (req, res) => {
   // Allowlist: never accept verification_status or is_available from client
   const { sub_role, city, address, bio, experience } = req.body;
   if (sub_role && !['Groomer', 'Trainer', 'Vet', 'Walker', 'Boarding'].includes(sub_role))
@@ -2200,7 +2254,7 @@ app.post('/api/users/upload-id-photo', auth, async (req, res) => {
   }
 });
 
-app.post('/api/professionals/payout', auth, async (req, res) => {
+app.post('/api/professionals/payout', auth, validate(schemas.payoutRequest), async (req, res) => {
   if (req.user.role !== 'professional') return res.status(403).json({ error: 'Professionals only' });
   const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
   if (!prof) return res.status(404).json({ error: 'Professional profile not found' });
@@ -2273,11 +2327,14 @@ app.get('/api/bookings', auth, async (req, res) => {
 // All bookings store which version the user agreed to at the time they booked.
 const TERMS_VERSION = 'v1';
 
-app.post('/api/bookings', auth, async (req, res) => {
+app.post('/api/bookings', auth, validate(schemas.createBooking), async (req, res) => {
   try {
+    if (req.user.role !== 'customer' && req.user.role !== 'admin')
+      return res.status(403).json({ error: 'Only customers can create bookings.' });
+
     processTimedOutAssignments().catch(e => logger.error(e)); // background cleanup
 
-    //  Clickwrap consent guard 
+    //  Clickwrap consent guard
     // The client MUST send terms_accepted: true.  This is validated server-side
     // so browser "Inspect Element" tricks that bypass the checkbox are rejected.
     if (!req.body.terms_accepted) {
@@ -2343,65 +2400,57 @@ app.post('/api/bookings', auth, async (req, res) => {
       : 0;
     const split = computeSplit(resolvedAmount, offerForSplit, service_type, customerCurrency);
 
-    const { data: booking, error: bookingInsertErr } = await supabase.from('bookings').insert({
-      customer_id: req.user.id, status: 'upcoming',
-      assignment_status: 'searching',
-      service_type: service_type || null, service_name: service_name || null,
-      pet_id: pet_id || null, scheduled_at: scheduled_at || null,
-      city: city || null, address: address || null, notes: notes || null,
-      amount: resolvedAmount,
-      // W-4 fix: GPS coords in the initial insert  no separate fire-and-forget
-      // update needed. The old approach silently dropped coordinates if Supabase
-      // timed out on the second update, causing the 70km dispatch to fall back to
-      // city-name matching and potentially dispatch the wrong professional.
-      address_lat: addressLat || null,
-      address_lng: addressLng || null,
-      // Accounting flags  let admin know this was a loyalty-redeemed job
-      is_loyalty_redemption: isLoyaltyRedemption,
-      coupon_code_used:      couponCode,
-      // Revenue split columns (null when no amount provided or loyalty free)
-      total_amount:         split?.total_amount         ?? null,
-      petclub_offer_amount: split?.petclub_offer_amount ?? null,
-      platform_fee:         split?.platform_fee         ?? null,
-      provider_earnings:    split?.provider_earnings    ?? null,
-      gateway_fee:          split?.gateway_fee          ?? null,
-      currency:          customerCurrency,
-      payout_status:     'pending',
-      // Clickwrap consent audit trail  server-side timestamp, not client-supplied
-      terms_version:     TERMS_VERSION,
-      terms_accepted_at: new Date().toISOString(),
-    }).select().single();
-    if (!booking || bookingInsertErr) {
-      logger.error('Create booking insert error:', bookingInsertErr?.message);
+    // Atomic booking creation via Postgres RPC — booking insert + coupon mark-used
+    // happen in a single transaction. A coupon race condition can no longer result
+    // in a booking with no valid coupon, or a coupon used twice.
+    // See: supabase-booking-transaction-migration.sql
+    const { data: rpcData, error: rpcErr } = await supabase.rpc('create_booking_atomic', {
+      p_customer_id:          req.user.id,
+      p_service_type:         service_type || null,
+      p_service_name:         service_name || null,
+      p_city:                 city || null,
+      p_pet_id:               pet_id || null,
+      p_scheduled_at:         scheduled_at || null,
+      p_address:              address || null,
+      p_notes:                notes || null,
+      p_address_lat:          addressLat,
+      p_address_lng:          addressLng,
+      p_amount:               resolvedAmount,
+      p_pet_size:             pet_size || null,
+      p_coupon_code:          couponCode,
+      p_is_loyalty_redemption: isLoyaltyRedemption,
+      p_total_amount:         split?.total_amount         ?? null,
+      p_petclub_offer_amount: split?.petclub_offer_amount ?? null,
+      p_platform_fee:         split?.platform_fee         ?? null,
+      p_provider_earnings:    split?.provider_earnings    ?? null,
+      p_gateway_fee:          split?.gateway_fee          ?? null,
+      p_currency:             customerCurrency,
+      p_terms_version:        TERMS_VERSION,
+      p_terms_accepted_at:    new Date().toISOString(),
+    });
+    if (rpcErr) {
+      const msg = rpcErr.message || '';
+      if (msg.includes('COUPON_INVALID')) {
+        return res.status(409).json({ error: 'Coupon has already been used or is expired. Please refresh and try again.' });
+      }
+      logger.error('create_booking_atomic RPC error:', msg);
       return res.status(500).json({ error: 'Failed to create booking' });
     }
-
-    // C-4 fix: Mark coupon as used via atomic Postgres RPC.
-    // If the RPC fails (coupon already used by a racing request), roll back
-    // the booking we just created and return a 409 to the client.
-    if (couponCode && isLoyaltyRedemption) {
-      const couponResult = await loyalty.markCouponUsed(supabase, couponCode, booking.id);
-      if (!couponResult.success) {
-        // Delete the booking we just inserted  it was created on the assumption
-        // this coupon was valid, but the atomic check says otherwise.
-        await supabase.from('bookings').update({ deleted_at: new Date().toISOString() }).eq('id', booking.id);
-        return res.status(409).json({
-          error: couponResult.error || 'Coupon has already been used. Please refresh and try again.',
-        });
-      }
-    }
+    const booking = typeof rpcData === 'string' ? JSON.parse(rpcData) : rpcData;
 
     // Auto-assign round-robin (GPS radius if available, city fallback)
     if (service_type && ['Groomer', 'Trainer', 'Vet', 'Walker', 'Boarding'].includes(service_type)) {
       let petName = 'Pet';
+      let petHealthNotes = null;
       if (pet_id) {
         const { data: pet } = await supabase.from('pets').select('name, health_notes').eq('id', pet_id).single();
         petName = pet?.name || 'Pet';
-        if (pet?.health_notes) booking.pet_health_notes = pet.health_notes;
+        petHealthNotes = pet?.health_notes || null;
       }
       const nextPro = await findNextPro(city || '', service_type, [], addressLat, addressLng);
       if (nextPro) {
-        await offerBookingToPro(booking.id, nextPro, { ...booking, pet_name: petName });
+        // Pass pet context as extra fields alongside booking — never mutate the RPC result object
+        await offerBookingToPro(booking.id, nextPro, { ...booking, pet_name: petName, pet_health_notes: petHealthNotes });
       } else {
         await supabase.from('bookings').update({ assignment_status: 'no_pros_available' }).eq('id', booking.id);
       }
@@ -2415,7 +2464,7 @@ app.post('/api/bookings', auth, async (req, res) => {
   }
 });
 
-app.put('/api/bookings/:id/status', auth, async (req, res) => {
+app.put('/api/bookings/:id/status', auth, validate(schemas.updateBookingStatus), async (req, res) => {
   try {
   const { data: booking } = await supabase
     .from('bookings')
@@ -2658,7 +2707,7 @@ app.put('/api/bookings/:id/status', auth, async (req, res) => {
 });
 
 // Pro: Accept or Reject a booking offer
-app.post('/api/bookings/:id/respond', auth, async (req, res) => {
+app.post('/api/bookings/:id/respond', auth, validate(schemas.respondBooking), async (req, res) => {
   try {
     const { action } = req.body; // 'accept' | 'reject'
     if (!['accept','reject'].includes(action)) return res.status(400).json({ error: "action must be 'accept' or 'reject'" });
@@ -2782,17 +2831,21 @@ async function assertChatAccess(bookingId, user) {
 // GET /api/bookings/:id/cancel-preview  returns refund estimate before customer confirms cancel
 app.get('/api/bookings/:id/cancel-preview', auth, async (req, res) => {
   const { data: bk } = await supabase
-    .from('bookings').select('customer_id, scheduled_at, total_amount, status').eq('id', req.params.id).single();
+    .from('bookings').select('customer_id, professional_id, scheduled_at, total_amount, status').eq('id', req.params.id).single();
   if (!bk) return res.status(404).json({ error: 'Booking not found' });
-  if (bk.customer_id !== req.user.id && req.user.role !== 'admin')
-    return res.status(403).json({ error: 'Not your booking' });
+  let authorized = req.user.role === 'admin' || bk.customer_id === req.user.id;
+  if (!authorized && req.user.role === 'professional') {
+    const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
+    authorized = prof && bk.professional_id === prof.id;
+  }
+  if (!authorized) return res.status(403).json({ error: 'Not your booking' });
   if (bk.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
   const calc = calcCancellation(bk.total_amount, bk.scheduled_at, false);
   res.json({ success: true, ...calc, total_amount: parseFloat(bk.total_amount || 0) });
 });
 
 // PUT /api/admin/bookings/:id/refund-status  admin marks a refund as processed
-app.put('/api/admin/bookings/:id/refund-status', auth, adminOnly, async (req, res) => {
+app.put('/api/admin/bookings/:id/refund-status', auth, adminOnly, validate(schemas.updateRefundStatus), async (req, res) => {
   const { status } = req.body; // 'processed' | 'not_applicable'
   if (!['processed', 'not_applicable'].includes(status))
     return res.status(400).json({ error: "status must be 'processed' or 'not_applicable'" });
@@ -2838,7 +2891,7 @@ app.get('/api/bookings/:id/messages', auth, async (req, res) => {
 });
 
 // POST /api/bookings/:id/messages  send a message
-app.post('/api/bookings/:id/messages', auth, async (req, res) => {
+app.post('/api/bookings/:id/messages', auth, validate(schemas.sendMessage), async (req, res) => {
   const denied = await assertChatAccess(req.params.id, req.user);
   if (denied) return res.status(denied.status).json({ error: denied.error });
 
@@ -2890,7 +2943,7 @@ app.post('/api/bookings/:id/messages', auth, async (req, res) => {
 });
 
 // Admin: Manually assign a booking to a specific professional
-app.put('/api/bookings/:id/assign', auth, adminOnly, async (req, res) => {
+app.put('/api/bookings/:id/assign', auth, adminOnly, validate(schemas.assignBooking), async (req, res) => {
   try {
     const { professionalId } = req.body;
     const { data: prof } = await supabase.from('professional_profiles').select('id, users(name, phone, email)').eq('id', professionalId).single();
@@ -2930,9 +2983,11 @@ app.put('/api/bookings/:id/assign', auth, adminOnly, async (req, res) => {
 // 
 
 // Customer subscribes -- GET /api/bookings/:id/track
-// Browser EventSource sends cookies automatically when withCredentials:true
+// Web: EventSource sends httpOnly cookie automatically (withCredentials:true).
+// Mobile: pass JWT in Authorization: Bearer <token> header.
+// NOTE: query-string token was removed — tokens in URLs appear in server logs.
 app.get('/api/bookings/:id/track', async (req, res) => {
-  const token = req.cookies?.[AUTH_COOKIE] || req.query.token; // query fallback for native clients
+  const token = req.cookies?.[AUTH_COOKIE] || req.headers.authorization?.split(' ')[1];
   if (!token) return res.status(401).json({ error: 'token required' });
 
   let userId;
@@ -3068,7 +3123,7 @@ app.post('/api/bookings/:id/on-my-way', auth, async (req, res) => {
 });
 
 // Professional sends GPS  POST /api/bookings/:id/location { lat, lng }
-app.post('/api/bookings/:id/location', auth, async (req, res) => {
+app.post('/api/bookings/:id/location', auth, validate(schemas.locationUpdate), async (req, res) => {
   try {
     const { lat, lng } = req.body;
     if (!lat || !lng) return res.status(400).json({ error: 'lat and lng required' });
@@ -3171,7 +3226,7 @@ app.get('/api/bookings/:id/tracking', auth, async (req, res) => {
 // 
 
 // Rate a completed booking (customer only, one rating per booking)
-app.post('/api/bookings/:id/rate', auth, async (req, res) => {
+app.post('/api/bookings/:id/rate', auth, validate(schemas.rateBooking), async (req, res) => {
   try {
     const { rating, review } = req.body;
     if (!rating || rating < 1 || rating > 5) return res.status(400).json({ error: 'Rating must be between 1 and 5' });
@@ -3411,7 +3466,7 @@ app.get('/api/admin/pending-verifications', auth, adminOnly, async (req, res) =>
   res.json({ success: true, pending: data });
 });
 
-app.put('/api/admin/verify/:id', auth, adminOnly, async (req, res) => {
+app.put('/api/admin/verify/:id', auth, adminOnly, validate(schemas.verifyProfessional), async (req, res) => {
   const { action, reason } = req.body;
   const status = action === 'approve' ? 'approved' : 'rejected';
   const profileUpdate = { verification_status: status };
@@ -3440,7 +3495,7 @@ app.put('/api/admin/verify/:id', auth, adminOnly, async (req, res) => {
 });
 
 // Admin: set sub_role for a professional (creates profile row if missing)
-app.put('/api/admin/users/:id/set-role', auth, adminOnly, async (req, res) => {
+app.put('/api/admin/users/:id/set-role', auth, adminOnly, validate(schemas.setUserRole), async (req, res) => {
   const { subRole } = req.body;
   if (!['Groomer','Trainer','Vet'].includes(subRole))
     return res.status(400).json({ error: 'subRole must be Groomer, Trainer, or Vet' });
@@ -3524,10 +3579,10 @@ const adminEditUser = async (req, res) => {
 };
 
 // Register PATCH (standard) + POST (proxy-safe alias)
-app.patch('/api/admin/users/:id',      auth, adminOnly, adminEditUser);
-app.post('/api/admin/users/:id/edit',  auth, adminOnly, adminEditUser);
+app.patch('/api/admin/users/:id',      auth, adminOnly, validate(schemas.adminEditUser), adminEditUser);
+app.post('/api/admin/users/:id/edit',  auth, adminOnly, validate(schemas.adminEditUser), adminEditUser);
 
-app.put('/api/admin/users/:id/suspend', auth, adminOnly, async (req, res) => {
+app.put('/api/admin/users/:id/suspend', auth, adminOnly, validate(schemas.suspendUser), async (req, res) => {
   const { data: u } = await supabase.from('users').select('id, name, phone, email, role, is_active').eq('id', req.params.id).single();
   if (!u) return res.status(404).json({ error: 'User not found' });
 
@@ -3644,9 +3699,10 @@ app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, 
     await supabase.from('customer_profiles').delete().in('user_id', ids);
     await supabase.from('pets').update({ deleted_at: _now }).in('owner_id', ids);
     await supabase.from('otp_tokens').delete().in('phone', suspended.map(u => u.phone));
-    await supabase.from('admin_logs').delete().in('target_id', ids);
+    // Anonymize audit logs — preserve for compliance, redact PII
+    await supabase.from('admin_logs').update({ notes: '[redacted — user purged by admin]' }).in('target_id', ids);
 
-    //  Step 4: soft-delete the users themselves 
+    //  Step 4: soft-delete the users themselves
     const { error: delErr } = await supabase.from('users').update({ deleted_at: _now }).in('id', ids);
     if (delErr) throw new Error(delErr.message);
 
@@ -3735,7 +3791,7 @@ app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
 // 
 //  FCM: Save push notification token
 // 
-app.post('/api/users/fcm-token', auth, async (req, res) => {
+app.post('/api/users/fcm-token', auth, validate(schemas.fcmToken), async (req, res) => {
   try {
     const { token } = req.body;
     if (!token) return res.status(400).json({ error: 'FCM token required' });
@@ -3757,7 +3813,7 @@ app.post('/api/users/fcm-token', auth, async (req, res) => {
 // 
 
 // Create a Razorpay order (called before payment screen opens)
-app.post('/api/payments/create-order', auth, async (req, res) => {
+app.post('/api/payments/create-order', auth, validate(schemas.createPaymentOrder), async (req, res) => {
   try {
     if (!razorpay) {
       return res.status(503).json({
@@ -3810,6 +3866,13 @@ async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_
     .single();
 
   if (!bk) throw new Error(`Booking ${bookingId} not found`);
+
+  // Ownership guard: when called from the client-facing verify endpoint, userId
+  // is the authenticated user — ensure they own the booking.
+  // The webhook path passes userId from order notes (may be null) — skip the check.
+  if (userId && bk.customer_id !== userId) {
+    throw Object.assign(new Error('Booking does not belong to this user'), { statusCode: 403 });
+  }
 
   // Idempotency guard  already paid, nothing to do
   if (bk.payment_status === 'paid') {
@@ -3900,7 +3963,7 @@ async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_
 //  for the webhook. We verify the HMAC signature (proves the response came
 //  from Razorpay, not a tampered client payload) then delegate to finalisePayment.
 // 
-app.post('/api/payments/verify', auth, async (req, res) => {
+app.post('/api/payments/verify', auth, validate(schemas.verifyPayment), async (req, res) => {
   try {
     if (!razorpay) {
       return res.status(503).json({ error: 'Payments not yet active', coming_soon: true });
@@ -3931,6 +3994,7 @@ app.post('/api/payments/verify', auth, async (req, res) => {
 
     res.json({ success: true, message: ' Payment verified and booking confirmed!' });
   } catch (err) {
+    if (err.statusCode === 403) return res.status(403).json({ error: err.message });
     logger.error('[Razorpay] Verify error:', err.message);
     res.status(500).json({ error: 'Payment verification failed' });
   }
@@ -3955,11 +4019,13 @@ app.post('/api/payments/verify', auth, async (req, res) => {
 app.post('/api/payments/webhook',
   express.raw({ type: 'application/json' }),   // raw body required for HMAC
   async (req, res) => {
-    //  1. Verify webhook signature 
+    //  1. Verify webhook signature
     const webhookSecret = process.env.RAZORPAY_WEBHOOK_SECRET;
     if (!webhookSecret) {
-      // Webhook secret not configured  log and return 200 so Razorpay doesn't retry forever
-      logger.warn('[Webhook] RAZORPAY_WEBHOOK_SECRET not set  skipping signature check. Set it in Cloud Run env vars.');
+      // Secret not configured — reject rather than skip. Accepting unverified
+      // webhook payloads would let anyone forge payment.captured events.
+      logger.error('[Webhook] RAZORPAY_WEBHOOK_SECRET not set — rejecting request. Set it in Cloud Run env vars.');
+      return res.status(500).json({ error: 'Webhook not configured' });
     } else {
       const crypto   = require('crypto');
       const received = req.headers['x-razorpay-signature'];
@@ -4223,17 +4289,25 @@ app.get('/api/health', async (req, res) => {
     dbOk = !error;
   } catch { dbOk = false; }
 
+  // Public response: only liveness + db reachability — no version or config leak
+  if (!authenticated) {
+    return res.json({
+      status: 'ok',
+      db:     dbOk ? 'ok' : 'unreachable',
+      time:   new Date(),
+    });
+  }
+  // Authenticated ops response: full detail for CI/monitoring
   const base = {
-    status:  ' PETclub API running',
+    status:  'PETclub API running',
     version: API_VERSION,
     time:    new Date(),
-    db:      dbOk ? '' : ' unreachable',
+    db:      dbOk ? 'ok' : 'unreachable',
+    db_latency_ms: dbMs,
   };
-  if (!authenticated) return res.json(base);
-  // Full response for CI/CD and ops tooling only
+    // Full response: base already has db_latency_ms
   res.json({
     ...base,
-    db_latency_ms: dbMs,
     config: {
       booking_response_timeout_mins: RESPONSE_TIMEOUT_MINS,
       web_app_url: WEB_APP_URL,
@@ -4458,7 +4532,8 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
         const _staleNow = new Date().toISOString();
         await supabase.from('pets').update({ deleted_at: _staleNow }).in('owner_id', ids);
         await supabase.from('otp_tokens').delete().in('phone', phones);
-        await supabase.from('admin_logs').delete().in('target_id', ids);
+        // Anonymize audit logs — preserve for compliance, redact PII
+        await supabase.from('admin_logs').update({ notes: '[redacted — stale user purged]' }).in('target_id', ids);
         await supabase.from('users').update({ deleted_at: _staleNow }).in('id', ids);
       }
       report.stale_pending_users = stale?.length || 0;
@@ -4676,7 +4751,8 @@ app.post('/api/cron/booking-reminders', async (req, res) => {
       const { data: bookings } = await supabase
         .from('bookings')
         .select('id, service_name, scheduled_at, address, users!bookings_customer_id_fkey(name, email), professional_profiles!bookings_professional_id_fkey(users(name, email))')
-        .eq('status', 'confirmed')
+        .eq('status', 'upcoming')
+        .eq('assignment_status', 'confirmed')
         .gt('scheduled_at', new Date(w.lo).toISOString())
         .lt('scheduled_at', new Date(w.hi).toISOString())
         .is('deleted_at', null);
@@ -4733,7 +4809,7 @@ app.post('/api/cron/coupon-expiry', async (req, res) => {
     const { data: coupons } = await supabase
       .from('loyalty_coupons')
       .select('code, service_name, discount_pct, expires_at, users(name, email)')
-      .eq('used', false)
+      .eq('is_used', false)
       .gt('expires_at', lo)
       .lt('expires_at', hi);
 
@@ -4827,15 +4903,39 @@ app.post('/api/cron/payout-summary', async (req, res) => {
   }
 });
 
+// Global error handler — catches any unhandled error thrown or passed to next()
+app.use((err, req, res, next) => { // eslint-disable-line no-unused-vars
+  logger.error({ err, method: req.method, url: req.url }, '[UnhandledError]');
+  if (res.headersSent) return next(err);
+  res.status(err.status || 500).json({ error: err.message || 'Internal server error' });
+});
+
 // Export app for integration tests (require.main guard prevents double-listen)
 if (require.main !== module) {
   module.exports = { app };
 } else {
-  app.listen(PORT, async () => {
-    logger.info(` PETclub API ' http://localhost:${PORT}`);
-    // Run migrations in background  won't block startup
+  const server = app.listen(PORT, async () => {
+    logger.info(` PETclub API → http://localhost:${PORT}`);
+    // Run migrations in background — won't block startup
     runStartupMigrations().catch(e => logger.warn('[startup migration]', e.message));
     // Link admin email so email OTP login finds the right account
     seedAdminEmail().catch(e => logger.warn('[adminSeed]', e.message));
   });
+
+  // Graceful shutdown — Cloud Run sends SIGTERM before killing the container.
+  // Give in-flight SSE connections and DB writes up to 10s to finish.
+  const shutdown = (signal) => {
+    logger.info(`[shutdown] ${signal} received — draining connections`);
+    server.close(() => {
+      logger.info('[shutdown] All connections closed — exiting');
+      process.exit(0);
+    });
+    // Hard exit if graceful drain takes too long (e.g. stuck SSE client)
+    setTimeout(() => {
+      logger.warn('[shutdown] Graceful drain timed out — forcing exit');
+      process.exit(1);
+    }, 10_000).unref();
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT',  () => shutdown('SIGINT'));
 }

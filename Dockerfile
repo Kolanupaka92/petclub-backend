@@ -12,10 +12,9 @@ WORKDIR /app
 RUN addgroup -S petclub && adduser -S petclub -G petclub
 
 COPY --from=deps /app/node_modules ./node_modules
+# .env files are excluded via .dockerignore — secrets come in at runtime
+# via Cloud Run env vars or GCP Secret Manager mounts, never baked into layers.
 COPY . .
-
-# Remove dev files
-RUN rm -f .env .env.*
 
 USER petclub
 

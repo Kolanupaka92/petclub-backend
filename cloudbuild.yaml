@@ -1,12 +1,14 @@
 steps:
   # Build the Docker image
+  # Region: us-west1 (GCP Oregon) — co-located with Supabase (AWS us-west-2 / Oregon).
+  # This minimises DB round-trip latency (~5ms intra-region vs ~60ms cross-coast).
   - name: 'gcr.io/cloud-builders/docker'
     args:
       - 'build'
       - '-t'
-      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend:$COMMIT_SHA'
+      - 'us-west1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend:$COMMIT_SHA'
       - '-t'
-      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend:latest'
+      - 'us-west1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend:latest'
       - '.'
 
   # Push both tags
@@ -14,9 +16,9 @@ steps:
     args:
       - 'push'
       - '--all-tags'
-      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend'
+      - 'us-west1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend'
 
-  # Deploy to Cloud Run
+  # Deploy to Cloud Run (us-west1)
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     entrypoint: gcloud
     args:
@@ -24,7 +26,7 @@ steps:
       - 'deploy'
       - 'petclub-backend'
       - '--image'
-      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend:$COMMIT_SHA'
+      - 'us-west1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend:$COMMIT_SHA'
       - '--region'
       - 'us-west1'
       - '--platform'
@@ -36,10 +38,11 @@ steps:
       - '--cpu=1'
       - '--concurrency=80'        # requests per instance before scale-out triggers
       - '--timeout=3600'          # 60 min — required for long-lived SSE tracking connections
+      - '--update-env-vars=JWT_EXPIRES_IN=15m,REFRESH_TOKEN_TTL_DAYS=30'
       - '--quiet'
 
 images:
-  - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend'
+  - 'us-west1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend'
 
 options:
   logging: CLOUD_LOGGING_ONLY

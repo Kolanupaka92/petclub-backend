@@ -4,9 +4,9 @@ steps:
     args:
       - 'build'
       - '-t'
-      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging:$COMMIT_SHA'
+      - 'us-west1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging:$COMMIT_SHA'
       - '-t'
-      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging:latest'
+      - 'us-west1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging:latest'
       - '.'
 
   # Push both tags
@@ -14,7 +14,7 @@ steps:
     args:
       - 'push'
       - '--all-tags'
-      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging'
+      - 'us-west1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging'
 
   # Deploy to Cloud Run staging service
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
@@ -24,7 +24,7 @@ steps:
       - 'deploy'
       - 'petclub-backend-staging'
       - '--image'
-      - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging:$COMMIT_SHA'
+      - 'us-west1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging:$COMMIT_SHA'
       - '--region'
       - 'us-west1'
       - '--platform'
@@ -40,7 +40,7 @@ steps:
       - '--quiet'
 
 images:
-  - 'us-central1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging'
+  - 'us-west1-docker.pkg.dev/project-c736b433-1b47-40c0-a2c/petclub-repo/petclub-backend-staging'
 
 options:
   logging: CLOUD_LOGGING_ONLY

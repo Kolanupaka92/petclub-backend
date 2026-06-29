@@ -12,6 +12,7 @@ module.exports = {
   // Coverage (run with --coverage flag)
   collectCoverageFrom: [
     'services/loyaltyService.js',
+    'services/revenueService.js',
   ],
   coverageThreshold: {
     global: { lines: 80, functions: 80 },

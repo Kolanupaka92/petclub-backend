@@ -14,6 +14,7 @@
  */
 
 const { createClient } = require('@supabase/supabase-js');
+const ws = require('ws');
 
 let _client = null;
 function getClient() {
@@ -21,7 +22,9 @@ function getClient() {
   const url = process.env.SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_KEY;
   if (!url || !key) return null;
-  _client = createClient(url, key);
+  _client = createClient(url, key, {
+    realtime: { transport: ws },   // Node 20 has no native WebSocket; ws package fills the gap
+  });
   return _client;
 }
 
