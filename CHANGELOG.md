@@ -1,3 +1,10 @@
+## [1.30.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.30.1...v1.30.2) (2026-06-29)
+
+
+### Bug Fixes
+
+* remove hardcoded CRON_SECRET from cloudbuild.yaml ([b1b41bb](https://github.com/Kolanupaka92/petclub-backend/commit/b1b41bb9abf167f4a7067d878e49c327781ccded))
+
 ## [1.30.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.30.0...v1.30.1) (2026-06-29)
 
 
