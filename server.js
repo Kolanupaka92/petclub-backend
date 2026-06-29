@@ -57,7 +57,10 @@ if (process.env.SENTRY_DSN) {
 }
 
 //  Startup secret guard  refuse to boot without critical secrets 
-const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'CRON_SECRET', 'JWT_EXPIRES_IN', 'ZOHO_SMTP_USER', 'ZOHO_SMTP_PASS'];
+const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'CRON_SECRET', 'JWT_EXPIRES_IN'];
+// SMTP is optional — server boots without it, emails are silently skipped (emailService handles gracefully)
+if (!process.env.ZOHO_SMTP_USER || !process.env.ZOHO_SMTP_PASS)
+  logger.warn('[Config] ZOHO_SMTP_USER / ZOHO_SMTP_PASS not set — outgoing emails will be skipped');
 const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missingEnv.length) {
   logger.error(`\n FATAL: Missing required environment variables: ${missingEnv.join(', ')}\nSet them in Cloud Run env vars and redeploy.\n`);
@@ -2291,9 +2294,11 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
 app.post('/api/users/upload-id-photo/presign', auth, async (req, res) => {
   try {
     const { docType: rawDocType, docNumber: rawDocNumber, ext = 'jpg' } = req.body;
+    const VALID_DOC_TYPES = ['passport', 'dl', 'state_id', 'aadhar', 'pan'];
     const docType   = sanitize(rawDocType);
     const docNumber = rawDocNumber ? sanitize(rawDocNumber) : null;
     if (!docType) return res.status(400).json({ error: 'Document type required' });
+    if (!VALID_DOC_TYPES.includes(docType)) return res.status(400).json({ error: 'Invalid document type' });
     if (!['jpg','jpeg','png','webp'].includes(ext.toLowerCase())) return res.status(400).json({ error: 'Invalid file type. Use jpg, png, or webp.' });
     const filename = `customers/${req.user.id}/${Date.now()}.${ext.toLowerCase()}`;
     const { data, error } = await supabase.storage.from('id-documents').createSignedUploadUrl(filename);
@@ -2319,13 +2324,15 @@ app.post('/api/users/upload-id-photo/confirm', auth, async (req, res) => {
     if (!path.startsWith(`customers/${req.user.id}/`))
       return res.status(403).json({ error: 'Forbidden' });
 
-    // Download first 12 bytes to check magic number (file signature)
-    const { data: fileData, error: dlErr } = await supabase.storage
+    // Fetch only the first 12 bytes via a signed URL + Range header (avoids downloading the full image)
+    const { data: signed, error: signErr } = await supabase.storage
       .from('id-documents')
-      .download(path);
-    if (dlErr || !fileData) return res.status(400).json({ error: 'File not found in storage' });
+      .createSignedUrl(path, 30);
+    if (signErr || !signed?.signedUrl) return res.status(400).json({ error: 'File not found in storage' });
 
-    const buf = Buffer.from(await fileData.arrayBuffer()).slice(0, 12);
+    const rangeRes = await fetch(signed.signedUrl, { headers: { Range: 'bytes=0-11' } });
+    if (!rangeRes.ok && rangeRes.status !== 206) return res.status(400).json({ error: 'File not found in storage' });
+    const buf = Buffer.from(await rangeRes.arrayBuffer());
     const isJpeg = buf[0] === 0xFF && buf[1] === 0xD8;
     const isPng  = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47;
     const isWebp = buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50;
