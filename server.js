@@ -1617,6 +1617,7 @@ app.get('/api/services/catalog', auth, (req, res) => {
   if (req.user.role === 'professional') {
     return res.status(403).json({ error: 'Service pricing is not available to providers.' });
   }
+  res.setHeader('Cache-Control', 'private, max-age=3600'); // catalog changes rarely — cache for 1 hour per user session
   const {
     PLATFORM_DISCOUNT, GROOMING_PACKAGES, GROOMING_ADDONS,
     PET_SIZES, TRAINING_PACKAGES, WALKING_PACKAGES, BOARDING_PACKAGES, VET_SERVICES,
@@ -2294,9 +2295,25 @@ app.get('/api/professionals/earnings', auth, async (req, res) => {
   }
 });
 
-// 
+// Public: get paginated reviews for a professional
+app.get('/api/professionals/:id/reviews', async (req, res) => {
+  const page  = Math.max(1, parseInt(req.query.page) || 1);
+  const limit = Math.min(20, parseInt(req.query.limit) || 10);
+  const from  = (page - 1) * limit;
+  const { data, error, count } = await supabase
+    .from('reviews')
+    .select('rating, comment, created_at, users!reviewer_id(name)', { count: 'exact' })
+    .eq('reviewee_id', req.params.id)
+    .not('comment', 'is', null)
+    .order('created_at', { ascending: false })
+    .range(from, from + limit - 1);
+  if (error) return res.status(500).json({ error: 'Failed to fetch reviews' });
+  res.json({ success: true, reviews: data || [], total: count || 0, page, limit });
+});
+
+//
 //  BOOKING ROUTES
-// 
+//
 app.get('/api/bookings', auth, async (req, res) => {
   let q;
   if (req.user.role === 'customer')
@@ -2327,8 +2344,6 @@ app.post('/api/bookings', auth, validate(schemas.createBooking), async (req, res
   try {
     if (req.user.role !== 'customer' && req.user.role !== 'admin')
       return res.status(403).json({ error: 'Only customers can create bookings.' });
-
-    processTimedOutAssignments().catch(e => logger.error(e)); // background cleanup
 
     //  Clickwrap consent guard
     // The client MUST send terms_accepted: true.  This is validated server-side
@@ -2449,6 +2464,7 @@ app.post('/api/bookings', auth, validate(schemas.createBooking), async (req, res
         await offerBookingToPro(booking.id, nextPro, { ...booking, pet_name: petName, pet_health_notes: petHealthNotes });
       } else {
         await supabase.from('bookings').update({ assignment_status: 'no_pros_available' }).eq('id', booking.id);
+        if (process.env.SENTRY_DSN) Sentry.captureEvent({ level: 'warning', message: 'no_pros_available on booking creation', extra: { bookingId: booking.id, city, service_type } });
       }
     }
 
@@ -2627,6 +2643,7 @@ app.put('/api/bookings/:id/status', auth, validate(schemas.updateBookingStatus),
                 await supabase.from('bookings')
                   .update({ assignment_status: 'no_pros_available' })
                   .eq('id', req.params.id);
+                if (process.env.SENTRY_DSN) Sentry.captureEvent({ level: 'warning', message: 'no_pros_available on redispatch', extra: { bookingId: req.params.id } });
               }
             }).catch(e => logger.error('[Redispatch] failed:', e.message));
           }).catch(() => {});
@@ -2779,7 +2796,6 @@ app.get('/api/bookings/incoming', auth, async (req, res) => {
     return res.status(403).json({ error: 'Access restricted to professionals.' });
   }
   try {
-    processTimedOutAssignments().catch(e => logger.error(e));
     const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
     if (!prof) return res.json({ success: true, bookings: [] });
 
@@ -3705,6 +3721,12 @@ app.put('/api/admin/users/:id/suspend', auth, adminOnly, validate(schemas.suspen
 //  Deletes every non-admin user where is_active = false.
 // 
 app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, res) => {
+  // Require explicit ?confirm=yes to prevent fat-finger wipes
+  if (req.query.confirm !== 'yes') {
+    // Dry-run: return who would be deleted without touching the DB
+    const { data: preview } = await supabase.from('users').select('id, name, phone, role').eq('is_active', false).neq('role', 'admin');
+    return res.status(400).json({ error: 'Add ?confirm=yes to proceed. This will permanently delete all suspended users.', preview: preview || [], count: preview?.length || 0 });
+  }
   try {
     const { data: suspended } = await supabase
       .from('users')

@@ -56,7 +56,23 @@ CREATE INDEX IF NOT EXISTS idx_prof_city_available
   ON professional_profiles (city, is_available, verification_status)
   WHERE verification_status = 'approved';
 
+-- ── booking_assignments ───────────────────────────────────────────────
+-- processTimedOutAssignments cron: finds offered assignments past deadline
+CREATE INDEX IF NOT EXISTS idx_booking_assignments_status_deadline
+  ON booking_assignments (status, response_deadline)
+  WHERE status = 'offered';
+
+-- ── loyalty_transactions by booking ──────────────────────────────────
+-- Cancellation reversal: find loyalty txn by booking_id
+CREATE INDEX IF NOT EXISTS idx_loyalty_txn_booking_id
+  ON loyalty_transactions (booking_id);
+
+-- ── reviews ───────────────────────────────────────────────────────────
+-- Public reviews per professional (GET /api/professionals/:id/reviews)
+CREATE INDEX IF NOT EXISTS idx_reviews_reviewee_created
+  ON reviews (reviewee_id, created_at DESC);
+
 -- ── Verification ──────────────────────────────────────────────────────
 -- Expected: indexes listed above (run SELECT indexname FROM pg_indexes
 -- WHERE tablename IN ('bookings','loyalty_transactions','otp_tokens',
--- 'admin_logs','professional_profiles') to confirm)
+-- 'admin_logs','professional_profiles','booking_assignments','reviews') to confirm)
