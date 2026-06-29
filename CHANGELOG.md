@@ -1,3 +1,10 @@
+## [1.32.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.1...v1.32.2) (2026-06-29)
+
+
+### Bug Fixes
+
+* **cron:** gracefully handle PostgREST schema cache lag on leaderboard refresh ([62a0a2e](https://github.com/Kolanupaka92/petclub-backend/commit/62a0a2e83f542c77efa14934fba8f27d4e58f7c9))
+
 ## [1.32.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.0...v1.32.1) (2026-06-29)
 
 
