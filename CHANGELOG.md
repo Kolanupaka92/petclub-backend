@@ -1,3 +1,10 @@
+# [1.30.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.29.0...v1.30.0) (2026-06-29)
+
+
+### Features
+
+* JWT refresh tokens, security hardening, payout modal, service fixes ([1d1e0da](https://github.com/Kolanupaka92/petclub-backend/commit/1d1e0da9438f099d772ab0bfebcde7b1c3fb8926))
+
 # [1.29.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.28.2...v1.29.0) (2026-06-28)
 
 
