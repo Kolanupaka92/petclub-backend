@@ -1,3 +1,10 @@
+## [1.30.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.30.0...v1.30.1) (2026-06-29)
+
+
+### Bug Fixes
+
+* critical + high audit gaps — startup validation, cron endpoints, admin roles ([6730756](https://github.com/Kolanupaka92/petclub-backend/commit/67307564a2749586b408788234ccb4bf22381060))
+
 # [1.30.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.29.0...v1.30.0) (2026-06-29)
 
 
