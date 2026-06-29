@@ -1,3 +1,10 @@
+## [1.32.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.0...v1.32.1) (2026-06-29)
+
+
+### Bug Fixes
+
+* **cron:** move 404 handler after cron routes so they can be reached ([84fa294](https://github.com/Kolanupaka92/petclub-backend/commit/84fa2941eeaa53f4fccec8d74ef58e699deb6e89))
+
 # [1.32.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.31.1...v1.32.0) (2026-06-29)
 
 
