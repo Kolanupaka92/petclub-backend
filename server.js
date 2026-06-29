@@ -36,6 +36,22 @@ if (process.env.SENTRY_DSN) {
     environment: process.env.NODE_ENV || 'development',
     release: `petclub-backend@${API_VERSION}`,
     tracesSampleRate: 0.1,   // 10% of requests traced  adjust once traffic grows
+    sendDefaultPii: false,   // never send cookies, auth headers, or IP in traces
+    beforeSend(event) {
+      // Scrub any PII that leaked into breadcrumbs or request data
+      if (event.request) {
+        delete event.request.cookies;
+        delete event.request.headers?.authorization;
+        if (event.request.data) {
+          const d = event.request.data;
+          if (d.phone)    d.phone    = '[redacted]';
+          if (d.email)    d.email    = '[redacted]';
+          if (d.otp)      d.otp      = '[redacted]';
+          if (d.password) d.password = '[redacted]';
+        }
+      }
+      return event;
+    },
   });
   logger.info(' Sentry error tracking initialised');
 }
@@ -53,7 +69,13 @@ if (process.env.JWT_SECRET.length < 32) {
 }
 
 const app = express();
-app.set('trust proxy', 1); // Trust Cloud Run reverse proxy  needed for rate-limit & real IP
+// trust proxy: 1 — Cloud Run's load balancer is exactly one hop in front of us.
+// This makes req.ip reflect the real client IP from X-Forwarded-For.
+// SECURITY: Cloud Run's LB strips/overwrites X-Forwarded-For before it reaches us,
+// so spoofed headers from clients cannot bypass IP-based rate limiting.
+// If deployment ever moves off Cloud Run, re-evaluate this setting — on a raw VM
+// without a trusted proxy, this setting would allow IP spoofing via forged headers.
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 5000;
 const IS_PROD = process.env.NODE_ENV === 'production' || !process.env.ALLOW_DEV_TOOLS;
 const JWT_SECRET    = process.env.JWT_SECRET;
@@ -165,7 +187,7 @@ app.use(express.json({ limit: '10mb' }));
 
 //  Request ID + timing logger 
 app.use((req, res, next) => {
-  req.id = Math.random().toString(36).slice(2, 10).toUpperCase();
+  req.id = crypto.randomBytes(4).toString('hex').toUpperCase();
   req.startTime = Date.now();
   res.setHeader('X-Request-ID', req.id);
   res.on('finish', () => {
@@ -201,7 +223,8 @@ const otpLimit = rateLimit({
     if (IS_PROD) return false;
     const testDomain = process.env.E2E_TEST_EMAIL_DOMAIN;
     const email = (req.body?.email || '').toLowerCase();
-    return !!(testDomain && email.endsWith(`@${testDomain}`));
+    const [, domain] = email.split('@');
+    return !!(testDomain && domain === testDomain);
   },
   handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait a few minutes and try again.' }),
 });
@@ -253,7 +276,7 @@ const JWT_EXPIRES_MS = (() => {
 const COOKIE_OPTS = {
   httpOnly: true,
   secure: true,
-  sameSite: 'lax',     // 'strict' breaks redirect-based OAuth/SSO flows
+  sameSite: 'strict',
   maxAge: JWT_EXPIRES_MS,
   path: '/',
 };
@@ -484,10 +507,10 @@ const autoDeleteSuspendedUsers = async () => {
     if (adminEmail) {
       const rows = toDelete.map(u =>
         `<tr style="border-bottom:1px solid #f1f5f9">
-          <td style="padding:8px 12px;font-size:13px">${u.name || ''}</td>
-          <td style="padding:8px 12px;font-size:13px">${u.phone}</td>
-          <td style="padding:8px 12px;font-size:13px">${u.email || ''}</td>
-          <td style="padding:8px 12px;font-size:13px;text-transform:capitalize">${u.role}</td>
+          <td style="padding:8px 12px;font-size:13px">${sanitize(u.name || '')}</td>
+          <td style="padding:8px 12px;font-size:13px">${sanitize(u.phone || '')}</td>
+          <td style="padding:8px 12px;font-size:13px">${sanitize(u.email || '')}</td>
+          <td style="padding:8px 12px;font-size:13px;text-transform:capitalize">${sanitize(u.role || '')}</td>
         </tr>`
       ).join('');
       await sendEmail(
@@ -1928,8 +1951,11 @@ app.get('/api/admin/loyalty/partner-report', auth, adminOnly, async (req, res) =
 // supabase-security-hardening.sql. Accepts ?from_date= and ?to_date= (YYYY-MM-DD).
 app.get('/api/admin/revenue-report', auth, adminOnly, async (req, res) => {
   try {
+    const DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
     const fromDate = req.query.from_date || '2000-01-01';
     const toDate   = req.query.to_date   || new Date().toISOString().slice(0, 10);
+    if (!DATE_RE.test(fromDate) || !DATE_RE.test(toDate))
+      return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD.' });
     const { data, error } = await supabase.rpc('partner_revenue_report', {
       p_from: fromDate,
       p_to:   toDate,
@@ -2259,20 +2285,56 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
 // Step 1: get presigned upload URL (client uploads directly to Storage — no base64 in JSON body)
 app.post('/api/users/upload-id-photo/presign', auth, async (req, res) => {
   try {
-    const { docType, docNumber, ext = 'jpg' } = req.body;
+    const { docType: rawDocType, docNumber: rawDocNumber, ext = 'jpg' } = req.body;
+    const docType   = sanitize(rawDocType);
+    const docNumber = rawDocNumber ? sanitize(rawDocNumber) : null;
     if (!docType) return res.status(400).json({ error: 'Document type required' });
     if (!['jpg','jpeg','png','webp'].includes(ext.toLowerCase())) return res.status(400).json({ error: 'Invalid file type. Use jpg, png, or webp.' });
-    const filename = `customers/${req.user.id}/${Date.now()}.${ext}`;
+    const filename = `customers/${req.user.id}/${Date.now()}.${ext.toLowerCase()}`;
     const { data, error } = await supabase.storage.from('id-documents').createSignedUploadUrl(filename);
     if (error) return res.status(500).json({ error: 'Failed to generate upload URL' });
     // Save metadata now; photo path gets confirmed after client uploads
     await supabase.from('customer_profiles').upsert({
-      user_id: req.user.id, id_doc_type: docType, id_doc_number: docNumber || null, id_photo_url: filename,
+      user_id: req.user.id, id_doc_type: docType, id_doc_number: docNumber, id_photo_url: filename,
     }, { onConflict: 'user_id' });
     res.json({ success: true, uploadUrl: data.signedUrl, token: data.token, path: filename });
   } catch (err) {
     logger.error('Presign ID photo error:', err.message);
     res.status(500).json({ error: 'Failed to generate upload URL.' });
+  }
+});
+
+// Step 2: confirm upload + verify MIME type server-side (called by client after direct-to-Storage upload)
+app.post('/api/users/upload-id-photo/confirm', auth, async (req, res) => {
+  try {
+    const { path } = req.body;
+    if (!path) return res.status(400).json({ error: 'path required' });
+
+    // Ensure path belongs to this user (prevents confirming another user's upload)
+    if (!path.startsWith(`customers/${req.user.id}/`))
+      return res.status(403).json({ error: 'Forbidden' });
+
+    // Download first 12 bytes to check magic number (file signature)
+    const { data: fileData, error: dlErr } = await supabase.storage
+      .from('id-documents')
+      .download(path);
+    if (dlErr || !fileData) return res.status(400).json({ error: 'File not found in storage' });
+
+    const buf = Buffer.from(await fileData.arrayBuffer()).slice(0, 12);
+    const isJpeg = buf[0] === 0xFF && buf[1] === 0xD8;
+    const isPng  = buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47;
+    const isWebp = buf[8] === 0x57 && buf[9] === 0x45 && buf[10] === 0x42 && buf[11] === 0x50;
+
+    if (!isJpeg && !isPng && !isWebp) {
+      // Delete the invalid file to keep storage clean
+      await supabase.storage.from('id-documents').remove([path]).catch(() => {});
+      return res.status(400).json({ error: 'Invalid file type. Only JPEG, PNG, or WebP images are accepted.' });
+    }
+
+    res.json({ success: true, path });
+  } catch (err) {
+    logger.error('Confirm ID photo error:', err.message);
+    res.status(500).json({ error: 'Failed to confirm upload.' });
   }
 });
 
