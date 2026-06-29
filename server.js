@@ -2613,7 +2613,7 @@ app.put('/api/bookings/:id/status', auth, validate(schemas.updateBookingStatus),
     const cancelledBy = isNoShow ? 'no_show' : req.user.role;
     const refundCalc  = isProCancel
       ? { cancellation_fee: 0, refund_amount: parseFloat(booking.total_amount || 0), refund_status: 'pending', fee_free: true }
-      : calcCancellation(booking.total_amount, booking.scheduled_at, isNoShow);
+      : calcCancellation(booking.total_amount, booking.scheduled_at, isNoShow, booking.currency);
 
     updatePayload.cancelled_by        = cancelledBy;
     updatePayload.cancelled_at        = new Date().toISOString();
@@ -2950,7 +2950,7 @@ async function assertChatAccess(bookingId, user) {
 // GET /api/bookings/:id/cancel-preview  returns refund estimate before customer confirms cancel
 app.get('/api/bookings/:id/cancel-preview', auth, async (req, res) => {
   const { data: bk } = await supabase
-    .from('bookings').select('customer_id, professional_id, scheduled_at, total_amount, status').eq('id', req.params.id).single();
+    .from('bookings').select('customer_id, professional_id, scheduled_at, total_amount, currency, status').eq('id', req.params.id).single();
   if (!bk) return res.status(404).json({ error: 'Booking not found' });
   let authorized = req.user.role === 'admin' || bk.customer_id === req.user.id;
   if (!authorized && req.user.role === 'professional') {
@@ -2959,7 +2959,7 @@ app.get('/api/bookings/:id/cancel-preview', auth, async (req, res) => {
   }
   if (!authorized) return res.status(403).json({ error: 'Not your booking' });
   if (bk.status === 'cancelled') return res.status(400).json({ error: 'Already cancelled' });
-  const calc = calcCancellation(bk.total_amount, bk.scheduled_at, false);
+  const calc = calcCancellation(bk.total_amount, bk.scheduled_at, false, bk.currency);
   res.json({ success: true, ...calc, total_amount: parseFloat(bk.total_amount || 0) });
 });
 

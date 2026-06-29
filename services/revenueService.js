@@ -10,7 +10,7 @@
  *
  * PUBLIC API
  *   computeSplit(totalAmount, offerAmount, serviceType, currency) → split | null
- *   calcCancellation(totalAmount, scheduledAt, byNoShow)          → cancellation
+ *   calcCancellation(totalAmount, scheduledAt, byNoShow, currency) → cancellation
  *   stripFinancials(booking, role)                                → booking copy
  */
 
@@ -30,6 +30,7 @@ const GW_FLAT_INR = parseFloat(process.env.GATEWAY_FEE_FLAT_INR) || 0.03;   // �
 
 // ── Cancellation policy ───────────────────────────────────────────────────────
 const CANCEL_FEE_INR    = 300;  // ₹300 flat fee for late / no-show cancellations
+const CANCEL_FEE_USD    = 5;    // $5 flat fee for late / no-show cancellations (USD bookings)
 const CANCEL_FREE_HOURS = 2;    // hours before booking that allow fee-free cancel
 
 /**
@@ -72,21 +73,23 @@ function computeSplit(totalAmount, offerAmount = 0, serviceType = '', currency =
  *
  * Policy:
  *   ≥ 2 h before appointment  → fee-free, full refund
- *   < 2 h before appointment  → ₹300 fee, refund remainder
- *   No-show at location        → ₹300 fee, refund remainder
+ *   < 2 h before appointment  → ₹300 (INR) / $5 (USD) fee, refund remainder
+ *   No-show at location        → ₹300 (INR) / $5 (USD) fee, refund remainder
  *   No reschedule under any circumstances.
  *
  * @param {number|string} totalAmount   - original booking amount
  * @param {string|Date}   scheduledAt   - booking start time (ISO string or Date)
  * @param {boolean}       byNoShow      - true when professional marks customer no-show
+ * @param {'INR'|'USD'}   currency      - booking currency (default 'INR')
  */
-function calcCancellation(totalAmount, scheduledAt, byNoShow = false) {
+function calcCancellation(totalAmount, scheduledAt, byNoShow = false, currency = 'INR') {
   const total      = parseFloat(totalAmount) || 0;
   const now        = Date.now();
   const bookingMs  = scheduledAt ? new Date(scheduledAt).getTime() : now;
   const hoursUntil = (bookingMs - now) / 3_600_000;
   const feeFree    = !byNoShow && hoursUntil >= CANCEL_FREE_HOURS;
-  const fee        = feeFree ? 0 : Math.min(CANCEL_FEE_INR, total);
+  const flatFee    = currency === 'USD' ? CANCEL_FEE_USD : CANCEL_FEE_INR;
+  const fee        = feeFree ? 0 : Math.min(flatFee, total);
 
   return {
     cancellation_fee: +fee.toFixed(2),
@@ -132,5 +135,6 @@ module.exports = {
   GROOMER_PROVIDER_RATE,
   GROOMER_PLATFORM_RATE,
   CANCEL_FEE_INR,
+  CANCEL_FEE_USD,
   CANCEL_FREE_HOURS,
 };
