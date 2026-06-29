@@ -14,7 +14,7 @@
 #   TWILIO_ACCOUNT_SID  - same as Cloud Run TWILIO_ACCOUNT_SID
 #   TWILIO_AUTH_TOKEN   - same as Cloud Run TWILIO_AUTH_TOKEN
 #   TWILIO_FROM_PHONE   - your Twilio number  (e.g. +12025551234)
-#   ADMIN_PHONE         - your mobile number  (e.g. +919347411132)
+#   ADMIN_PHONE         - your mobile number  (e.g. +16097215754)
 #
 # Optional (enables Cloud Run auto-rollback):
 #   GCP_SA_KEY          - JSON service-account key with roles/run.admin
