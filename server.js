@@ -231,6 +231,8 @@ const authLimit = rateLimit({
 
 //  Helpers 
 const genOTP = () => crypto.randomInt(100000, 1000000).toString();
+// Hash OTP before storage so plaintext never touches the DB
+const hashOTP = (otp) => crypto.createHash('sha256').update(String(otp)).digest('hex');
 
 // Short-lived cache: { userId ' { isActive, expiresAt } }
 // Avoids a DB hit on every request while still enforcing suspension within 60s.
@@ -891,7 +893,7 @@ app.post('/api/auth/send-email-otp', otpLimit, validate(schemas.sendEmailOtp), a
       const fixedOtp = '123456';
       const expires = new Date(Date.now() + 10 * 60000).toISOString();
       await supabase.from('otp_tokens').upsert(
-        { phone: email.toLowerCase(), otp: fixedOtp, expires_at: expires, verified: false },
+        { phone: email.toLowerCase(), otp: hashOTP(fixedOtp), expires_at: expires, verified: false },
         { onConflict: 'phone' }
       );
       logger.info(`[EmailOTP][E2E] Test bypass for ${email}  OTP: ${fixedOtp}`);
@@ -904,7 +906,7 @@ app.post('/api/auth/send-email-otp', otpLimit, validate(schemas.sendEmailOtp), a
 
     // Store OTP keyed by email (reuse otp_tokens table, email as phone field)
     await supabase.from('otp_tokens').upsert(
-      { phone: email.toLowerCase(), otp, expires_at: expires, verified: false },
+      { phone: email.toLowerCase(), otp: hashOTP(otp), expires_at: expires, verified: false },
       { onConflict: 'phone' }
     );
 
@@ -930,7 +932,8 @@ app.post('/api/auth/verify-email-otp', authLimit, validate(schemas.verifyEmailOt
     if (!rec) return res.status(400).json({ error: 'OTP not found. Request a new one.' });
     if (rec.verified) return res.status(400).json({ error: 'OTP already used.' });
     if (new Date() > new Date(rec.expires_at)) return res.status(400).json({ error: 'OTP expired. Request a new one.' });
-    if (!crypto.timingSafeEqual(Buffer.from(String(rec.otp)), Buffer.from(String(otp))))
+    const otpHash = hashOTP(otp);
+    if (!crypto.timingSafeEqual(Buffer.from(rec.otp), Buffer.from(otpHash)))
       return res.status(400).json({ error: 'Incorrect OTP.' });
 
     await supabase.from('otp_tokens').update({ verified: true }).eq('phone', key);
@@ -1066,7 +1069,7 @@ app.post('/api/auth/send-phone-otp', otpLimit, validate(schemas.sendPhoneOtp), a
     const expires = new Date(Date.now() + 10 * 60000).toISOString();
 
     await supabase.from('otp_tokens').upsert(
-      { phone: phone, otp, expires_at: expires, verified: false },
+      { phone: phone, otp: hashOTP(otp), expires_at: expires, verified: false },
       { onConflict: 'phone' }
     );
 
@@ -1131,7 +1134,8 @@ app.post('/api/auth/verify-phone-otp', authLimit, validate(schemas.verifyPhoneOt
     if (!rec)           return res.status(400).json({ error: 'OTP not found. Request a new one.' });
     if (rec.verified)   return res.status(400).json({ error: 'OTP already used.' });
     if (new Date() > new Date(rec.expires_at)) return res.status(400).json({ error: 'OTP expired. Request a new one.' });
-    if (!crypto.timingSafeEqual(Buffer.from(String(rec.otp)), Buffer.from(String(otp))))
+    const otpHash = hashOTP(otp);
+    if (!crypto.timingSafeEqual(Buffer.from(rec.otp), Buffer.from(otpHash)))
       return res.status(400).json({ error: 'Incorrect OTP. Check your SMS and try again.' });
 
     await supabase.from('otp_tokens').update({ verified: true }).eq('phone', phone);
@@ -1456,6 +1460,9 @@ app.post('/api/admin/make-admin', authLimit, validate(schemas.makeAdmin), async 
     const match = expected.length === provided.length &&
       crypto.timingSafeEqual(expected, provided);
     if (!match) return res.status(403).json({ error: 'Invalid secret' });
+    // Bootstrap guard: disable permanently once the first admin account exists
+    const { count: adminCount } = await supabase.from('users').select('id', { count: 'exact', head: true }).eq('role', 'admin');
+    if (adminCount > 0) return res.status(403).json({ error: 'Bootstrap endpoint disabled — admin account already exists. Use set-role to promote additional admins.' });
     const fullPhone = `+${countryCode}${phone}`;
     const { data: user } = await supabase.from('users').select('*').eq('phone', fullPhone).single();
     if (!user) return res.status(404).json({ error: 'User not found. Sign in first, then call this endpoint.' });
@@ -2247,10 +2254,34 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
 });
 
 // Customer government ID upload
+// Step 1: get presigned upload URL (client uploads directly to Storage — no base64 in JSON body)
+app.post('/api/users/upload-id-photo/presign', auth, async (req, res) => {
+  try {
+    const { docType, docNumber, ext = 'jpg' } = req.body;
+    if (!docType) return res.status(400).json({ error: 'Document type required' });
+    if (!['jpg','jpeg','png','webp'].includes(ext.toLowerCase())) return res.status(400).json({ error: 'Invalid file type. Use jpg, png, or webp.' });
+    const filename = `customers/${req.user.id}/${Date.now()}.${ext}`;
+    const { data, error } = await supabase.storage.from('id-documents').createSignedUploadUrl(filename);
+    if (error) return res.status(500).json({ error: 'Failed to generate upload URL' });
+    // Save metadata now; photo path gets confirmed after client uploads
+    await supabase.from('customer_profiles').upsert({
+      user_id: req.user.id, id_doc_type: docType, id_doc_number: docNumber || null, id_photo_url: filename,
+    }, { onConflict: 'user_id' });
+    res.json({ success: true, uploadUrl: data.signedUrl, token: data.token, path: filename });
+  } catch (err) {
+    logger.error('Presign ID photo error:', err.message);
+    res.status(500).json({ error: 'Failed to generate upload URL.' });
+  }
+});
+
+// Legacy base64 path — kept for backwards compat with older app versions
 app.post('/api/users/upload-id-photo', auth, async (req, res) => {
   try {
     const { docType, docNumber, docPhoto } = req.body;
     if (!docType) return res.status(400).json({ error: 'Document type required' });
+
+    // Reject oversized payloads (>4MB base64 ≈ 3MB file) to protect Node.js memory
+    if (docPhoto && docPhoto.length > 5_500_000) return res.status(413).json({ error: 'Image too large. Max 4 MB.' });
 
     let customerPhotoPath = null;
     if (docPhoto && docPhoto.length > 100) {
@@ -3012,19 +3043,27 @@ app.post('/api/bookings/:id/messages', auth, validate(schemas.sendMessage), asyn
   const { data: bkParties } = await supabase
     .from('bookings').select('customer_id, professional_id').eq('id', req.params.id).single();
   if (bkParties) {
-    const notifyUserId = req.user.role === 'professional' ? bkParties.customer_id : null;
-    // (professional-to-customer only for now; reverse needs pro user_id lookup)
-    if (notifyUserId) {
-      supabase.from('users').select('fcm_token').eq('id', notifyUserId).single()
-        .then(({ data: u }) => {
-          if (u?.fcm_token) {
-            sendPush(u.fcm_token, `' New message`,
-              `${sender?.name || 'Your provider'}: ${content.slice(0, 60)}${content.length > 60 ? '' : ''}`,
-              { bookingId: req.params.id, type: 'chat_message' }
-            ).catch(() => {});
-          }
-        }).catch(() => {});
-    }
+    // Notify the other party — works both directions:
+    // - professional sends → notify customer directly by user_id
+    // - customer sends → notify professional by looking up their user_id from professional_profiles
+    const pushOtherParty = async () => {
+      let notifyUserId = null;
+      if (req.user.role === 'professional') {
+        notifyUserId = bkParties.customer_id;
+      } else if (bkParties.professional_id) {
+        const { data: pp } = await supabase.from('professional_profiles').select('user_id').eq('id', bkParties.professional_id).single();
+        notifyUserId = pp?.user_id || null;
+      }
+      if (!notifyUserId) return;
+      const { data: u } = await supabase.from('users').select('fcm_token').eq('id', notifyUserId).single();
+      if (u?.fcm_token) {
+        sendPush(u.fcm_token, '💬 New message',
+          `${sender?.name || 'Customer'}: ${content.slice(0, 60)}${content.length > 60 ? '…' : ''}`,
+          { bookingId: req.params.id, type: 'chat_message', userId: notifyUserId }
+        ).catch(() => {});
+      }
+    };
+    pushOtherParty().catch(() => {});
   }
 
   res.json({ success: true, message: msg });
