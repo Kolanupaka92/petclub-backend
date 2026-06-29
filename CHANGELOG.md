@@ -1,3 +1,10 @@
+## [1.31.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.31.0...v1.31.1) (2026-06-29)
+
+
+### Bug Fixes
+
+* correct refresh_tokens FK from auth.users to public.users ([31f00e3](https://github.com/Kolanupaka92/petclub-backend/commit/31f00e3570d2a54fd5ece19fedee893bb42853f6))
+
 # [1.31.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.30.2...v1.31.0) (2026-06-29)
 
 
