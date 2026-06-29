@@ -1656,7 +1656,8 @@ app.get('/api/services/catalog', auth, (req, res) => {
   res.setHeader('Cache-Control', 'private, max-age=3600'); // catalog changes rarely — cache for 1 hour per user session
   const {
     PLATFORM_DISCOUNT, PLATFORM_DISCOUNT_USD, GROOMING_PACKAGES, GROOMING_ADDONS,
-    PET_SIZES, TRAINING_PACKAGES, WALKING_PACKAGES, BOARDING_PACKAGES, VET_SERVICES,
+    PET_SIZES, TRAINING_PACKAGES, WALKING_PACKAGES, BOARDING_PACKAGES,
+    VET_PACKAGES, VET_SERVICES,
   } = pricingCatalog;
   res.json({
     success: true,
@@ -1666,7 +1667,7 @@ app.get('/api/services/catalog', auth, (req, res) => {
     training: { packages: TRAINING_PACKAGES },
     walking:  { packages: WALKING_PACKAGES },
     boarding: { packages: BOARDING_PACKAGES },
-    vet:      { services: VET_SERVICES, note: 'Pricing quoted on-site after initial assessment.' },
+    vet:      { packages: VET_PACKAGES, services: VET_SERVICES },
   });
 });
 
