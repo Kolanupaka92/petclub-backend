@@ -57,7 +57,7 @@ if (process.env.SENTRY_DSN) {
 }
 
 //  Startup secret guard  refuse to boot without critical secrets 
-const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'CRON_SECRET', 'JWT_EXPIRES_IN'];
+const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'CRON_SECRET', 'JWT_EXPIRES_IN', 'ZOHO_SMTP_USER', 'ZOHO_SMTP_PASS'];
 const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missingEnv.length) {
   logger.error(`\n FATAL: Missing required environment variables: ${missingEnv.join(', ')}\nSet them in Cloud Run env vars and redeploy.\n`);
