@@ -41,7 +41,7 @@ if (process.env.SENTRY_DSN) {
 }
 
 //  Startup secret guard  refuse to boot without critical secrets 
-const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'CRON_SECRET'];
+const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'CRON_SECRET', 'JWT_EXPIRES_IN'];
 const missingEnv = REQUIRED_ENV.filter(k => !process.env[k]);
 if (missingEnv.length) {
   logger.error(`\n FATAL: Missing required environment variables: ${missingEnv.join(', ')}\nSet them in Cloud Run env vars and redeploy.\n`);
@@ -57,7 +57,7 @@ app.set('trust proxy', 1); // Trust Cloud Run reverse proxy  needed for rate-lim
 const PORT = process.env.PORT || 5000;
 const IS_PROD = process.env.NODE_ENV === 'production' || !process.env.ALLOW_DEV_TOOLS;
 const JWT_SECRET    = process.env.JWT_SECRET;
-const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';   // 7-day expiry  override via env var for longer sessions
+const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN;
 const WEB_APP_URL   = process.env.WEB_APP_URL   || 'https://app.mypetclub.app';
 const WEBSITE_URL   = process.env.WEBSITE_URL   || 'https://mypetclub.app';
 const SUPPORT_EMAIL = process.env.SUPPORT_EMAIL || 'support@mypetclub.app';
@@ -509,21 +509,17 @@ const autoDeleteSuspendedUsers = async () => {
 //  setIntervals removed to prevent duplicate execution on multi-instance deployments.
 //
 
-// "" Hard-purge soft-deleted records older than 90 days " runs every 24 h ""
-// Permanently removes rows where deleted_at < NOW() - 90 days from
-// users, bookings, and pets. Satisfies GDPR right-to-erasure obligation.
-setInterval(async () => {
-  try {
-    const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
-    const [{ count: uCount }, { count: bCount }, { count: pCount }] = await Promise.all([
-      supabase.from('users').delete({ count: 'exact' }).not('deleted_at', 'is', null).lt('deleted_at', cutoff),
-      supabase.from('bookings').delete({ count: 'exact' }).not('deleted_at', 'is', null).lt('deleted_at', cutoff),
-      supabase.from('pets').delete({ count: 'exact' }).not('deleted_at', 'is', null).lt('deleted_at', cutoff),
-    ]);
-    const total = (uCount || 0) + (bCount || 0) + (pCount || 0);
-    if (total > 0) logger.info(`[HardPurge] Permanently removed ${uCount || 0} user(s), ${bCount || 0} booking(s), ${pCount || 0} pet(s) (deleted >90 days ago)`);
-  } catch (e) { logger.warn('[HardPurge] Failed:', e.message); }
-}, 24 * 60 * 60 * 1000);
+// Hard-purge is driven by Cloud Scheduler → POST /api/cron/hard-purge (daily)
+// Removed setInterval to prevent duplicate execution on multi-instance deployments.
+const hardPurgeDeletedRecords = async () => {
+  const cutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+  const [{ count: uCount }, { count: bCount }, { count: pCount }] = await Promise.all([
+    supabase.from('users').delete({ count: 'exact' }).not('deleted_at', 'is', null).lt('deleted_at', cutoff),
+    supabase.from('bookings').delete({ count: 'exact' }).not('deleted_at', 'is', null).lt('deleted_at', cutoff),
+    supabase.from('pets').delete({ count: 'exact' }).not('deleted_at', 'is', null).lt('deleted_at', cutoff),
+  ]);
+  return { users: uCount || 0, bookings: bCount || 0, pets: pCount || 0 };
+};
 
 // 
 //  BOOKING DISPATCH SYSTEM  Round-Robin / Uber-style
@@ -3497,8 +3493,8 @@ app.put('/api/admin/verify/:id', auth, adminOnly, validate(schemas.verifyProfess
 // Admin: set sub_role for a professional (creates profile row if missing)
 app.put('/api/admin/users/:id/set-role', auth, adminOnly, validate(schemas.setUserRole), async (req, res) => {
   const { subRole } = req.body;
-  if (!['Groomer','Trainer','Vet'].includes(subRole))
-    return res.status(400).json({ error: 'subRole must be Groomer, Trainer, or Vet' });
+  if (!['Groomer','Trainer','Vet','Walker','Boarding'].includes(subRole))
+    return res.status(400).json({ error: 'subRole must be Groomer, Trainer, Vet, Walker, or Boarding' });
 
   // Ensure the user's role is 'professional' (in case they were still pending_role)
   await supabase.from('users').update({ role: 'professional' }).eq('id', req.params.id);
@@ -4899,6 +4895,44 @@ app.post('/api/cron/payout-summary', async (req, res) => {
     res.json({ success: true, providers: rows.length, pending_bookings: bookings.length, totalINR: grandINR, totalUSD: grandUSD });
   } catch (e) {
     logger.error('[Cron] payout-summary failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Cron: booking timeout (every 2 min via Cloud Scheduler)
+app.post('/api/cron/booking-timeout', async (req, res) => {
+  if (!cronAuth(req, res)) return;
+  try {
+    await processTimedOutAssignments();
+    res.json({ success: true });
+  } catch (e) {
+    logger.error('[Cron] booking-timeout failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Cron: auto-delete suspended users (daily via Cloud Scheduler)
+app.post('/api/cron/auto-delete', async (req, res) => {
+  if (!cronAuth(req, res)) return;
+  try {
+    await autoDeleteSuspendedUsers();
+    res.json({ success: true });
+  } catch (e) {
+    logger.error('[Cron] auto-delete failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// Cron: hard-purge soft-deleted records >90 days old (daily via Cloud Scheduler)
+app.post('/api/cron/hard-purge', async (req, res) => {
+  if (!cronAuth(req, res)) return;
+  try {
+    const counts = await hardPurgeDeletedRecords();
+    const total = counts.users + counts.bookings + counts.pets;
+    if (total > 0) logger.info(`[HardPurge] Removed ${counts.users} user(s), ${counts.bookings} booking(s), ${counts.pets} pet(s)`);
+    res.json({ success: true, ...counts });
+  } catch (e) {
+    logger.error('[Cron] hard-purge failed:', e.message);
     res.status(500).json({ error: e.message });
   }
 });
