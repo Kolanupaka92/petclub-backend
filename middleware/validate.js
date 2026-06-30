@@ -122,7 +122,7 @@ const updateBookingStatus = z.object({
 });
 
 const respondBooking = z.object({
-  accept: z.boolean({ required_error: 'accept (boolean) is required' }),
+  action: z.enum(['accept', 'reject'], { required_error: "action must be 'accept' or 'reject'" }),
 });
 
 const sendMessage = z.object({
@@ -187,9 +187,10 @@ const validateCoupon = z.object({
 });
 
 const awardLoyalty = z.object({
-  user_id: uuid,
-  points:  z.number().int().min(1).max(100000),
-  reason:  z.string().max(200),
+  userId:      uuid,
+  points:      z.number().int().min(1).max(100000),
+  type:        z.string().max(50).optional(),
+  description: z.string().max(200).optional(),
 });
 
 // ── Admin schemas ──────────────────────────────────────────────────────────────
@@ -205,9 +206,8 @@ const setUserRole = z.object({
 });
 
 const verifyProfessional = z.object({
-  status: z.enum(['verified', 'rejected', 'pending'],
-    { errorMap: () => ({ message: 'status must be verified, rejected, or pending' }) }),
-  notes: z.string().max(500).optional(),
+  action: z.enum(['approve', 'reject'], { required_error: "action must be 'approve' or 'reject'" }),
+  reason: z.string().max(500).optional(),
 });
 
 const adminEditUser = z.object({

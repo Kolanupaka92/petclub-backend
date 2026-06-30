@@ -8,7 +8,8 @@
     "dev": "nodemon server.js",
     "test": "jest --forceExit",
     "test:coverage": "jest --coverage --forceExit",
-    "test:watch": "jest --watch"
+    "test:watch": "jest --watch",
+    "e2e": "node e2e/booking-lifecycle.js"
   },
   "dependencies": {
     "@sentry/node": "^10.55.0",

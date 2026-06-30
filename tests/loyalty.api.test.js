@@ -38,7 +38,11 @@
 // it doesn't try to connect to a real Supabase instance.
 jest.mock('@supabase/supabase-js', () => ({
   createClient: () => ({
-    from:    jest.fn().mockReturnValue({ select: jest.fn().mockReturnThis(), eq: jest.fn().mockReturnThis() }),
+    from: jest.fn().mockReturnValue({
+      select: jest.fn().mockReturnThis(),
+      eq:     jest.fn().mockReturnThis(),
+      insert: jest.fn().mockResolvedValue({ data: null, error: null }),
+    }),
     rpc:     jest.fn().mockResolvedValue({ data: null, error: null }),
     storage: { createBucket: jest.fn().mockResolvedValue({}) },
   }),
@@ -135,7 +139,7 @@ describe('Journey 1 — Happy Path: GET /api/loyalty and admin award', () => {
     const res = await request(app)
       .post('/api/admin/loyalty/award')
       .set(authHeader(ADMIN_TOKEN))
-      .send({ userId: 'user-002', points: 200, description: 'Goodwill gesture' });
+      .send({ userId: '11111111-1111-4111-8111-111111111111', points: 200, description: 'Goodwill gesture' });
 
     expect(res.status).toBe(200);
     expect(res.body.success).toBe(true);
@@ -147,10 +151,10 @@ describe('Journey 1 — Happy Path: GET /api/loyalty and admin award', () => {
     await request(app)
       .post('/api/admin/loyalty/award')
       .set(authHeader(ADMIN_TOKEN))
-      .send({ userId: 'user-003', points: 500, type: 'referral_bonus', description: 'Referral from campaign' });
+      .send({ userId: '22222222-2222-4222-8222-222222222222', points: 500, type: 'referral_bonus', description: 'Referral from campaign' });
 
     const call = loyalty.awardPoints.mock.calls[0];
-    expect(call[1]).toBe('user-003');    // userId
+    expect(call[1]).toBe('22222222-2222-4222-8222-222222222222');    // userId
     expect(call[2]).toBe(500);           // points
     expect(call[3]).toBe('referral_bonus'); // type
     expect(call[4]).toBe('Referral from campaign'); // description
@@ -391,7 +395,7 @@ describe('Journey 4 — Edge Cases, Auth Guards & Input Validation', () => {
       .send({}); // no code
 
     expect(res.status).toBe(400);
-    expect(res.body.error).toMatch(/code required/i);
+    expect(res.body.error).toBe('Validation failed'); // rejected by Zod schema before the handler runs
     expect(loyalty.validateCoupon).not.toHaveBeenCalled();
   });
 
