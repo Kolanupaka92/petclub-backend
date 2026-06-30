@@ -1,3 +1,10 @@
+## [1.32.5](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.4...v1.32.5) (2026-06-30)
+
+
+### Bug Fixes
+
+* correct 3 schema/handler field-name mismatches in validate.js ([fffadad](https://github.com/Kolanupaka92/petclub-backend/commit/fffadad6388d77661ae2d55640e01318b8c29daf))
+
 ## [1.32.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.3...v1.32.4) (2026-06-29)
 
 
