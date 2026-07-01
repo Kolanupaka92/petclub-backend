@@ -132,7 +132,7 @@ const respondBooking = z.object({
 });
 
 const sendMessage = z.object({
-  message: z.string().min(1).max(2000, 'Message must be under 2000 characters'),
+  content: z.string().min(1).max(2000, 'Message must be under 2000 characters'),
 });
 
 const locationUpdate = z.object({
@@ -141,8 +141,8 @@ const locationUpdate = z.object({
 });
 
 const rateBooking = z.object({
-  rating:  z.number().int().min(1).max(5),
-  comment: z.string().max(1000).optional(),
+  rating: z.number().int().min(1).max(5),
+  review: z.string().max(1000).optional(),
 });
 
 const updateRefundStatus = z.object({
@@ -230,6 +230,8 @@ const adminEditUser = z.object({
   role:         z.enum(['customer', 'professional', 'admin', 'pending_role']).optional(),
   city:         z.string().max(100).optional(),
   area:         z.string().max(100).optional(),
+  address:      z.string().max(500).optional(),
+  pincode:      z.string().max(10).optional(),
 });
 
 const suspendUser = z.object({
