@@ -1,3 +1,10 @@
+## [1.32.7](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.6...v1.32.7) (2026-07-01)
+
+
+### Bug Fixes
+
+* **admin:** db-cleanup reported fake 'soft-deleted' string instead of row count, and had no target for stale upcoming bookings ([b480513](https://github.com/Kolanupaka92/petclub-backend/commit/b480513f8b3c0135f204963a0638283ed7f859e1))
+
 ## [1.32.6](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.5...v1.32.6) (2026-07-01)
 
 

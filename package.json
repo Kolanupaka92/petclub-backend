@@ -1,6 +1,6 @@
 {
   "name": "petclub-backend",
-  "version": "1.32.6",
+  "version": "1.32.7",
   "description": "PETclub India Backend API",
   "main": "server.js",
   "scripts": {
