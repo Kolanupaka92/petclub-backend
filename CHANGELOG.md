@@ -1,3 +1,10 @@
+## [1.32.8](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.7...v1.32.8) (2026-07-01)
+
+
+### Bug Fixes
+
+* five more schema/handler field mismatches, incl. two 100%-broken endpoints ([0535ba8](https://github.com/Kolanupaka92/petclub-backend/commit/0535ba8a8b9d772643ff7d2b8efd1e7e3164c5ec))
+
 ## [1.32.7](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.6...v1.32.7) (2026-07-01)
 
 
