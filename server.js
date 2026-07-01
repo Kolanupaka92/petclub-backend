@@ -4789,7 +4789,7 @@ app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
 //  ADMIN: DB Cleanup  remove confirmed stale/orphan rows
 //  Accepts { targets: [...] }  array of what to clean:
 //  "expired_otps", "orphan_profiles", "stale_pending_users",
-//  "cancelled_bookings", "stale_leads"
+//  "cancelled_bookings", "no_pros_available", "stale_upcoming", "stale_leads"
 // 
 app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
   const { targets = [] } = req.body;
@@ -4848,21 +4848,33 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
     // Cancelled bookings (soft-delete)
     if (targets.includes('cancelled_bookings')) {
       const _cxNow = new Date().toISOString();
-      const { error } = await supabase.from('bookings')
-        .update({ deleted_at: _cxNow }).eq('status', 'cancelled').is('deleted_at', null);
-      report.cancelled_bookings = error ? `error: ${error.message}` : 'soft-deleted';
+      const { error, count } = await supabase.from('bookings')
+        .update({ deleted_at: _cxNow }, { count: 'exact' }).eq('status', 'cancelled').is('deleted_at', null);
+      report.cancelled_bookings = error ? `error: ${error.message}` : (count || 0);
     }
 
     // Stale no_pros_available bookings (status=upcoming but no pro found -- older than 7 days)
     if (targets.includes('no_pros_available')) {
       const _npNow = new Date().toISOString();
-      const { error } = await supabase.from('bookings')
-        .update({ deleted_at: _npNow })
+      const { error, count } = await supabase.from('bookings')
+        .update({ deleted_at: _npNow }, { count: 'exact' })
         .eq('assignment_status', 'no_pros_available')
         .eq('status', 'upcoming')
         .lt('created_at', stale7d)
         .is('deleted_at', null);
-      report.no_pros_available = error ? `error: ${error.message}` : 'soft-deleted';
+      report.no_pros_available = error ? `error: ${error.message}` : (count || 0);
+    }
+
+    // Stale upcoming bookings (status=upcoming, scheduled_at over 30 days in the past --
+    // never completed, cancelled, or reassigned; soft-delete so they stop cluttering the audit)
+    if (targets.includes('stale_upcoming')) {
+      const _suNow = new Date().toISOString();
+      const { error, count } = await supabase.from('bookings')
+        .update({ deleted_at: _suNow }, { count: 'exact' })
+        .eq('status', 'upcoming')
+        .lt('scheduled_at', stale30d)
+        .is('deleted_at', null);
+      report.stale_upcoming = error ? `error: ${error.message}` : (count || 0);
     }
 
     // Website leads older than 30 days
