@@ -1,3 +1,10 @@
+## [1.32.6](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.5...v1.32.6) (2026-07-01)
+
+
+### Bug Fixes
+
+* correct payment schema/handler field mismatches, sanitize search inputs, close dispatch race ([b04214a](https://github.com/Kolanupaka92/petclub-backend/commit/b04214a6705ab4aa137c040e9fb53f0d003b265d))
+
 ## [1.32.5](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.4...v1.32.5) (2026-06-30)
 
 
