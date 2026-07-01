@@ -73,7 +73,13 @@ const updateMe = z.object({
   area:      shortText('Area').optional(),
   address:   longText('Address'),
   pincode:   z.string().max(10).optional(),
+  country:   z.string().max(100).optional(),
   photo_url: z.string().url('Invalid photo URL').optional().nullable(),
+  addressLat:        z.number().min(-90).max(90).optional().nullable(),
+  addressLng:        z.number().min(-180).max(180).optional().nullable(),
+  addressPostalCode: z.string().max(10).optional().nullable(),
+  addressCity:       z.string().max(100).optional().nullable(),
+  addressState:      z.string().max(100).optional().nullable(),
 });
 
 const fcmToken = z.object({
@@ -117,8 +123,8 @@ const createBooking = z.object({
 const updateBookingStatus = z.object({
   status: z.enum(['cancelled', 'completed', 'in_progress', 'upcoming', 'no_show'],
     { errorMap: () => ({ message: 'Invalid status' }) }),
-  cancel_reason: z.string().max(500).optional(),
-  by_no_show:    z.boolean().optional(),
+  reason:     z.string().max(500).optional(),
+  by_no_show: z.boolean().optional(),
 });
 
 const respondBooking = z.object({
@@ -140,9 +146,8 @@ const rateBooking = z.object({
 });
 
 const updateRefundStatus = z.object({
-  refund_status: z.enum(['pending', 'processing', 'refunded', 'failed'],
-    { errorMap: () => ({ message: 'Invalid refund_status' }) }),
-  refund_reference: z.string().max(100).optional(),
+  status: z.enum(['processed', 'not_applicable'],
+    { errorMap: () => ({ message: "status must be 'processed' or 'not_applicable'" }) }),
 });
 
 const assignBooking = z.object({
@@ -164,6 +169,11 @@ const applyProfessional = z.object({
   price_basic:  z.string().max(50).optional(),
   price_full:   z.string().max(50).optional(),
   price_custom: z.string().max(50).optional(),
+  name:            shortText('Name').optional(),
+  email:           email.optional(),
+  certification:   z.string().max(500).optional(),
+  license_number:  z.string().max(100).optional(),
+  clinic_name:     z.string().max(200).optional(),
 });
 
 const updateProfessional = applyProfessional.partial();
@@ -200,9 +210,11 @@ const makeAdmin = z.object({
   secret:      z.string().min(1, 'secret required'),
 });
 
+// PUT /api/admin/users/:id/set-role only ever receives { subRole } — used to
+// assign/change a professional's service sub-role, not their top-level role.
 const setUserRole = z.object({
-  role: z.enum(['customer', 'professional', 'admin', 'pending_role'],
-    { errorMap: () => ({ message: 'Invalid role' }) }),
+  subRole: z.enum(['Groomer', 'Trainer', 'Vet', 'Walker', 'Boarding'],
+    { errorMap: () => ({ message: 'subRole must be Groomer, Trainer, Vet, Walker, or Boarding' }) }),
 });
 
 const verifyProfessional = z.object({
