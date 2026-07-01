@@ -1,3 +1,10 @@
+## [1.32.9](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.8...v1.32.9) (2026-07-01)
+
+
+### Bug Fixes
+
+* three more schema/handler mismatches, incl. in-app chat 100% broken ([5fff96f](https://github.com/Kolanupaka92/petclub-backend/commit/5fff96fc5e39896abaf8238a5e01428e085b57a7))
+
 ## [1.32.8](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.7...v1.32.8) (2026-07-01)
 
 
