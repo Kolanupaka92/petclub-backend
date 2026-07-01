@@ -226,8 +226,10 @@ const suspendUser = z.object({
 
 // ── Payment schemas ────────────────────────────────────────────────────────────
 const createPaymentOrder = z.object({
+  amount:     positiveNum,
   booking_id: uuid,
   currency:   z.enum(['INR', 'USD']).optional().default('INR'),
+  notes:      z.record(z.string(), z.any()).optional().default({}),
 });
 
 const verifyPayment = z.object({

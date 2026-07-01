@@ -28,6 +28,13 @@ const logger = pino({
   ...(process.env.NODE_ENV === 'development' && { transport: { target: 'pino-pretty' } }),
 });
 
+// Logs the real error server-side but returns a generic message to the client —
+// raw Supabase/Postgres error text can leak column/constraint/schema names.
+function dbError(res, err, publicMessage = 'Something went wrong. Please try again.', status = 500) {
+  logger.error(`[${publicMessage}]`, err?.message || err);
+  return res.status(status).json({ error: publicMessage });
+}
+
 //  Sentry error tracking  active only when SENTRY_DSN is set 
 const Sentry = require('@sentry/node');
 if (process.env.SENTRY_DSN) {
@@ -595,7 +602,10 @@ const findNextPro = async (city, subRole, excludeProIds = [], bookingLat = null,
   // If booking has GPS coords, fetch broader pool for GPS radius filter.
   // Otherwise fall back to city-name match.
   if (!bookingLat || !bookingLng) {
-    if (city) q = q.ilike('city', `%${city}%`);
+    // Strip ILIKE wildcard/metacharacters — city here comes from booking.city,
+    // free-text at creation time, not restricted to a safe charset.
+    const safeCity = city ? city.replace(/[^a-zA-Z0-9\s-]/g, '').slice(0, 50) : '';
+    if (safeCity) q = q.ilike('city', `%${safeCity}%`);
   }
   // Exclude pros who already got this booking and rejected / timed out
   for (const xid of excludeProIds) q = q.neq('id', xid);
@@ -624,7 +634,24 @@ const findNextPro = async (city, subRole, excludeProIds = [], bookingLat = null,
     if (!b.last_assigned_at) return 1;
     return new Date(a.last_assigned_at) - new Date(b.last_assigned_at);
   });
-  return pros[0];
+
+  // Atomically "claim" a candidate via a conditional UPDATE — the WHERE clause
+  // re-checks last_assigned_at against the value we just read, so the update
+  // only succeeds if nobody else has claimed this pro in the meantime. Without
+  // this, two bookings dispatched in the same instant could both pick the same
+  // top-of-rotation pro (findNextPro's own update to last_assigned_at normally
+  // happens in offerBookingToPro, milliseconds later — too late to prevent the
+  // race). If we lose the race for a candidate, fall through to the next one.
+  const claimStamp = new Date().toISOString();
+  for (const candidate of pros) {
+    let claimQ = supabase.from('professional_profiles').update({ last_assigned_at: claimStamp }).eq('id', candidate.id);
+    claimQ = candidate.last_assigned_at
+      ? claimQ.eq('last_assigned_at', candidate.last_assigned_at)
+      : claimQ.is('last_assigned_at', null);
+    const { data: claimed } = await claimQ.select('id');
+    if (claimed && claimed.length > 0) return candidate;
+  }
+  return null; // every candidate was claimed by a concurrent dispatch in the same instant
 };
 
 // Offer a booking to a specific professional + send email/SMS notification
@@ -1500,7 +1527,7 @@ app.post('/api/admin/make-admin', authLimit, validate(schemas.makeAdmin), async 
     await supabase.from('users').update({ role: 'admin' }).eq('id', user.id);
     res.json({ success: true, message: `${fullPhone} is now admin` });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    dbError(res, err, 'Failed to promote user to admin.');
   }
 });
 
@@ -1586,7 +1613,7 @@ app.post('/api/pets', auth, validate(schemas.createPet), async (req, res) => {
     health_notes: sanitize(health_notes) || null,
     photo_url:    photo_url              || null,
   }).select().single();
-  if (error) return res.status(400).json({ error: error.message });
+  if (error) return dbError(res, error, 'Failed to create pet.', 400);
   res.json({ success: true, pet: data });
 });
 
@@ -1604,7 +1631,7 @@ app.put('/api/pets/:id', auth, validate(schemas.updatePet), async (req, res) => 
   if (photo_url    !== undefined) updates.photo_url    = photo_url || null;
   const { data, error } = await supabase.from('pets').update(updates)
     .eq('id', req.params.id).eq('owner_id', req.user.id).select().single();
-  if (error) return res.status(400).json({ error: error.message });
+  if (error) return dbError(res, error, 'Failed to update pet.', 400);
   if (!data) return res.status(404).json({ error: 'Pet not found or access denied' });
   res.json({ success: true, pet: data });
 });
@@ -1671,7 +1698,7 @@ app.post('/api/pets/:petId/records/:type', auth, async (req, res) => {
 
   const { data, error } = await supabase.from(tbl)
     .insert({ pet_id: req.params.petId, ...safeBody }).select().single();
-  if (error) return res.status(400).json({ error: error.message });
+  if (error) return dbError(res, error, 'Failed to add health record.', 400);
   res.json({ success: true, record: data });
 });
 
@@ -1968,7 +1995,7 @@ app.get('/api/admin/revenue-report', auth, adminOnly, async (req, res) => {
       p_from: fromDate,
       p_to:   toDate,
     });
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return dbError(res, error, 'Could not generate revenue report.');
     res.json({ success: true, report: data, from_date: fromDate, to_date: toDate, generated_at: new Date().toISOString() });
   } catch (e) {
     logger.error('[RevenueReport] error:', e.message);
@@ -1984,7 +2011,11 @@ app.get('/api/admin/revenue-report', auth, adminOnly, async (req, res) => {
 // (C-3 fix): the customer receives the professional's contact details only after
 // a booking is confirmed (via the booking detail endpoint).
 app.get('/api/professionals', async (req, res) => {
-  const { city, sub_role } = req.query;
+  // Strip non-alphanumeric/space characters and cap length to prevent
+  // PostgREST filter-expression / ILIKE wildcard injection (same as admin users search)
+  const rawCity = req.query.city?.trim() || '';
+  const city    = rawCity.replace(/[^a-zA-Z0-9\s-]/g, '').slice(0, 50) || null;
+  const sub_role = req.query.sub_role;
   const page     = Math.max(1, parseInt(req.query.page)  || 1);
   const pageSize = Math.min(50, Math.max(1, parseInt(req.query.limit) || 20));
   const from = (page - 1) * pageSize;
@@ -2162,7 +2193,7 @@ app.post('/api/professionals/apply', auth, validate(schemas.applyProfessional), 
     bio:                 sanitize(bio)        || null,
     experience:          sanitize(experience) || null,
   }, { onConflict: 'user_id' }).select().single();
-  if (error) return res.status(400).json({ error: error.message });
+  if (error) return dbError(res, error, 'Failed to submit professional application.', 400);
   await supabase.from('users').update({ role: 'professional' }).eq('id', req.user.id);
   res.json({ success: true, profile: data });
 });
@@ -2427,7 +2458,7 @@ app.get('/api/professionals/earnings', auth, async (req, res) => {
 
     res.json({ success: true, earnings: { total, paid, pending, bookings } });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    dbError(res, err, 'Failed to load earnings.');
   }
 });
 
@@ -2469,7 +2500,7 @@ app.get('/api/bookings', auth, async (req, res) => {
       .order('scheduled_at', { ascending: false })
       .range(adminFrom, adminFrom + adminLimit - 1);
     const { data, error, count } = await adminQ;
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return dbError(res, error, 'Failed to load bookings.');
     return res.json({ success: true, bookings: data || [], total: count || 0, page: adminPage, limit: adminLimit });
   }
   const { data, error } = await q.order('scheduled_at', { ascending: false });
@@ -2997,7 +3028,7 @@ app.get('/api/bookings/incoming', auth, async (req, res) => {
     }, 'professional'));
     res.json({ success: true, bookings });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    dbError(res, err, 'Failed to load booking requests.');
   }
 });
 
@@ -3113,7 +3144,7 @@ app.post('/api/bookings/:id/messages', auth, validate(schemas.sendMessage), asyn
     content,
   }).select().single();
 
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) return dbError(res, error, 'Failed to send message.');
 
   // Push notification to the other party so they know a message arrived
   const { data: bkParties } = await supabase
@@ -3163,7 +3194,7 @@ app.put('/api/bookings/:id/assign', auth, adminOnly, validate(schemas.assignBook
     await supabase.from('bookings').update({ assignment_status: 'offered' }).eq('id', req.params.id);
     res.json({ success: true, message: `Assigned to ${prof.users?.name || professionalId}` });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    dbError(res, err, 'Failed to assign booking.');
   }
 });
 
@@ -3321,7 +3352,7 @@ app.post('/api/bookings/:id/on-my-way', auth, async (req, res) => {
     logger.info(`[OnMyWay] Booking ${req.params.id}  ${proName} started journey`);
     res.json({ success: true, message: 'Journey started! Customer has been notified.' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    dbError(res, err, 'Failed to start journey.');
   }
 });
 
@@ -3391,7 +3422,7 @@ app.post('/api/bookings/:id/location', auth, validate(schemas.locationUpdate), a
 
     res.json({ ok: true, distKm });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    dbError(res, err, 'Failed to update location.');
   }
 });
 
@@ -3420,7 +3451,7 @@ app.get('/api/bookings/:id/tracking', auth, async (req, res) => {
     const { customer_id, professional_id, ...safeData } = booking;
     res.json(safeData);
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    dbError(res, err, 'Failed to load booking.');
   }
 });
 
@@ -3506,7 +3537,7 @@ app.get('/api/ratings/mine', auth, async (req, res) => {
     .from('reviews')
     .select('booking_id')
     .eq('reviewer_id', req.user.id);
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) return dbError(res, error, 'Failed to load ratings.');
   res.json({ success: true, ratedIds: (data || []).map(r => r.booking_id) });
 });
 
@@ -3541,7 +3572,7 @@ app.get('/api/admin/otp', auth, adminOnly, async (req, res) => {
       note: expired ? 'OTP has expired  request a new one' : rec.verified ? 'OTP already used' : `Valid for ${minsLeft} more min(s)`,
     });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    dbError(res, err, 'Failed to look up OTP status.');
   }
 });
 
@@ -3594,7 +3625,7 @@ app.get('/api/admin/users', auth, adminOnly, async (req, res) => {
   }
 
   const { data, count, error } = await q;
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) return dbError(res, error, 'Failed to load users.');
 
   // Attach suspended_at for current page's suspended users only
   const suspendedIds = data?.filter(u => !u.is_active && u.role !== 'admin').map(u => u.id) || [];
@@ -3693,7 +3724,7 @@ app.get('/api/admin/payouts', auth, adminOnly, async (req, res) => {
     }));
 
     res.json({ success: true, payouts: result });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { dbError(res, e, 'Failed to load payouts.'); }
 });
 
 // Admin: mark all pending bookings for a professional as paid
@@ -3706,9 +3737,9 @@ app.post('/api/admin/payouts/:profId/mark-paid', auth, adminOnly, async (req, re
       .eq('professional_id', profId)
       .eq('status', 'completed')
       .eq('payout_status', 'pending');
-    if (error) return res.status(500).json({ error: error.message });
+    if (error) return dbError(res, error, 'Failed to update payout status.');
     res.json({ success: true });
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  } catch (e) { dbError(res, e, 'Failed to update payout status.'); }
 });
 
 app.get('/api/admin/pending-verifications', auth, adminOnly, async (req, res) => {
@@ -3823,8 +3854,7 @@ const adminEditUser = async (req, res) => {
     logger.info(`[AdminEdit] User ${req.params.id} updated by admin ${req.user.id}`);
     res.json({ success: true, message: 'User updated successfully' });
   } catch (err) {
-    logger.error('[AdminEdit]', err);
-    res.status(500).json({ error: err.message });
+    dbError(res, err, 'Failed to update user.');
   }
 };
 
@@ -3972,8 +4002,7 @@ app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, 
     logger.info(`[PurgeAll] Admin ${req.user.id} deleted ${ids.length} suspended users`);
     res.json({ success: true, deleted: ids.length });
   } catch (e) {
-    logger.error('[PurgeAll] Error:', e.message);
-    res.status(500).json({ error: e.message });
+    dbError(res, e, 'Failed to purge suspended users.');
   }
 });
 
@@ -4059,7 +4088,7 @@ app.post('/api/users/fcm-token', auth, validate(schemas.fcmToken), async (req, r
     }
     res.json({ success: true, message: 'Push notifications enabled' });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    dbError(res, err, 'Failed to save push notification token.');
   }
 });
 
@@ -4071,7 +4100,7 @@ app.get('/api/notifications', auth, async (req, res) => {
     .eq('user_id', req.user.id)
     .order('created_at', { ascending: false })
     .limit(limit);
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) return dbError(res, error, 'Failed to load notifications.');
   const unread = (data || []).filter(n => !n.read_at).length;
   res.json({ success: true, notifications: data || [], unread });
 });
@@ -4081,7 +4110,7 @@ app.patch('/api/notifications/read', auth, async (req, res) => {
   let q = supabase.from('notifications').update({ read_at: new Date().toISOString() }).eq('user_id', req.user.id).is('read_at', null);
   if (ids?.length) q = q.in('id', ids);
   const { error } = await q;
-  if (error) return res.status(500).json({ error: error.message });
+  if (error) return dbError(res, error, 'Failed to mark notifications as read.');
   res.json({ success: true });
 });
 
@@ -4100,8 +4129,7 @@ app.post('/api/payments/create-order', auth, validate(schemas.createPaymentOrder
         coming_soon: true,
       });
     }
-    const { amount, bookingId, currency = 'INR', notes = {} } = req.body;
-    if (!amount || !bookingId) return res.status(400).json({ error: 'amount and bookingId required' });
+    const { amount, booking_id: bookingId, currency = 'INR', notes = {} } = req.body;
     if (amount < 100) return res.status(400).json({ error: 'Amount must be at least 1 (100 paise)' });
 
     // Verify booking belongs to this customer
@@ -4246,8 +4274,8 @@ app.post('/api/payments/verify', auth, validate(schemas.verifyPayment), async (r
     if (!razorpay) {
       return res.status(503).json({ error: 'Payments not yet active', coming_soon: true });
     }
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, bookingId } = req.body;
-    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !bookingId)
+    const { razorpay_order_id, razorpay_payment_id, razorpay_signature, booking_id } = req.body;
+    if (!razorpay_order_id || !razorpay_payment_id || !razorpay_signature || !booking_id)
       return res.status(400).json({ error: 'Missing payment verification fields' });
 
     // Verify HMAC  proves this payload was constructed by Razorpay
@@ -4261,7 +4289,7 @@ app.post('/api/payments/verify', auth, validate(schemas.verifyPayment), async (r
       return res.status(400).json({ error: 'Payment signature mismatch  possible tamper attempt' });
 
     await finalisePayment({
-      bookingId,
+      bookingId: booking_id,
       userId:              req.user.id,
       razorpay_order_id,
       razorpay_payment_id,
