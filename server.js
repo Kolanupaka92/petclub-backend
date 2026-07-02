@@ -2452,6 +2452,7 @@ app.get('/api/professionals/earnings', auth, async (req, res) => {
       .select('id, service_name, scheduled_at, status, provider_earnings, payout_status, currency')
       .eq('professional_id', prof.id)
       .in('status', ['upcoming', 'completed'])
+      .is('deleted_at', null)
       .order('scheduled_at', { ascending: false });
 
     const bookings = data || [];
@@ -3714,7 +3715,8 @@ app.get('/api/admin/payouts', auth, adminOnly, async (req, res) => {
       .from('bookings')
       .select('professional_id, provider_earnings, currency, payout_status')
       .eq('status', 'completed')
-      .eq('payout_status', 'pending');
+      .eq('payout_status', 'pending')
+      .is('deleted_at', null);
 
     // Aggregate pending earnings per professional
     const earningsByProfId = {};
