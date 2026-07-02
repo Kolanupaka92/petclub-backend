@@ -1,3 +1,10 @@
+## [1.33.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.0...v1.33.1) (2026-07-02)
+
+
+### Bug Fixes
+
+* **admin): DB audit/cleanup exclude soft-deleted rows; fix(loyalty:** currency-aware earn rules ([568b1d2](https://github.com/Kolanupaka92/petclub-backend/commit/568b1d2bcbf13adbbece5ae1f2a5b8a0a4c937b1))
+
 # [1.33.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.9...v1.33.0) (2026-07-02)
 
 
