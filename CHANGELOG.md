@@ -1,3 +1,10 @@
+# [1.33.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.9...v1.33.0) (2026-07-02)
+
+
+### Features
+
+* Stripe (USA), subscriptions, care reminders, WhatsApp AI concierge ([851b0b3](https://github.com/Kolanupaka92/petclub-backend/commit/851b0b3a300720a50a8ed40dd9d3eb266b4637ad))
+
 ## [1.32.9](https://github.com/Kolanupaka92/petclub-backend/compare/v1.32.8...v1.32.9) (2026-07-01)
 
 
