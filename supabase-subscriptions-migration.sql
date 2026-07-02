@@ -45,21 +45,19 @@ create policy "plans are public" on subscription_plans
   for select using (active = true);
 
 -- ── Seed plans ───────────────────────────────────────────────────────────────
--- Founding-member launch: all plans are FREE (price 0) until payments go live.
--- When monetization starts, update price_inr/price_usd here and in the DB.
 insert into subscription_plans (name, description, service_type, interval, price_inr, price_usd, discount_pct, perks)
 select * from (values
   ('Fresh Coat Monthly',
-   'One full grooming session every month, priority scheduling, free nail trims. Free for founding members during our launch period.',
-   'grooming', 'monthly', 0.00, 0.00, 10,
+   'One full grooming session every month, priority scheduling, free nail trims.',
+   'grooming', 'monthly', 699.00, 29.00, 10,
    '["1 grooming session/month", "Priority scheduling", "Free nail trims", "10% off extra bookings"]'::jsonb),
   ('Daily Walks Pack',
-   '20 GPS-tracked walks per month with your preferred verified walker. Free for founding members during our launch period.',
-   'walking', 'monthly', 0.00, 0.00, 15,
+   '20 GPS-tracked walks per month with your preferred verified walker.',
+   'walking', 'monthly', 3999.00, 99.00, 15,
    '["20 walks/month", "Same walker guaranteed", "Live GPS every walk", "15% off extra bookings"]'::jsonb),
   ('PETclub+ Membership',
-   'Member pricing on every service, free delivery, priority matching, double loyalty credits. Free for founding members during our launch period.',
-   'membership', 'monthly', 0.00, 0.00, 10,
+   'Member pricing on every service, free delivery, priority matching, double loyalty credits.',
+   'membership', 'monthly', 299.00, 9.00, 10,
    '["10% off all services", "Priority pro matching", "2x loyalty credits", "Free food delivery at launch"]'::jsonb)
 ) as seed(name, description, service_type, interval, price_inr, price_usd, discount_pct, perks)
 where not exists (select 1 from subscription_plans);
