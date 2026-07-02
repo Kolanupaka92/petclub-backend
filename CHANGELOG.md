@@ -1,3 +1,10 @@
+## [1.33.5](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.4...v1.33.5) (2026-07-02)
+
+
+### Bug Fixes
+
+* **bookings:** createBooking rejected addons:null, breaking every booking without add-ons ([e008827](https://github.com/Kolanupaka92/petclub-backend/commit/e008827f67c0e74c28d255d72765c429e0ad499a))
+
 ## [1.33.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.3...v1.33.4) (2026-07-02)
 
 
