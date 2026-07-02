@@ -1,3 +1,10 @@
+## [1.33.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.3...v1.33.4) (2026-07-02)
+
+
+### Bug Fixes
+
+* **professional:** earnings Job History leaked soft-deleted bookings ([c20faad](https://github.com/Kolanupaka92/petclub-backend/commit/c20faad0f01c3d66dd51b968f3fc6c3fd3728787))
+
 ## [1.33.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.2...v1.33.3) (2026-07-02)
 
 
