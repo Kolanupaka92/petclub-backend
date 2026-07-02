@@ -32,9 +32,15 @@ function getClient() {
 const memStore = new Map();
 
 class PgRateLimitStore {
-  constructor() {
+  // `prefix` namespaces this limiter's keys in the shared rate_limits table.
+  // Every limiter previously used the hardcoded 'rl' prefix with IP-only keys,
+  // so e.g. the OTP-send limiter (5 min window) and the login-attempt limiter
+  // (15 min window) wrote to and read from the SAME row per IP — hits on one
+  // route could trip an unrelated limiter, and whichever limiter fired last
+  // clobbered the others' reset time. Callers must pass a unique prefix.
+  constructor(prefix = 'rl') {
     this.windowMs = 60_000;
-    this.prefix   = 'rl';
+    this.prefix   = prefix;
   }
 
   init({ windowMs }) {

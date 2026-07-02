@@ -222,7 +222,7 @@ app.use((req, res, next) => {
 app.use(rateLimit({
   windowMs: 15 * 60 * 1000, max: 300,
   standardHeaders: true, legacyHeaders: false,
-  store: new PgRateLimitStore(),
+  store: new PgRateLimitStore('rl:global'),
   handler: (req, res) => res.status(429).json({ error: 'Too many requests. Please slow down.' }),
 }));
 // OTP send rate limit  max 10 sends per 5 minutes per IP
@@ -231,7 +231,7 @@ app.use(rateLimit({
 const otpLimit = rateLimit({
   windowMs: 5 * 60 * 1000, max: 50,
   standardHeaders: true, legacyHeaders: false,
-  store: new PgRateLimitStore(),
+  store: new PgRateLimitStore('rl:otp'),
   // Skip rate limiting for E2E test emails (e.g. @mailinator.com) so the
   // bypass handler in the route can return the fixed OTP without being blocked.
   skip: (req) => {
@@ -248,7 +248,7 @@ const otpLimit = rateLimit({
 const bookingLimit = rateLimit({
   windowMs: 10 * 60 * 1000, max: 5,
   standardHeaders: true, legacyHeaders: false,
-  store: new PgRateLimitStore(),
+  store: new PgRateLimitStore('rl:booking'),
   keyGenerator: (req) => req.user?.id || req.ip, // user-keyed, falls back to IP before auth runs
   skip: (req) => req.user?.role === 'admin', // admins exempt (test bookings)
   handler: (req, res) => res.status(429).json({ error: 'Too many booking requests. Please wait a few minutes.' }),
@@ -257,14 +257,14 @@ const bookingLimit = rateLimit({
 const contactLimit = rateLimit({
   windowMs: 60 * 60 * 1000, max: 5,
   standardHeaders: true, legacyHeaders: false,
-  store: new PgRateLimitStore(),
+  store: new PgRateLimitStore('rl:contact'),
   handler: (req, res) => res.status(429).json({ error: 'Too many contact requests. Please try again later.' }),
 });
 // Auth verify rate limit  max 20 attempts per 15 min per IP (prevents brute-force)
 const authLimit = rateLimit({
   windowMs: 15 * 60 * 1000, max: 20,
   standardHeaders: true, legacyHeaders: false,
-  store: new PgRateLimitStore(),
+  store: new PgRateLimitStore('rl:auth'),
   handler: (req, res) => res.status(429).json({ error: 'Too many login attempts. Please wait 15 minutes.' }),
 });
 
