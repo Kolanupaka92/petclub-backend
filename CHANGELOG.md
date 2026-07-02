@@ -1,3 +1,10 @@
+## [1.33.6](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.5...v1.33.6) (2026-07-02)
+
+
+### Bug Fixes
+
+* **rate-limit:** every limiter shared one counter per IP, cross-tripping each other ([475c564](https://github.com/Kolanupaka92/petclub-backend/commit/475c564ce0c4c2783b84ee2c2367ab2ef38de369))
+
 ## [1.33.5](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.4...v1.33.5) (2026-07-02)
 
 
