@@ -1,3 +1,10 @@
+## [1.33.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.2...v1.33.3) (2026-07-02)
+
+
+### Bug Fixes
+
+* **reports:** partner_revenue_report joined users on the wrong key ([f786233](https://github.com/Kolanupaka92/petclub-backend/commit/f786233545a7b130cbd95c7f464b724c5c3ab243))
+
 ## [1.33.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.1...v1.33.2) (2026-07-02)
 
 
