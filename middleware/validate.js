@@ -116,7 +116,7 @@ const createBooking = z.object({
   lat:            z.number().min(-90).max(90).optional().nullable(),
   lng:            z.number().min(-180).max(180).optional().nullable(),
   pet_size:       z.enum(['Small', 'Medium', 'Large', 'Cat']).optional().nullable(),
-  addons:         z.array(z.string().max(50)).max(10).optional(),
+  addons:         z.array(z.string().max(50)).max(10).optional().nullable(),
   coupon_code:    z.string().max(20).optional().nullable(),
 });
 
