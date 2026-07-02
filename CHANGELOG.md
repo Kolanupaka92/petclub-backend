@@ -1,3 +1,10 @@
+## [1.33.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.1...v1.33.2) (2026-07-02)
+
+
+### Bug Fixes
+
+* **bookings:** hide soft-deleted bookings from lists and stats ([2dedfaf](https://github.com/Kolanupaka92/petclub-backend/commit/2dedfafc2579fd39dd9e4b6ca0bb7db14b3cf888))
+
 ## [1.33.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.0...v1.33.1) (2026-07-02)
 
 
