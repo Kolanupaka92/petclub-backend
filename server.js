@@ -18,6 +18,8 @@ const loyalty           = require('./services/loyaltyService');
 const { PgRateLimitStore } = require('./services/pgRateLimitStore');
 const { validate, schemas } = require('./middleware/validate');
 const { computeSplit, calcCancellation, stripFinancials } = require('./services/revenueService');
+const stripeService     = require('./services/stripeService');
+const concierge         = require('./services/conciergeService');
 const { issueRefreshToken, rotateRefreshToken, revokeAllForUser, REFRESH_COOKIE, REFRESH_COOKIE_OPTS } = require('./services/refreshTokenService');
 
 //  Structured logging 
@@ -193,7 +195,9 @@ app.use(cors({
   credentials: true,   // required for httpOnly cookie to be sent cross-origin
 }));
 app.use(require('cookie-parser')());
-app.use(express.json({ limit: '10mb' }));
+// verify() stashes the raw request bytes for webhook HMAC checks (Razorpay,
+// Stripe) — the parsed req.body can't be used for signature verification.
+app.use(express.json({ limit: '10mb', verify: (req, _res, buf) => { req.rawBody = buf; } }));
 
 //  Request ID + timing logger 
 app.use((req, res, next) => {
@@ -4333,11 +4337,19 @@ app.post('/api/payments/webhook',
       logger.error('[Webhook] RAZORPAY_WEBHOOK_SECRET not set — rejecting request. Set it in Cloud Run env vars.');
       return res.status(500).json({ error: 'Webhook not configured' });
     } else {
+      // Global express.json() parses application/json bodies before this
+      // route's express.raw() runs, so req.body may already be an object.
+      // req.rawBody (captured by the json verify hook) is the reliable source.
+      const rawBuf = req.rawBody || (Buffer.isBuffer(req.body) ? req.body : null);
+      if (!rawBuf) {
+        logger.warn('[Webhook] No raw body available for signature check  rejected');
+        return res.status(400).json({ error: 'Invalid webhook payload' });
+      }
       const crypto   = require('crypto');
       const received = req.headers['x-razorpay-signature'];
       const expected = crypto
         .createHmac('sha256', webhookSecret)
-        .update(req.body)           // raw Buffer, not parsed JSON
+        .update(rawBuf)             // raw bytes, not parsed JSON
         .digest('hex');
 
       if (received !== expected) {
@@ -4346,10 +4358,12 @@ app.post('/api/payments/webhook',
       }
     }
 
-    //  2. Parse event 
+    //  2. Parse event
     let event;
     try {
-      event = JSON.parse(req.body.toString());
+      event = Buffer.isBuffer(req.body) || typeof req.body === 'string'
+        ? JSON.parse(req.body.toString())
+        : req.body;
     } catch {
       return res.status(400).json({ error: 'Invalid JSON body' });
     }
@@ -4429,6 +4443,255 @@ app.get('/api/payments/config', auth, (req, res) => {
     coming_soon: !razorpay,
     message: razorpay ? 'Payments active' : 'Payments coming soon  LLC registration in progress',
   });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  STRIPE (USA payments) — env-gated; test mode until live keys are set
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Stripe public config (frontend uses this to initialize Stripe.js)
+app.get('/api/payments/stripe/config', auth, (req, res) => {
+  res.json({
+    enabled: stripeService.isConfigured(),
+    key: stripeService.isConfigured() ? (process.env.STRIPE_PUBLISHABLE_KEY || null) : null,
+    coming_soon: !stripeService.isConfigured(),
+  });
+});
+
+// Create a PaymentIntent for a USD booking. Amount is always taken from the
+// booking row — never from the client.
+app.post('/api/payments/stripe/create-intent', auth, validate(schemas.createStripeIntent), async (req, res) => {
+  if (!stripeService.isConfigured()) {
+    return res.status(503).json({ error: 'Stripe not configured', coming_soon: true });
+  }
+  try {
+    const { booking_id: bookingId } = req.body;
+    const { data: booking, error } = await supabase
+      .from('bookings')
+      .select('id, customer_id, total_amount, currency, payment_status')
+      .eq('id', bookingId)
+      .single();
+    if (error || !booking) return res.status(404).json({ error: 'Booking not found' });
+    if (booking.customer_id !== req.user.id) return res.status(403).json({ error: 'Not your booking' });
+    if (booking.payment_status === 'paid') return res.status(409).json({ error: 'Booking already paid' });
+    if ((booking.currency || 'INR') !== 'USD') {
+      return res.status(400).json({ error: 'Stripe is for USD bookings — use Razorpay for INR' });
+    }
+
+    const intent = await stripeService.createPaymentIntent({
+      amountUsd: booking.total_amount,
+      bookingId: booking.id,
+      customerId: req.user.id,
+    });
+    res.json({ success: true, client_secret: intent.client_secret, payment_intent_id: intent.id });
+  } catch (err) {
+    logger.error('[Stripe] create-intent error:', err.message);
+    res.status(500).json({ error: 'Could not create payment intent' });
+  }
+});
+
+// Server-to-server webhook from Stripe. Signature is verified over the raw
+// body captured by the json verify hook.
+app.post('/api/payments/stripe/webhook', async (req, res) => {
+  if (!stripeService.isConfigured()) return res.status(503).json({ error: 'Stripe not configured' });
+  let event;
+  try {
+    event = stripeService.verifyWebhook(req.rawBody, req.headers['stripe-signature']);
+  } catch (err) {
+    logger.warn('[Stripe] Webhook signature verification failed:', err.message);
+    return res.status(400).json({ error: 'Invalid webhook signature' });
+  }
+
+  if (event.type === 'payment_intent.succeeded') {
+    const intent    = event.data.object;
+    const bookingId = intent.metadata?.booking_id;
+    if (bookingId) {
+      try {
+        await supabase.from('bookings')
+          .update({ payment_status: 'paid', assignment_status: 'confirmed' })
+          .eq('id', bookingId)
+          .eq('payment_status', 'pending');
+        await supabase.from('payment_logs').insert({
+          booking_id: bookingId,
+          razorpay_order_id: null,
+          razorpay_payment_id: `stripe:${intent.id}`,
+          status: 'captured',
+        });
+        logger.info(`[Stripe] payment_intent.succeeded processed for booking ${bookingId}`);
+      } catch (err) {
+        logger.error('[Stripe] webhook processing error:', err.message);
+        return res.status(500).json({ error: 'Internal error processing payment' });
+      }
+    }
+  }
+
+  if (event.type === 'payment_intent.payment_failed') {
+    const bookingId = event.data.object?.metadata?.booking_id;
+    if (bookingId) {
+      await supabase.from('bookings')
+        .update({ payment_status: 'failed' })
+        .eq('id', bookingId)
+        .eq('payment_status', 'pending');
+      logger.info(`[Stripe] payment failed recorded for booking ${bookingId}`);
+    }
+  }
+
+  res.status(200).json({ received: true });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  WHATSAPP AI CONCIERGE — Twilio inbound webhook
+//  Twilio posts application/x-www-form-urlencoded { From, Body, ... } and
+//  expects TwiML back. AI replies when ANTHROPIC_API_KEY is set; otherwise a
+//  static menu with the booking link.
+// ─────────────────────────────────────────────────────────────────────────────
+const twimlEscape = (s) => String(s)
+  .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+app.post('/api/whatsapp/inbound',
+  express.urlencoded({ extended: false }),
+  async (req, res) => {
+    // Verify the request came from Twilio when we have the auth token.
+    // (In dev/test without Twilio configured, skip so the flow is demoable.)
+    if (process.env.TWILIO_AUTH_TOKEN) {
+      try {
+        const twilio = require('twilio');
+        const url = process.env.WHATSAPP_WEBHOOK_URL
+          || `https://api.mypetclub.app${req.originalUrl}`;
+        const valid = twilio.validateRequest(
+          process.env.TWILIO_AUTH_TOKEN,
+          req.headers['x-twilio-signature'] || '',
+          url,
+          req.body || {}
+        );
+        if (!valid) {
+          logger.warn('[Concierge] Invalid Twilio signature — rejected');
+          return res.status(403).send('Forbidden');
+        }
+      } catch (e) {
+        logger.error('[Concierge] Twilio validation error:', e.message);
+        return res.status(403).send('Forbidden');
+      }
+    }
+
+    const from = req.body?.From || 'unknown';
+    const text = (req.body?.Body || '').trim();
+    logger.info(`[Concierge] Inbound WhatsApp from ${from}: ${text.slice(0, 80)}`);
+
+    const answer = text
+      ? await concierge.reply(text, { from })
+      : concierge.FALLBACK_REPLY;
+
+    res.type('text/xml').send(
+      `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${twimlEscape(answer)}</Message></Response>`
+    );
+  }
+);
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  SUBSCRIPTIONS — recurring care plans (repeat-revenue layer)
+//  Payment collection attaches once Stripe/Razorpay recurring goes live;
+//  until then plans activate immediately (pre-launch founding pricing).
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Public plan catalog
+app.get('/api/subscriptions/plans', async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('subscription_plans')
+      .select('id, name, description, service_type, interval, price_inr, price_usd, discount_pct, perks')
+      .eq('active', true)
+      .order('price_inr', { ascending: true });
+    if (error) throw error;
+    res.json({ success: true, plans: data || [] });
+  } catch (err) {
+    logger.error('[Subscriptions] plans error:', err.message);
+    res.status(500).json({ error: 'Could not load plans' });
+  }
+});
+
+// Subscribe to a plan
+app.post('/api/subscriptions', auth, validate(schemas.createSubscription), async (req, res) => {
+  try {
+    const { plan_id: planId } = req.body;
+    const { data: plan, error: planErr } = await supabase
+      .from('subscription_plans')
+      .select('id, name, interval, active')
+      .eq('id', planId)
+      .single();
+    if (planErr || !plan || !plan.active) return res.status(404).json({ error: 'Plan not found' });
+
+    // one active subscription per plan per customer
+    const { data: existing } = await supabase
+      .from('subscriptions')
+      .select('id')
+      .eq('customer_id', req.user.id)
+      .eq('plan_id', planId)
+      .eq('status', 'active')
+      .single();
+    if (existing) return res.status(409).json({ error: 'Already subscribed to this plan' });
+
+    const periodMonths = plan.interval === 'yearly' ? 12 : plan.interval === 'quarterly' ? 3 : 1;
+    const periodEnd = new Date();
+    periodEnd.setMonth(periodEnd.getMonth() + periodMonths);
+
+    const { data: sub, error } = await supabase
+      .from('subscriptions')
+      .insert({
+        customer_id: req.user.id,
+        plan_id: planId,
+        status: 'active',
+        current_period_end: periodEnd.toISOString(),
+      })
+      .select('id, plan_id, status, started_at, current_period_end')
+      .single();
+    if (error) throw error;
+
+    logger.info(`[Subscriptions] ${req.user.id} subscribed to ${plan.name}`);
+    res.status(201).json({ success: true, subscription: sub });
+  } catch (err) {
+    logger.error('[Subscriptions] subscribe error:', err.message);
+    res.status(500).json({ error: 'Could not create subscription' });
+  }
+});
+
+// My subscriptions
+app.get('/api/subscriptions/me', auth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('subscriptions')
+      .select('id, status, started_at, current_period_end, canceled_at, subscription_plans(name, service_type, interval, price_inr, price_usd, discount_pct, perks)')
+      .eq('customer_id', req.user.id)
+      .order('started_at', { ascending: false });
+    if (error) throw error;
+    res.json({ success: true, subscriptions: data || [] });
+  } catch (err) {
+    logger.error('[Subscriptions] me error:', err.message);
+    res.status(500).json({ error: 'Could not load subscriptions' });
+  }
+});
+
+// Cancel my subscription (remains active until period end)
+app.post('/api/subscriptions/:id/cancel', auth, async (req, res) => {
+  try {
+    const { data: sub } = await supabase
+      .from('subscriptions')
+      .select('id, customer_id, status')
+      .eq('id', req.params.id)
+      .single();
+    if (!sub) return res.status(404).json({ error: 'Subscription not found' });
+    if (sub.customer_id !== req.user.id) return res.status(403).json({ error: 'Not your subscription' });
+    if (sub.status !== 'active') return res.status(409).json({ error: 'Subscription is not active' });
+
+    await supabase
+      .from('subscriptions')
+      .update({ status: 'canceled', canceled_at: new Date().toISOString() })
+      .eq('id', sub.id);
+    res.json({ success: true, message: 'Subscription canceled — benefits continue until the period end.' });
+  } catch (err) {
+    logger.error('[Subscriptions] cancel error:', err.message);
+    res.status(500).json({ error: 'Could not cancel subscription' });
+  }
 });
 
 // 
@@ -5118,6 +5381,58 @@ app.post('/api/cron/booking-reminders', async (req, res) => {
     res.json({ success: true, emails_sent: sent });
   } catch (e) {
     logger.error('[Cron] booking-reminders failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/cron/care-reminders
+// Proactive pet-health nudges: emails owners whose vet_records.next_due
+// (vaccinations, boosters, checkups) falls within the next 7 days.
+// Safe to call daily — the window is [now+6d, now+7d] so each record
+// triggers exactly one email.
+app.post('/api/cron/care-reminders', async (req, res) => {
+  if (!cronAuth(req, res)) return;
+  try {
+    const lo = new Date(Date.now() + 6 * 86_400_000).toISOString().slice(0, 10);
+    const hi = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+
+    const { data: records, error } = await supabase
+      .from('vet_records')
+      .select('id, vtype, detail, next_due, pets(id, name, owner_id)')
+      .gte('next_due', lo)
+      .lt('next_due', hi);
+    if (error) throw error;
+
+    let sent = 0;
+    for (const r of records || []) {
+      const pet = r.pets;
+      if (!pet?.owner_id) continue;
+      const { data: owner } = await supabase
+        .from('users')
+        .select('name, email')
+        .eq('id', pet.owner_id)
+        .single();
+      if (!owner?.email) continue;
+
+      const what = r.vtype || r.detail || 'checkup';
+      const due  = new Date(r.next_due).toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' });
+      await sendEmail(
+        owner.email,
+        `🐾 ${pet.name}'s ${what} is due next week — PETclub`,
+        `<p>Hi ${owner.name || 'there'},</p>
+         <p><strong>${pet.name}</strong> has a <strong>${what}</strong> due on <strong>${due}</strong>.</p>
+         <p>Book an in-home vet visit in under a minute — no download needed:</p>
+         <p><a href="https://app.mypetclub.app">app.mypetclub.app</a></p>
+         <p>Staying on schedule keeps ${pet.name} protected. 💙</p>
+         <p>— PETclub Care Team</p>`
+      ).catch(e => logger.warn('[Cron] care reminder failed:', e.message));
+      sent++;
+    }
+
+    logger.info(`[Cron] care-reminders: sent ${sent} email(s)`);
+    res.json({ success: true, emails_sent: sent });
+  } catch (e) {
+    logger.error('[Cron] care-reminders failed:', e.message);
     res.status(500).json({ error: e.message });
   }
 });

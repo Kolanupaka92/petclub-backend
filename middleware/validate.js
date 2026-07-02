@@ -253,6 +253,15 @@ const verifyPayment = z.object({
   booking_id:          uuid,
 });
 
+const createStripeIntent = z.object({
+  booking_id: uuid,
+});
+
+// ── Subscription schemas ───────────────────────────────────────────────────────
+const createSubscription = z.object({
+  plan_id: uuid,
+});
+
 // ── Contact schema ─────────────────────────────────────────────────────────────
 const sendLink = z.object({
   email: email.optional(),
@@ -325,6 +334,9 @@ module.exports = {
     // Payments
     createPaymentOrder,
     verifyPayment,
+    createStripeIntent,
+    // Subscriptions
+    createSubscription,
     // Contact
     sendLink,
   },

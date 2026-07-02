@@ -12,6 +12,7 @@
     "e2e": "node e2e/booking-lifecycle.js"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.109.1",
     "@sentry/node": "^10.55.0",
     "@supabase/supabase-js": "^2.0.0",
     "cookie-parser": "^1.4.7",
@@ -27,6 +28,7 @@
     "pino": "^10.3.1",
     "pino-http": "^11.0.0",
     "razorpay": "^2.9.2",
+    "stripe": "^22.3.0",
     "twilio": "^6.0.2",
     "ws": "^8.21.0",
     "zod": "^4.4.3"

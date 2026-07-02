@@ -24,6 +24,11 @@
  *     "Firebase not configured" branch (503) without any network calls.
  */
 
+// Keep the local .env out of the test env — server.js's dotenv would otherwise
+// re-inject FIREBASE_SERVICE_ACCOUNT_JSON after setupEnv.js deletes it,
+// breaking the "Firebase not configured" 503 test on developer machines.
+jest.mock('dotenv', () => ({ config: jest.fn() }));
+
 // ── variables prefixed "mock" are hoisted alongside jest.mock ─────────────────
 const mockSingle = jest.fn().mockResolvedValue({ data: null, error: null });
 const mockBuilder = {
