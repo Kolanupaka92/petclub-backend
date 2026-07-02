@@ -2488,21 +2488,24 @@ app.get('/api/professionals/:id/reviews', async (req, res) => {
 app.get('/api/bookings', auth, async (req, res) => {
   let q;
   if (req.user.role === 'customer')
-    // Use explicit FK hints to avoid PostgREST relationship ambiguity
-    q = supabase.from('bookings').select('*, pets!pet_id(name,species,health_notes), professional_profiles!professional_id(sub_role, users(name,phone))').eq('customer_id', req.user.id);
+    // Use explicit FK hints to avoid PostgREST relationship ambiguity.
+    // Soft-deleted (cleaned-up) bookings are hidden from customers.
+    q = supabase.from('bookings').select('*, pets!pet_id(name,species,health_notes), professional_profiles!professional_id(sub_role, users(name,phone))').eq('customer_id', req.user.id).is('deleted_at', null);
   else if (req.user.role === 'professional') {
     const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
     // Phone only revealed after confirmed  prevents harvesting from unaccepted offers
-    q = supabase.from('bookings').select('*, pets!pet_id(name,species,breed,health_notes), users!customer_id(name,phone)').eq('professional_id', prof?.id).in('assignment_status', ['confirmed','in_progress','completed']);
+    q = supabase.from('bookings').select('*, pets!pet_id(name,species,breed,health_notes), users!customer_id(name,phone)').eq('professional_id', prof?.id).in('assignment_status', ['confirmed','in_progress','completed']).is('deleted_at', null);
   } else {
-    // Admin: paginated (default 50/page) to prevent full table scans
+    // Admin: paginated (default 50/page) to prevent full table scans.
+    // Soft-deleted bookings hidden by default; ?deleted=true opts in (like /admin/users).
     const adminPage  = Math.max(1, parseInt(req.query.page) || 1);
     const adminLimit = Math.min(100, parseInt(req.query.limit) || 50);
     const adminFrom  = (adminPage - 1) * adminLimit;
-    const adminQ = supabase.from('bookings')
+    let adminQ = supabase.from('bookings')
       .select('*, pets!pet_id(name,species), users!customer_id(name,phone)', { count: 'exact' })
       .order('scheduled_at', { ascending: false })
       .range(adminFrom, adminFrom + adminLimit - 1);
+    if (req.query.deleted !== 'true') adminQ = adminQ.is('deleted_at', null);
     const { data, error, count } = await adminQ;
     if (error) return dbError(res, error, 'Failed to load bookings.');
     return res.json({ success: true, bookings: data || [], total: count || 0, page: adminPage, limit: adminLimit });
@@ -3582,9 +3585,9 @@ app.get('/api/admin/otp', auth, adminOnly, async (req, res) => {
 
 app.get('/api/admin/stats', auth, adminOnly, async (req, res) => {
   const [u, p, b, l] = await Promise.all([
-    supabase.from('users').select('id', { count: 'exact' }),
+    supabase.from('users').select('id', { count: 'exact' }).is('deleted_at', null),
     supabase.from('professional_profiles').select('id', { count: 'exact' }).eq('verification_status', 'approved'),
-    supabase.from('bookings').select('total_amount, platform_fee, provider_earnings, gateway_fee, amount').eq('status', 'completed'),
+    supabase.from('bookings').select('total_amount, platform_fee, provider_earnings, gateway_fee, amount').eq('status', 'completed').is('deleted_at', null),
     supabase.from('website_leads').select('id', { count: 'exact' }),
   ]);
   const completedBookings = b.data || [];
