@@ -226,8 +226,10 @@ app.use(rateLimit({
   handler: (req, res) => res.status(429).json({ error: 'Too many requests. Please slow down.' }),
 }));
 // OTP send rate limit  max 10 sends per 5 minutes per IP
+// TEMP: raised from 10→50 for active manual QA testing across multiple roles
+// from one IP (2026-07-02). Revert to 10 once testing wraps.
 const otpLimit = rateLimit({
-  windowMs: 5 * 60 * 1000, max: 10,
+  windowMs: 5 * 60 * 1000, max: 50,
   standardHeaders: true, legacyHeaders: false,
   store: new PgRateLimitStore(),
   // Skip rate limiting for E2E test emails (e.g. @mailinator.com) so the
