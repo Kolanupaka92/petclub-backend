@@ -4981,15 +4981,17 @@ app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
       { count: totalLogs },
       { count: totalPaymentLogs },
     ] = await Promise.all([
-      supabase.from('users').select('id', { count: 'exact', head: true }),
-      supabase.from('users').select('id', { count: 'exact', head: true }).eq('is_active', true),
-      supabase.from('users').select('id', { count: 'exact', head: true }).eq('is_active', false).neq('role', 'admin'),
-      supabase.from('users').select('id', { count: 'exact', head: true }).eq('role', 'pending_role'),
+      // Soft-deleted rows (deleted_at set) are excluded — otherwise the audit
+      // keeps counting rows the cleanup already removed and "never shrinks".
+      supabase.from('users').select('id', { count: 'exact', head: true }).is('deleted_at', null),
+      supabase.from('users').select('id', { count: 'exact', head: true }).eq('is_active', true).is('deleted_at', null),
+      supabase.from('users').select('id', { count: 'exact', head: true }).eq('is_active', false).neq('role', 'admin').is('deleted_at', null),
+      supabase.from('users').select('id', { count: 'exact', head: true }).eq('role', 'pending_role').is('deleted_at', null),
       supabase.from('professional_profiles').select('id', { count: 'exact', head: true }),
       supabase.from('professional_profiles').select('id', { count: 'exact', head: true }).eq('verification_status', 'pending'),
       supabase.from('customer_profiles').select('id', { count: 'exact', head: true }),
-      supabase.from('pets').select('id', { count: 'exact', head: true }),
-      supabase.from('bookings').select('id', { count: 'exact', head: true }),
+      supabase.from('pets').select('id', { count: 'exact', head: true }).is('deleted_at', null),
+      supabase.from('bookings').select('id', { count: 'exact', head: true }).is('deleted_at', null),
       supabase.from('otp_tokens').select('id', { count: 'exact', head: true }).lt('expires_at', now.toISOString()),
       supabase.from('website_leads').select('id', { count: 'exact', head: true }),
       supabase.from('admin_logs').select('id', { count: 'exact', head: true }),
@@ -4999,7 +5001,7 @@ app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
     // 2. Orphaned profiles (user_id missing from users)
     const { data: allProfProfiles } = await supabase.from('professional_profiles').select('user_id');
     const { data: allCustProfiles  } = await supabase.from('customer_profiles').select('user_id');
-    const { data: allPets          } = await supabase.from('pets').select('owner_id');
+    const { data: allPets          } = await supabase.from('pets').select('owner_id').is('deleted_at', null);
     const { data: allUsers         } = await supabase.from('users').select('id');
     const userIdSet = new Set((allUsers || []).map(u => u.id));
     const orphanProfProfiles = (allProfProfiles || []).filter(p => !userIdSet.has(p.user_id)).length;
@@ -5009,18 +5011,22 @@ app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
     // 3. Stale pending_role users (signed up but never completed profile, >7 days old)
     const { data: stalePendingUsers } = await supabase
       .from('users').select('id, phone, created_at')
-      .eq('role', 'pending_role').lt('created_at', stale7d);
+      .eq('role', 'pending_role').lt('created_at', stale7d)
+      .is('deleted_at', null);
 
-    // 4. Bookings in stale states
+    // 4. Bookings in stale states (cleanup soft-deletes these — exclude deleted)
     const { count: cancelledBookings } = await supabase
-      .from('bookings').select('id', { count: 'exact', head: true }).eq('status', 'cancelled');
+      .from('bookings').select('id', { count: 'exact', head: true }).eq('status', 'cancelled')
+      .is('deleted_at', null);
     const { count: testBookings } = await supabase
       .from('bookings').select('id', { count: 'exact', head: true })
-      .eq('status', 'upcoming').lt('scheduled_at', stale30d);
+      .eq('status', 'upcoming').lt('scheduled_at', stale30d)
+      .is('deleted_at', null);
     const { count: noProBookings } = await supabase
       .from('bookings').select('id', { count: 'exact', head: true })
       .eq('assignment_status', 'no_pros_available').eq('status', 'upcoming')
-      .lt('created_at', stale7d);
+      .lt('created_at', stale7d)
+      .is('deleted_at', null);
 
     // 5. Website leads older than 30 days
     const { count: staleLeads } = await supabase
@@ -5075,7 +5081,7 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
       const userIds = (allUsers || []).map(u => u.id);
       const { data: profProfiles } = await supabase.from('professional_profiles').select('user_id');
       const { data: custProfiles  } = await supabase.from('customer_profiles').select('user_id');
-      const { data: allPets       } = await supabase.from('pets').select('id, owner_id');
+      const { data: allPets       } = await supabase.from('pets').select('id, owner_id').is('deleted_at', null);
       const userIdSet = new Set(userIds);
 
       const orphanProfIds = (profProfiles || []).filter(p => !userIdSet.has(p.user_id)).map(p => p.user_id);
@@ -5092,7 +5098,8 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
     // Stale pending_role users (never completed signup, >7 days)
     if (targets.includes('stale_pending_users')) {
       const { data: stale } = await supabase.from('users').select('id, phone')
-        .eq('role', 'pending_role').lt('created_at', stale7d);
+        .eq('role', 'pending_role').lt('created_at', stale7d)
+        .is('deleted_at', null);
       if (stale?.length) {
         const ids   = stale.map(u => u.id);
         const phones = stale.map(u => u.phone);

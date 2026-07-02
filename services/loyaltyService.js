@@ -226,7 +226,7 @@ async function hasEarnedReviewBonus(supabase, userId, bookingId) {
  */
 async function getLoyaltySummary(supabase, userId) {
   const [userRes, txnRes, couponRes, pendingRes] = await Promise.all([
-    supabase.from('users').select('loyalty_points, referral_code').eq('id', userId).single(),
+    supabase.from('users').select('loyalty_points, referral_code, phone').eq('id', userId).single(),
     supabase.from('loyalty_transactions')
       .select('id, points, type, description, booking_id, coupon_code, created_at')
       .eq('user_id', userId)
@@ -249,6 +249,8 @@ async function getLoyaltySummary(supabase, userId) {
 
   const balance      = userRes.data?.loyalty_points || 0;
   const referralCode = userRes.data?.referral_code  || null;
+  // Currency for display strings: +1 phones are US customers, everyone else INR.
+  const isUSD        = (userRes.data?.phone || '').startsWith('+1');
 
   // Calculate pending credits from unconfirmed payments
   const pendingPoints = (pendingRes.data || []).reduce((sum, b) => {
@@ -272,8 +274,8 @@ async function getLoyaltySummary(supabase, userId) {
     referral_code:  referralCode,
     is_new_member:  isNewMember,             // Frontend trigger for welcome modal
     earn_rules: [
-      { event: 'Book & pay via app',     points: '1 per ₹10',       icon: '📅' },
-      { event: 'Pay in-app (Razorpay)',   points: `+${PAYMENT_BONUS}`, icon: '💳' },
+      { event: 'Book & pay via app',      points: isUSD ? '1 per $1' : '1 per ₹10', icon: '📅' },
+      { event: isUSD ? 'Pay in-app' : 'Pay in-app (Razorpay)', points: `+${PAYMENT_BONUS}`, icon: '💳' },
       { event: 'Write a review',          points: `+${REVIEW_BONUS}`,  icon: '⭐' },
       { event: 'Refer a friend',          points: `+${REFERRAL_BONUS}`,icon: '👥' },
     ],
