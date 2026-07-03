@@ -47,7 +47,7 @@ Facts you can rely on:
 - Every appointment is GPS-tracked live in the app.
 - Loyalty credits accrue automatically on every booking; 1,000 credits = free Essential Bath.
 - Free cancellation up to 2 hours before the appointment.
-- Matching radius is 70km; service currently centred on Hyderabad, India, with USA launch underway.
+- Matching radius is 70 km in India and 30 miles in the USA; service currently centred on Hyderabad, India, with USA launch underway.
 
 Rules:
 - Keep replies under 100 words — this is WhatsApp.

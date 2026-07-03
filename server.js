@@ -595,7 +595,10 @@ const hardPurgeDeletedRecords = async () => {
 const RESPONSE_TIMEOUT_MINS = parseInt(process.env.BOOKING_RESPONSE_TIMEOUT_MINS) || 5;
 
 // Round-robin: find next eligible professional (not already tried for this booking)
-const DISPATCH_RADIUS_KM = parseFloat(process.env.DISPATCH_RADIUS_KM) || 70; // Max dispatch radius
+const DISPATCH_RADIUS_KM    = parseFloat(process.env.DISPATCH_RADIUS_KM)    || 70;    // India — 70 km
+const DISPATCH_RADIUS_KM_US = parseFloat(process.env.DISPATCH_RADIUS_KM_US) || 48.28; // USA — 30 miles
+// Region by longitude: the Americas are all negative, India ~68–97°E
+const dispatchRadiusKm = (lng) => (lng != null && lng < 0 ? DISPATCH_RADIUS_KM_US : DISPATCH_RADIUS_KM);
 
 const findNextPro = async (city, subRole, excludeProIds = [], bookingLat = null, bookingLng = null) => {
   let q = supabase
@@ -621,11 +624,12 @@ const findNextPro = async (city, subRole, excludeProIds = [], bookingLat = null,
   if (!allPros || allPros.length === 0) return null;
 
   let pros = allPros;
-  // GPS radius filter: keep pros within 70km of booking address
+  // GPS radius filter: keep pros within the regional dispatch radius (70 km IN / 30 mi US)
   if (bookingLat && bookingLng) {
+    const radiusKm = dispatchRadiusKm(bookingLng);
     const inRadius = allPros.filter(p => {
       if (!p.address_lat || !p.address_lng) return false; // no GPS ' exclude from GPS dispatch
-      return haversineKm(bookingLat, bookingLng, p.address_lat, p.address_lng) <= DISPATCH_RADIUS_KM;
+      return haversineKm(bookingLat, bookingLng, p.address_lat, p.address_lng) <= radiusKm;
     });
     // Fall back to city-name match if no GPS-verified pros in radius
     pros = inRadius.length > 0 ? inRadius
