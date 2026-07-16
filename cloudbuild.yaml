@@ -38,7 +38,11 @@ steps:
       - '--cpu=1'
       - '--concurrency=80'        # requests per instance before scale-out triggers
       - '--timeout=3600'          # 60 min — required for long-lived SSE tracking connections
-      - '--update-env-vars=JWT_EXPIRES_IN=15m,REFRESH_TOKEN_TTL_DAYS=30'
+      # E2E test identities: fixed OTP for @e2e.mypetclub.app emails and the
+      # +1999… fake-number whitelist (999 is an invalid NANP area code — these
+      # can never be real phones). Admin accounts are excluded server-side.
+      # Remove E2E_FIXED_OTP here to disable all test logins at once.
+      - '--update-env-vars=JWT_EXPIRES_IN=15m,REFRESH_TOKEN_TTL_DAYS=30,E2E_FIXED_OTP=123456,E2E_TEST_PHONES=+19995550101;+19995550102;+19995550103;+19995550104;+19995550105;+19995550106'
       - '--quiet'
 
 images:
