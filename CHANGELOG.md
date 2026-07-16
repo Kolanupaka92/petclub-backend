@@ -1,3 +1,10 @@
+# [1.34.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.6...v1.34.0) (2026-07-16)
+
+
+### Features
+
+* **e2e:** prod-safe fixed-OTP test identities for every role ([60a8b4d](https://github.com/Kolanupaka92/petclub-backend/commit/60a8b4d49fa3a3c783010d4499bbf606c9c22fa0))
+
 ## [1.33.6](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.5...v1.33.6) (2026-07-02)
 
 
