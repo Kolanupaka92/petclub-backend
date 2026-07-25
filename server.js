@@ -23,6 +23,7 @@ const concierge         = require('./services/conciergeService');
 const { issueRefreshToken, rotateRefreshToken, revokeAllForUser, REFRESH_COOKIE, REFRESH_COOKIE_OPTS } = require('./services/refreshTokenService');
 const { withRetry }     = require('./services/retry');
 const metrics           = require('./services/metrics');
+const { activeSelect }  = require('./services/db');
 
 //  Structured logging 
 const pino = require('pino');
@@ -5070,17 +5071,17 @@ app.get('/api/admin/db-audit', auth, adminOnly, async (req, res) => {
       { count: totalLogs },
       { count: totalPaymentLogs },
     ] = await Promise.all([
-      // Soft-deleted rows (deleted_at set) are excluded — otherwise the audit
-      // keeps counting rows the cleanup already removed and "never shrinks".
-      supabase.from('users').select('id', { count: 'exact', head: true }).is('deleted_at', null),
-      supabase.from('users').select('id', { count: 'exact', head: true }).eq('is_active', true).is('deleted_at', null),
-      supabase.from('users').select('id', { count: 'exact', head: true }).eq('is_active', false).neq('role', 'admin').is('deleted_at', null),
-      supabase.from('users').select('id', { count: 'exact', head: true }).eq('role', 'pending_role').is('deleted_at', null),
+      // Soft-deleted rows are excluded via activeSelect() (services/db.js) —
+      // otherwise the audit keeps counting rows cleanup removed and "never shrinks".
+      activeSelect(supabase, 'users', 'id', { count: 'exact', head: true }),
+      activeSelect(supabase, 'users', 'id', { count: 'exact', head: true }).eq('is_active', true),
+      activeSelect(supabase, 'users', 'id', { count: 'exact', head: true }).eq('is_active', false).neq('role', 'admin'),
+      activeSelect(supabase, 'users', 'id', { count: 'exact', head: true }).eq('role', 'pending_role'),
       supabase.from('professional_profiles').select('id', { count: 'exact', head: true }),
       supabase.from('professional_profiles').select('id', { count: 'exact', head: true }).eq('verification_status', 'pending'),
       supabase.from('customer_profiles').select('id', { count: 'exact', head: true }),
-      supabase.from('pets').select('id', { count: 'exact', head: true }).is('deleted_at', null),
-      supabase.from('bookings').select('id', { count: 'exact', head: true }).is('deleted_at', null),
+      activeSelect(supabase, 'pets', 'id', { count: 'exact', head: true }),
+      activeSelect(supabase, 'bookings', 'id', { count: 'exact', head: true }),
       supabase.from('otp_tokens').select('id', { count: 'exact', head: true }).lt('expires_at', now.toISOString()),
       supabase.from('website_leads').select('id', { count: 'exact', head: true }),
       supabase.from('admin_logs').select('id', { count: 'exact', head: true }),

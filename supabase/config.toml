@@ -1,0 +1,9 @@
+# Supabase CLI project config.
+# Links this repo's supabase/migrations to the hosted project so schema
+# changes are versioned + applied via `supabase db push` instead of being
+# hand-pasted into the SQL editor.
+project_id = "zjrgbsrsthtmxkislgcm"
+
+[db]
+# Postgres major version of the hosted project. Adjust if the project is upgraded.
+major_version = 15
