@@ -1,3 +1,10 @@
+# [1.35.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.34.0...v1.35.0) (2026-07-25)
+
+
+### Features
+
+* **reliability+observability:** notification retry + product SLO metrics ([3852902](https://github.com/Kolanupaka92/petclub-backend/commit/38529024cbabccc96b13637be1e80657065af8ce)), closes [#6](https://github.com/Kolanupaka92/petclub-backend/issues/6) [#5](https://github.com/Kolanupaka92/petclub-backend/issues/5)
+
 # [1.34.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.33.6...v1.34.0) (2026-07-16)
 
 
