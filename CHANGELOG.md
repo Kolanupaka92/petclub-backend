@@ -1,3 +1,10 @@
+# [1.36.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.35.0...v1.36.0) (2026-07-25)
+
+
+### Features
+
+* **db:** migration tooling + soft-delete-safe reads ([5c14939](https://github.com/Kolanupaka92/petclub-backend/commit/5c14939b96491b833cc4548adede40ede61016e5)), closes [#1](https://github.com/Kolanupaka92/petclub-backend/issues/1) [#2](https://github.com/Kolanupaka92/petclub-backend/issues/2)
+
 # [1.35.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.34.0...v1.35.0) (2026-07-25)
 
 
