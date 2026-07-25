@@ -1,3 +1,5 @@
+## [1.36.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.36.0...v1.36.1) (2026-07-25)
+
 # [1.36.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.35.0...v1.36.0) (2026-07-25)
 
 
