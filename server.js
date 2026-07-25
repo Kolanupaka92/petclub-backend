@@ -21,6 +21,8 @@ const { computeSplit, calcCancellation, stripFinancials } = require('./services/
 const stripeService     = require('./services/stripeService');
 const concierge         = require('./services/conciergeService');
 const { issueRefreshToken, rotateRefreshToken, revokeAllForUser, REFRESH_COOKIE, REFRESH_COOKIE_OPTS } = require('./services/refreshTokenService');
+const { withRetry }     = require('./services/retry');
+const metrics           = require('./services/metrics');
 
 //  Structured logging 
 const pino = require('pino');
@@ -365,15 +367,19 @@ const sendPush = async (fcmToken, title, body, data = {}) => {
   }
   if (!firebaseAdmin || !fcmToken) return;
   try {
-    await firebaseAdmin.messaging().send({
+    await withRetry(() => firebaseAdmin.messaging().send({
       token: fcmToken,
       notification: { title, body },
       data: Object.fromEntries(Object.entries(data).map(([k, v]) => [k, String(v)])),
       android: { priority: 'high', notification: { sound: 'default', channelId: 'petclub_bookings' } },
       apns: { payload: { aps: { sound: 'default', badge: 1 } } },
-    });
+    }), { onRetry: (err, n) => logger.warn(`[FCM] retry ${n} after: ${err.message}`) });
     logger.info(`[FCM] Push sent ' ${fcmToken.slice(0, 20)}`);
-  } catch (e) { logger.warn('[FCM] Send failed:', e.message); }
+    metrics.record(logger, 'notification_send', 'success', { channel: 'push' });
+  } catch (e) {
+    logger.warn('[FCM] Send failed:', e.message);
+    metrics.record(logger, 'notification_send', 'failure', { channel: 'push' });
+  }
 };
 
 //  SMS via Twilio 
@@ -399,8 +405,15 @@ const sendSMS = async (phone, message) => {
     logger.warn(`[SMS disabled] To: ${maskPhone(phone)} | Msg: ${message.slice(0, 80)}`);
     return;
   }
-  await _twilioClient.messages.create({ body: message, from: _twilioFrom, to: phone });
-  console.info(`[SMS] Sent to ${maskPhone(phone)}`);
+  try {
+    await withRetry(() => _twilioClient.messages.create({ body: message, from: _twilioFrom, to: phone }),
+      { onRetry: (err, n) => logger.warn(`[SMS] retry ${n} after: ${err.message}`) });
+    console.info(`[SMS] Sent to ${maskPhone(phone)}`);
+    metrics.record(logger, 'notification_send', 'success', { channel: 'sms' });
+  } catch (e) {
+    metrics.record(logger, 'notification_send', 'failure', { channel: 'sms' });
+    throw e; // SMS callers (OTP) rely on the throw to surface delivery failure
+  }
 };
 
 //  WhatsApp via Twilio 
@@ -420,15 +433,17 @@ const sendWhatsApp = async (toPhone, message) => {
     return;
   }
   try {
-    await _twilioClient.messages.create({
+    await withRetry(() => _twilioClient.messages.create({
       body: message,
       from: `whatsapp:${_waFrom}`,
       to:   `whatsapp:${toPhone}`,
-    });
+    }), { onRetry: (err, n) => logger.warn(`[WhatsApp] retry ${n} after: ${err.message}`) });
     console.info(`[WhatsApp] Sent to ${maskPhone(toPhone)}`);
+    metrics.record(logger, 'notification_send', 'success', { channel: 'whatsapp' });
   } catch (e) {
     // Non-fatal  groomer still gets email + FCM push
     logger.error(`[WhatsApp] Failed to ${maskPhone(toPhone)}: ${e.message}`);
+    metrics.record(logger, 'notification_send', 'failure', { channel: 'whatsapp' });
   }
 };
 
@@ -2685,6 +2700,7 @@ app.post('/api/bookings', auth, bookingLimit, validate(schemas.createBooking), a
         return res.status(409).json({ error: 'Coupon has already been used or is expired. Please refresh and try again.' });
       }
       logger.error('create_booking_atomic RPC error:', msg);
+      metrics.record(logger, 'booking_created', 'failure', { service_type: service_type || 'unknown', reason: 'rpc_error' });
       return res.status(500).json({ error: 'Failed to create booking' });
     }
     const booking = typeof rpcData === 'string' ? JSON.parse(rpcData) : rpcData;
@@ -2709,6 +2725,7 @@ app.post('/api/bookings', auth, bookingLimit, validate(schemas.createBooking), a
     }
 
     const { data: updated } = await supabase.from('bookings').select('*').eq('id', booking.id).single();
+    metrics.record(logger, 'booking_created', 'success', { service_type: service_type || 'none' });
     res.json({ success: true, booking: updated });
   } catch (err) {
     logger.error('Create booking error:', err.message);
@@ -3004,9 +3021,11 @@ app.post('/api/bookings/:id/respond', auth, validate(schemas.respondBooking), as
       if (custUserFcm?.fcm_token) {
         sendPush(custUserFcm.fcm_token, ` Booking Confirmed!`, `${proName} will be there on ${dateStr}`, { bookingId: req.params.id, type: 'booking_confirmed' }).catch(() => {});
       }
+      metrics.record(logger, 'dispatch_offer', 'success', { service_type: bk?.service_type || 'unknown' });
       return res.json({ success: true, message: `Booking accepted! Customer has been notified.` });
     }
 
+    metrics.record(logger, 'dispatch_offer', 'reject');
     // Reject: find next pro (round-robin)
     const { data: tried } = await supabase.from('booking_assignments').select('professional_id')
       .eq('booking_id', req.params.id).in('status', ['rejected', 'timed_out', 'accepted']);
@@ -4902,6 +4921,16 @@ app.get('/api/reverse-geocode', auth, async (req, res) => {
 //  Authenticated (X-Health-Secret header): full service map
 //  CI/CD: curl -H "X-Health-Secret: $HEALTH_SECRET" $URL/api/health
 // 
+//  Product SLO metrics — HEALTH_SECRET-gated (booking success, dispatch accept,
+//  notification delivery). Durable source of truth is Cloud Logging log-based
+//  metrics; this endpoint is a quick at-a-glance snapshot. See docs/OBSERVABILITY.md.
+app.get('/api/metrics', (req, res) => {
+  if (!process.env.HEALTH_SECRET || req.headers['x-health-secret'] !== process.env.HEALTH_SECRET) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  return res.json(metrics.snapshot());
+});
+
 app.get('/api/health', async (req, res) => {
   const authenticated = process.env.HEALTH_SECRET
     && req.headers['x-health-secret'] === process.env.HEALTH_SECRET;
