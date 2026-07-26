@@ -17,7 +17,7 @@ const pricingCatalog    = require('./services/pricingCatalog');
 const loyalty           = require('./services/loyaltyService');
 const { PgRateLimitStore } = require('./services/pgRateLimitStore');
 const { validate, schemas } = require('./middleware/validate');
-const { computeSplit, calcCancellation, stripFinancials } = require('./services/revenueService');
+const { computeSplit, calcCancellation, stripFinancials, RESCHEDULE_CUTOFF_HOURS } = require('./services/revenueService');
 const stripeService     = require('./services/stripeService');
 const concierge         = require('./services/conciergeService');
 const { issueRefreshToken, rotateRefreshToken, revokeAllForUser, REFRESH_COOKIE, REFRESH_COOKIE_OPTS } = require('./services/refreshTokenService');
@@ -3049,6 +3049,10 @@ app.put('/api/bookings/:id/reschedule', auth, async (req, res) => {
     if (!['upcoming', 'searching', 'offered', 'confirmed'].includes(booking.assignment_status))
       return res.status(400).json({ error: `Cannot reschedule a booking with status '${booking.assignment_status}'` });
 
+    const hoursUntilCurrent = (new Date(booking.scheduled_at).getTime() - Date.now()) / 3_600_000;
+    if (hoursUntilCurrent < RESCHEDULE_CUTOFF_HOURS)
+      return res.status(400).json({ error: `Reschedule is only available until ${RESCHEDULE_CUTOFF_HOURS} hours before the appointment.` });
+
     const oldDate = booking.scheduled_at;
     await supabase.from('bookings').update({ scheduled_at: newDate.toISOString(), rescheduled_from: oldDate }).eq('id', booking.id);
 
@@ -5269,22 +5273,45 @@ app.post('/api/cron/refresh-leaderboard', async (req, res) => {
   }
 });
 
+// Claim-before-send idempotency for booking reminders. Returns true if this
+// exact (booking, checkpoint, recipient, channel) tuple has never been sent
+// before — the caller should send now. Returns false if already sent (or on
+// unexpected error — fail closed, never double-send over a flaky insert).
+async function claimReminder(bookingId, checkpoint, recipient, channel) {
+  const { error } = await supabase
+    .from('booking_reminder_log')
+    .insert({ booking_id: bookingId, checkpoint, recipient, channel });
+  if (!error) return true;
+  if (error.code !== '23505') logger.warn(`[Cron] claimReminder error (${checkpoint}/${recipient}/${channel}):`, error.message);
+  return false;
+}
+
+const REMINDER_LABELS = { '24h': 'tomorrow', '5h': 'in 5 hours', '2h': 'in 2 hours', '1h': 'in 1 hour' };
+
 // POST /api/cron/booking-reminders
-// Sends 24 h and 2 h reminder emails to customers + providers.
-// Safe to call hourly — only books in the exact window get an email.
+// Sends 24h / 5h / 2h / 1h reminders to customers (push + email, whichever
+// channels they have on file) and providers (email). Safe to call hourly —
+// each window is wide enough that a booking is never missed by cron timing
+// drift, and claimReminder() makes re-matching on a later run a no-op.
 app.post('/api/cron/booking-reminders', async (req, res) => {
   if (!cronAuth(req, res)) return;
   try {
     const now = Date.now();
+    // ±35 min (70 min) bands — comfortably wider than the 60 min cron interval
+    // so no booking is ever skipped; claimReminder() absorbs any overlap.
+    const HALF_BAND = 35 * 60_000;
     const windows = [
-      { label: '24h', lo: now + 23 * 3600_000, hi: now + 25 * 3600_000 },
-      { label: '2h',  lo: now + 110 * 60_000,  hi: now + 130 * 60_000  },
-    ];
+      { label: '24h', target: now + 24 * 3600_000 },
+      { label: '5h',  target: now + 5  * 3600_000 },
+      { label: '2h',  target: now + 2  * 3600_000 },
+      { label: '1h',  target: now + 1  * 3600_000 },
+    ].map(w => ({ ...w, lo: w.target - HALF_BAND, hi: w.target + HALF_BAND }));
+
     let sent = 0;
     for (const w of windows) {
       const { data: bookings } = await supabase
         .from('bookings')
-        .select('id, service_name, scheduled_at, address, users!bookings_customer_id_fkey(name, email), professional_profiles!bookings_professional_id_fkey(users(name, email))')
+        .select('id, service_name, scheduled_at, address, users!bookings_customer_id_fkey(name, email, fcm_token), professional_profiles!bookings_professional_id_fkey(users(name, email))')
         .eq('status', 'upcoming')
         .eq('assignment_status', 'confirmed')
         .gt('scheduled_at', new Date(w.lo).toISOString())
@@ -5292,30 +5319,39 @@ app.post('/api/cron/booking-reminders', async (req, res) => {
         .is('deleted_at', null);
 
       for (const b of bookings || []) {
-        const svc  = b.service_name || 'service';
-        const time = new Date(b.scheduled_at).toLocaleString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
-        const addr = b.address || 'your location';
+        const svc     = b.service_name || 'service';
+        const time    = new Date(b.scheduled_at).toLocaleString('en-IN', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+        const addr    = b.address || 'your location';
+        const whenTxt = REMINDER_LABELS[w.label];
 
         const customerEmail = b.users?.email;
+        const customerFcm   = b.users?.fcm_token;
         const customerName  = b.users?.name || 'there';
         const proEmail      = b.professional_profiles?.users?.email;
         const proName       = b.professional_profiles?.users?.name || 'your provider';
 
-        if (customerEmail) {
-          await sendEmail(
-            customerEmail,
-            `⏰ Reminder: Your ${svc} is ${w.label === '24h' ? 'tomorrow' : 'in 2 hours'} — PETclub`,
-            `<p>Hi ${customerName},</p>
-             <p>Just a reminder that your <strong>${svc}</strong> is scheduled for <strong>${time}</strong> at ${addr}.</p>
-             <p>Your provider <strong>${proName}</strong> will be there. If you need to cancel, please do so at least 2 hours before to avoid a cancellation fee.</p>
-             <p>— PETclub Team</p>`
-          ).catch(e => logger.warn('[Cron] customer reminder failed:', e.message));
+        // Customer — push AND email, whichever channels are on file
+        if (customerFcm && await claimReminder(b.id, w.label, 'customer', 'push')) {
+          sendPush(customerFcm, `⏰ ${svc} ${whenTxt}`, `${time} at ${addr}`, { bookingId: b.id, type: 'booking_reminder' })
+            .catch(e => logger.warn('[Cron] customer push reminder failed:', e.message));
           sent++;
         }
-        if (proEmail) {
+        if (customerEmail && await claimReminder(b.id, w.label, 'customer', 'email')) {
+          await sendEmail(
+            customerEmail,
+            `⏰ Reminder: Your ${svc} is ${whenTxt} — PETclub`,
+            `<p>Hi ${customerName},</p>
+             <p>Just a reminder that your <strong>${svc}</strong> is scheduled for <strong>${time}</strong> at ${addr}.</p>
+             <p>Your provider <strong>${proName}</strong> will be there. If you need to cancel, please do so at least 1 hour before to avoid a cancellation fee.</p>
+             <p>— PETclub Team</p>`
+          ).catch(e => logger.warn('[Cron] customer email reminder failed:', e.message));
+          sent++;
+        }
+        // Provider — email (unchanged channel, now across all 4 checkpoints)
+        if (proEmail && await claimReminder(b.id, w.label, 'professional', 'email')) {
           await sendEmail(
             proEmail,
-            `📋 Upcoming: ${svc} ${w.label === '24h' ? 'tomorrow' : 'in 2 hours'} — PETclub`,
+            `📋 Upcoming: ${svc} ${whenTxt} — PETclub`,
             `<p>Hi ${proName},</p>
              <p>Reminder: you have a <strong>${svc}</strong> booking at <strong>${time}</strong> at ${addr}.</p>
              <p>The customer is <strong>${customerName}</strong>. Please be on time.</p>
@@ -5325,8 +5361,8 @@ app.post('/api/cron/booking-reminders', async (req, res) => {
         }
       }
     }
-    logger.info(`[Cron] booking-reminders: sent ${sent} email(s)`);
-    res.json({ success: true, emails_sent: sent });
+    logger.info(`[Cron] booking-reminders: sent ${sent} notification(s)`);
+    res.json({ success: true, notifications_sent: sent });
   } catch (e) {
     logger.error('[Cron] booking-reminders failed:', e.message);
     res.status(500).json({ error: e.message });

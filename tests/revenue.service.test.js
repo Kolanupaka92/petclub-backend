@@ -144,7 +144,7 @@ describe('calcCancellation', () => {
   const past = (hoursAgo) =>
     new Date(Date.now() - hoursAgo * 3_600_000).toISOString();
 
-  describe('fee-free window (≥ 2 hours before)', () => {
+  describe('fee-free window (≥ 1 hour before)', () => {
     test('3 hours before → no fee, full refund', () => {
       const result = calcCancellation(1000, future(3));
       expect(result.fee_free).toBe(true);
@@ -153,7 +153,7 @@ describe('calcCancellation', () => {
       expect(result.refund_status).toBe('pending');
     });
 
-    test('exactly 2 hours before → fee-free boundary', () => {
+    test('exactly 1 hour before → fee-free boundary', () => {
       const result = calcCancellation(1000, future(CANCEL_FREE_HOURS));
       expect(result.fee_free).toBe(true);
       expect(result.cancellation_fee).toBe(0);
@@ -166,9 +166,9 @@ describe('calcCancellation', () => {
     });
   });
 
-  describe('late cancel (< 2 hours before)', () => {
-    test('1 hour before → ₹300 fee applied', () => {
-      const result = calcCancellation(1000, future(1));
+  describe('late cancel (< 1 hour before)', () => {
+    test('30 minutes before → ₹300 fee applied', () => {
+      const result = calcCancellation(1000, future(0.5));
       expect(result.fee_free).toBe(false);
       expect(result.cancellation_fee).toBe(CANCEL_FEE_INR);
       expect(result.refund_amount).toBe(1000 - CANCEL_FEE_INR);

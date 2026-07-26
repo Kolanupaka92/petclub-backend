@@ -31,7 +31,8 @@ const GW_FLAT_INR = parseFloat(process.env.GATEWAY_FEE_FLAT_INR) || 0.03;   // �
 // ── Cancellation policy ───────────────────────────────────────────────────────
 const CANCEL_FEE_INR    = 300;  // ₹300 flat fee for late / no-show cancellations
 const CANCEL_FEE_USD    = 5;    // $5 flat fee for late / no-show cancellations (USD bookings)
-const CANCEL_FREE_HOURS = 2;    // hours before booking that allow fee-free cancel
+const CANCEL_FREE_HOURS = 1;    // hours before booking that allow fee-free cancel
+const RESCHEDULE_CUTOFF_HOURS = 2; // reschedule allowed until this many hours before appointment
 
 /**
  * computeSplit — server-side revenue split calculation.
@@ -72,10 +73,10 @@ function computeSplit(totalAmount, offerAmount = 0, serviceType = '', currency =
  * calcCancellation — determine fee and refund for a booking cancellation.
  *
  * Policy:
- *   ≥ 2 h before appointment  → fee-free, full refund
- *   < 2 h before appointment  → ₹300 (INR) / $5 (USD) fee, refund remainder
+ *   ≥ 1 h before appointment  → fee-free, full refund
+ *   < 1 h before appointment  → ₹300 (INR) / $5 (USD) fee, refund remainder
  *   No-show at location        → ₹300 (INR) / $5 (USD) fee, refund remainder
- *   No reschedule under any circumstances.
+ *   Reschedule allowed until 2 hours before the appointment (see PUT /api/bookings/:id/reschedule).
  *
  * @param {number|string} totalAmount   - original booking amount
  * @param {string|Date}   scheduledAt   - booking start time (ISO string or Date)
@@ -137,4 +138,5 @@ module.exports = {
   CANCEL_FEE_INR,
   CANCEL_FEE_USD,
   CANCEL_FREE_HOURS,
+  RESCHEDULE_CUTOFF_HOURS,
 };

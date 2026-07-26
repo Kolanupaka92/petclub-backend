@@ -2,9 +2,10 @@
 #  PETclub Scheduled Cron Jobs
 #
 #  Schedules:
-#    Every hour  — booking reminders (24h + 2h windows)
+#    Every hour  — booking reminders (24h + 5h + 2h + 1h windows)
 #    Daily 02:30 UTC — coupon expiry warnings (3 days out)
 #    Daily 02:00 UTC — loyalty leaderboard refresh
+#    Daily 03:00 UTC — pet care reminders (vaccinations due in 7 days)
 #    Saturday 06:00 UTC — weekly payout summary email to admin
 #
 #  All endpoints require X-Cron-Secret header.
@@ -18,12 +19,13 @@ on:
     - cron: '0 * * * *'        # every hour  (booking reminders)
     - cron: '0 2 * * *'        # 02:00 UTC daily  (leaderboard refresh)
     - cron: '30 2 * * *'       # 02:30 UTC daily  (coupon expiry)
+    - cron: '0 3 * * *'        # 03:00 UTC daily  (pet care reminders)
     - cron: '0 6 * * 6'        # 06:00 UTC Saturday  (payout summary)
   workflow_dispatch:             # allow manual trigger from GitHub UI
 
 jobs:
   booking-reminders:
-    name: Booking Reminders (24h + 2h)
+    name: Booking Reminders (24h + 5h + 2h + 1h)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -64,6 +66,21 @@ jobs:
             -X POST \
             -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
             https://api.mypetclub.app/api/cron/coupon-expiry)
+          cat /tmp/resp.json
+          [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
+
+  care-reminders:
+    name: Pet Care Reminders (vaccinations due)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.schedule == '0 3 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Send pet care reminders
+        run: |
+          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+            -X POST \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            https://api.mypetclub.app/api/cron/care-reminders)
           cat /tmp/resp.json
           [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
 

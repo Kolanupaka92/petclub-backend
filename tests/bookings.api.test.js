@@ -506,3 +506,54 @@ describe('POST /api/bookings/:id/respond — professional response', () => {
     expect(res.body.message).toMatch(/no other professionals/i);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  PUT /api/bookings/:id/reschedule — 2-hour cutoff
+// ─────────────────────────────────────────────────────────────────────────────
+describe('PUT /api/bookings/:id/reschedule — cutoff enforcement', () => {
+  const newDate = () => new Date(Date.now() + 10 * 86_400_000).toISOString(); // 10 days out — always valid as a new slot
+  const baseBooking = {
+    id: BOOKING_ID, customer_id: 'u-cust', professional_id: PROF_ID,
+    service_name: 'Leash Training', status: 'upcoming', assignment_status: 'confirmed',
+  };
+
+  test('rejects reschedule within 2 hours of the appointment', async () => {
+    const soonBooking = { ...baseBooking, scheduled_at: new Date(Date.now() + 90 * 60_000).toISOString() }; // 90 min away — inside the 2h cutoff
+    mockSingle.mockResolvedValueOnce({ data: soonBooking, error: null }); // booking lookup
+
+    const res = await request(app)
+      .put(`/api/bookings/${BOOKING_ID}/reschedule`)
+      .set(authHeader(CUSTOMER_TOKEN))
+      .send({ scheduled_at: newDate() });
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toMatch(/2 hours before/i);
+  });
+
+  test('allows reschedule when more than 2 hours before the appointment', async () => {
+    const laterBooking = { ...baseBooking, scheduled_at: new Date(Date.now() + 5 * 3_600_000).toISOString() }; // 5h away — outside the cutoff
+    mockSingle.mockResolvedValueOnce({ data: laterBooking, error: null }); // booking lookup
+    // bookings.update() → builder.then (no .single())
+    // FCM/email notify: professional_profiles is undefined on this fixture → optional-chained, no push/email sent
+
+    const res = await request(app)
+      .put(`/api/bookings/${BOOKING_ID}/reschedule`)
+      .set(authHeader(CUSTOMER_TOKEN))
+      .send({ scheduled_at: newDate() });
+
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+  });
+
+  test('exactly at 2-hour boundary is rejected (cutoff is inclusive)', async () => {
+    const boundaryBooking = { ...baseBooking, scheduled_at: new Date(Date.now() + 2 * 3_600_000 - 1000).toISOString() }; // 1s inside 2h
+    mockSingle.mockResolvedValueOnce({ data: boundaryBooking, error: null });
+
+    const res = await request(app)
+      .put(`/api/bookings/${BOOKING_ID}/reschedule`)
+      .set(authHeader(CUSTOMER_TOKEN))
+      .send({ scheduled_at: newDate() });
+
+    expect(res.status).toBe(400);
+  });
+});
