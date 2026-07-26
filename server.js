@@ -1782,29 +1782,11 @@ app.post('/api/pets/:petId/records/:type', auth, async (req, res) => {
 // 
 // Returns the full service catalog with tiered prices.
 // Accessible to authenticated customers only (never to SPs).
-app.get('/api/services/catalog', auth, (req, res) => {
-  if (req.user.role === 'professional') {
-    return res.status(403).json({ error: 'Service pricing is not available to providers.' });
-  }
-  res.setHeader('Cache-Control', 'private, max-age=3600'); // catalog changes rarely — cache for 1 hour per user session
-  const {
-    PLATFORM_DISCOUNT, PLATFORM_DISCOUNT_USD, GROOMING_PACKAGES, GROOMING_ADDONS,
-    PET_SIZES, TRAINING_PACKAGES, WALKING_PACKAGES, BOARDING_PACKAGES,
-    VET_PACKAGES, VET_SERVICES,
-  } = pricingCatalog;
-  res.json({
-    success: true,
-    platform_discount:     PLATFORM_DISCOUNT,
-    platform_discount_usd: PLATFORM_DISCOUNT_USD,
-    grooming: { packages: GROOMING_PACKAGES, addons: GROOMING_ADDONS, pet_sizes: PET_SIZES },
-    training: { packages: TRAINING_PACKAGES },
-    walking:  { packages: WALKING_PACKAGES },
-    boarding: { packages: BOARDING_PACKAGES },
-    vet:      { packages: VET_PACKAGES, services: VET_SERVICES },
-  });
-});
+//  Service catalog route extracted to routes/services.js (router-factory pattern).
+const createServicesRouter = require('./routes/services');
+app.use('/api', createServicesRouter({ auth, pricingCatalog }));
 
-// 
+//
 //  LOYALTY  Credits earn, redeem, and coupon system
 // 
 

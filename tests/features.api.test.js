@@ -222,3 +222,37 @@ describe('POST /api/whatsapp/inbound', () => {
     expect(res.text).toContain('app.mypetclub.app');
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  5. Service catalog — extracted to routes/services.js (modular monolith)
+//     Verifies the router-factory mount is wired and behavior is preserved.
+// ─────────────────────────────────────────────────────────────────────────────
+describe('Service catalog (routes/services.js)', () => {
+  const proToken = jwt.sign(
+    { id: '44444444-4444-4444-8444-444444444444', role: 'professional', phone: '+14155550199' },
+    JWT_SECRET, { expiresIn: '1h' }
+  );
+
+  test('GET /api/services/catalog → 200 with pricing shape for customers', async () => {
+    const res = await request(app)
+      .get('/api/services/catalog')
+      .set('Authorization', `Bearer ${customerToken}`);
+    expect(res.status).toBe(200);
+    expect(res.body.success).toBe(true);
+    expect(res.body.grooming).toHaveProperty('packages');
+    expect(res.body).toHaveProperty('platform_discount');
+    expect(res.body.vet).toHaveProperty('services');
+  });
+
+  test('GET /api/services/catalog → 403 for providers', async () => {
+    const res = await request(app)
+      .get('/api/services/catalog')
+      .set('Authorization', `Bearer ${proToken}`);
+    expect(res.status).toBe(403);
+  });
+
+  test('GET /api/services/catalog → 401 without auth', async () => {
+    const res = await request(app).get('/api/services/catalog');
+    expect(res.status).toBe(401);
+  });
+});
