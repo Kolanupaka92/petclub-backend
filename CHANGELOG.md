@@ -1,3 +1,10 @@
+# [1.37.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.36.2...v1.37.0) (2026-07-26)
+
+
+### Features
+
+* **policy:** tighten cancellation window, cap reschedule, expand reminders ([525e646](https://github.com/Kolanupaka92/petclub-backend/commit/525e646dce6ea16026426c7854a4cd3e9ee2cc69))
+
 ## [1.36.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.36.1...v1.36.2) (2026-07-26)
 
 ## [1.36.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.36.0...v1.36.1) (2026-07-25)
