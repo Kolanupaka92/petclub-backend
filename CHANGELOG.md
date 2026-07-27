@@ -1,3 +1,10 @@
+# [1.38.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.37.0...v1.38.0) (2026-07-27)
+
+
+### Features
+
+* **ai:** activation-ready the WhatsApp concierge (Tier 0 of AI roadmap) ([34bd952](https://github.com/Kolanupaka92/petclub-backend/commit/34bd9521bd15d970ddca378df23fa74979cdcf53))
+
 # [1.37.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.36.2...v1.37.0) (2026-07-26)
 
 
