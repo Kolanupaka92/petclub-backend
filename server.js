@@ -277,6 +277,22 @@ const authLimit = rateLimit({
   store: new PgRateLimitStore('rl:auth'),
   handler: (req, res) => res.status(429).json({ error: 'Too many login attempts. Please wait 15 minutes.' }),
 });
+// WhatsApp AI concierge rate limit — max 20 messages per hour per WhatsApp number.
+// This is a Twilio webhook: every request arrives from Twilio's own IPs, not
+// the end user, so keying by req.ip would either do nothing (all users share
+// Twilio's IP pool) or rate-limit every WhatsApp user at once — must key by
+// the sender's number (req.body.From) instead. Caps LLM API cost from a
+// single number spamming the bot; not meant to be hit in normal use.
+const conciergeLimit = rateLimit({
+  windowMs: 60 * 60 * 1000, max: 20,
+  standardHeaders: true, legacyHeaders: false,
+  store: new PgRateLimitStore('rl:concierge'),
+  keyGenerator: (req) => req.body?.From || req.ip,
+  // Must still return valid TwiML — Twilio expects XML back, not a bare JSON 429.
+  handler: (req, res) => res.type('text/xml').status(200).send(
+    `<?xml version="1.0" encoding="UTF-8"?><Response><Message>You've sent quite a few messages! Please try again in a bit, or book directly at ${WEB_APP_URL}</Message></Response>`
+  ),
+});
 
 //  Helpers 
 const genOTP = () => crypto.randomInt(100000, 1000000).toString();
@@ -4616,6 +4632,7 @@ const twimlEscape = (s) => String(s)
 
 app.post('/api/whatsapp/inbound',
   express.urlencoded({ extended: false }),
+  conciergeLimit,
   async (req, res) => {
     // Verify the request came from Twilio when we have the auth token.
     // (In dev/test without Twilio configured, skip so the flow is demoable.)
@@ -4647,6 +4664,13 @@ app.post('/api/whatsapp/inbound',
     const answer = text
       ? await concierge.reply(text, { from })
       : concierge.FALLBACK_REPLY;
+
+    // Outcome inferred without changing concierge.reply()'s contract:
+    // not configured → 'disabled'; configured but the reply is the exact
+    // static menu → 'fallback' (an error or refusal happened inside reply());
+    // configured and a distinct reply came back → 'success'.
+    const outcome = !concierge.isConfigured() ? 'disabled' : (answer === concierge.FALLBACK_REPLY ? 'fallback' : 'success');
+    metrics.record(logger, 'concierge_reply', outcome);
 
     res.type('text/xml').send(
       `<?xml version="1.0" encoding="UTF-8"?><Response><Message>${twimlEscape(answer)}</Message></Response>`

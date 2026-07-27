@@ -63,5 +63,26 @@ below target for 15 min.
 | `booking_created` | `success`, `failure` | `service_type`, `reason` |
 | `dispatch_offer` | `success` (accepted), `reject` | `service_type` |
 | `notification_send` | `success`, `failure` | `channel` (push/sms/whatsapp) |
+| `concierge_reply` | `success` (real AI reply), `fallback` (static menu — error or refusal inside `reply()`), `disabled` (`ANTHROPIC_API_KEY` not set) | none |
 
 Labels are **never PII** — service type and channel only.
+
+## AI concierge (WhatsApp)
+
+`services/conciergeService.js` — Claude-powered WhatsApp assistant, env-gated
+behind `ANTHROPIC_API_KEY` (falls back to a static menu when unset). Three
+things to know before enabling it in a new environment:
+
+1. **Pricing is computed from `services/pricingCatalog.js` at load time**,
+   not hardcoded — this was a real bug once (the prompt said "grooming from
+   ~$10" when the real minimum was $45) and must never regress to a literal
+   string again. If you add a new service category, make sure its "from"
+   price is derived the same way.
+2. **Rate-limited by WhatsApp number, not IP** (`rl:concierge`, 20 msgs/hour)
+   — this is a Twilio webhook, so `req.ip` is Twilio's infrastructure, not
+   the end user. Caps LLM cost from a single number spamming the bot.
+3. **Run `scripts/concierge-eval.js` against any prompt change** before
+   deploying — needs a real `ANTHROPIC_API_KEY` in your shell, costs a small
+   number of real API calls, checks ~15 golden cases (pricing accuracy,
+   cancellation/reschedule policy, no medical advice, no auto-booking
+   claims, off-topic redirection).
