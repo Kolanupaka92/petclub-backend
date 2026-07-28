@@ -2560,7 +2560,7 @@ app.get('/api/bookings', auth, async (req, res) => {
   if (req.user.role === 'customer')
     // Use explicit FK hints to avoid PostgREST relationship ambiguity.
     // Soft-deleted (cleaned-up) bookings are hidden from customers.
-    q = supabase.from('bookings').select('*, pets!pet_id(name,species,health_notes), professional_profiles!professional_id(sub_role, users(name,phone))').eq('customer_id', req.user.id).is('deleted_at', null);
+    q = supabase.from('bookings').select('*, pets!pet_id(name,species,health_notes), professional_profiles!professional_id(sub_role, rating, total_reviews, users(name,phone))').eq('customer_id', req.user.id).is('deleted_at', null);
   else if (req.user.role === 'professional') {
     const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
     // Phone only revealed after confirmed  prevents harvesting from unaccepted offers
