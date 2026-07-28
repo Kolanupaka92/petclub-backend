@@ -1,3 +1,10 @@
+# [1.39.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.38.0...v1.39.0) (2026-07-28)
+
+
+### Features
+
+* **bookings:** include pro rating/review count in customer booking list ([445e9a5](https://github.com/Kolanupaka92/petclub-backend/commit/445e9a53f96ff1ecf50b9e6fbd4950fc018c2dcc))
+
 # [1.38.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.37.0...v1.38.0) (2026-07-27)
 
 
