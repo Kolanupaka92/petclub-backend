@@ -1869,6 +1869,14 @@ app.post('/api/pets/:petId/health-documents/:docId/extract', auth, petHealthExtr
     if (docErr || !doc) return res.status(404).json({ error: 'Document not found' });
     if (doc.status !== 'uploaded') return res.status(400).json({ error: `Document already ${doc.status}.` });
 
+    // Independent kill-switch from ANTHROPIC_API_KEY itself (shared with the
+    // WhatsApp concierge) — this feature is fully built but deliberately
+    // held back until there's budget for per-scan API cost. Flip
+    // PET_HEALTH_DOCS_ENABLED=true when funded; don't just rely on the
+    // frontend button being hidden, since this route is reachable directly.
+    if (process.env.PET_HEALTH_DOCS_ENABLED !== 'true')
+      return res.status(503).json({ error: 'The digital pet passport is launching soon — check back later!' });
+
     if (!petHealthExtract.isConfigured())
       return res.status(503).json({ error: 'Document scanning is temporarily unavailable.' });
 
