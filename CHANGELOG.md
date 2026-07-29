@@ -1,3 +1,10 @@
+# [1.40.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.39.0...v1.40.0) (2026-07-29)
+
+
+### Features
+
+* **pet-passport:** digital health-document capture, US accounts only ([4dba992](https://github.com/Kolanupaka92/petclub-backend/commit/4dba9923e63d831740b35d2498105742dce5fbf3))
+
 # [1.39.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.38.0...v1.39.0) (2026-07-28)
 
 
