@@ -1,3 +1,10 @@
+# [1.41.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.40.0...v1.41.0) (2026-07-29)
+
+
+### Features
+
+* **pet-passport:** hold the feature behind an explicit funding gate ([90039b1](https://github.com/Kolanupaka92/petclub-backend/commit/90039b123dd7ad879eb994767ef0fee62d0a2390))
+
 # [1.40.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.39.0...v1.40.0) (2026-07-29)
 
 
