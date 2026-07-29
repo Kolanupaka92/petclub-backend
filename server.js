@@ -20,6 +20,7 @@ const { validate, schemas } = require('./middleware/validate');
 const { computeSplit, calcCancellation, stripFinancials, RESCHEDULE_CUTOFF_HOURS } = require('./services/revenueService');
 const stripeService     = require('./services/stripeService');
 const concierge         = require('./services/conciergeService');
+const petHealthExtract  = require('./services/petHealthExtractService');
 const { issueRefreshToken, rotateRefreshToken, revokeAllForUser, REFRESH_COOKIE, REFRESH_COOKIE_OPTS } = require('./services/refreshTokenService');
 const { withRetry }     = require('./services/retry');
 const metrics           = require('./services/metrics');
@@ -294,7 +295,19 @@ const conciergeLimit = rateLimit({
   ),
 });
 
-//  Helpers 
+// Pet health document extraction rate limit — max 15 extractions/hour per
+// user. Caps Claude vision API cost from a single account uploading a large
+// backlog or retrying repeatedly; not meant to be hit in normal use (an
+// owner has a handful of paper records, not hundreds).
+const petHealthExtractLimit = rateLimit({
+  windowMs: 60 * 60 * 1000, max: 15,
+  standardHeaders: true, legacyHeaders: false,
+  store: new PgRateLimitStore('rl:pethealth'),
+  keyGenerator: (req) => req.user?.id || req.ip,
+  handler: (req, res) => res.status(429).json({ error: 'Too many document scans — please try again in a bit.' }),
+});
+
+//  Helpers
 const genOTP = () => crypto.randomInt(100000, 1000000).toString();
 // Hash OTP before storage so plaintext never touches the DB
 const hashOTP = (otp) => crypto.createHash('sha256').update(String(otp)).digest('hex');
@@ -1793,9 +1806,159 @@ app.post('/api/pets/:petId/records/:type', auth, async (req, res) => {
   res.json({ success: true, record: data });
 });
 
-// 
-//  SERVICE CATALOG  public pricing for customers
-// 
+// ─────────────────────────────────────────────────────────────
+//  PET HEALTH PASSPORT — digitize paper vaccination/vet records
+//
+//  US customers only for now (see isUSRegion below): a formal EU/UK-style
+//  "pet passport" document isn't a thing Indian vet clinics issue, and
+//  boarding/airline intake in the US is the concrete use case this was
+//  requested for. Region is derived server-side from the owner's phone
+//  country code — never trust a client-sent region flag for something
+//  that gates feature access.
+//
+//  Flow: presign (get upload URL + create the document row) → client
+//  uploads the photo straight to Storage → extract (Claude vision reads
+//  it) → confirm (owner reviews/edits, only then does it become real
+//  vet_records rows). Extraction never writes vet_records directly.
+// ─────────────────────────────────────────────────────────────
+
+const PET_HEALTH_DOCS_BUCKET = 'pet-health-docs';
+
+// Same phone-prefix convention already used for pricing/currency (see
+// phoneCountry near line 1387) — +1 is the only region this ships to today.
+const isUSRegion = (phone) => Boolean(phone?.startsWith('+1'));
+
+app.post('/api/pets/:petId/health-documents/presign', auth, async (req, res) => {
+  try {
+    const denied = await assertPetOwnership(req.params.petId, req.user.id, req.user.role);
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+
+    const { data: me } = await supabase.from('users').select('phone').eq('id', req.user.id).single();
+    if (!isUSRegion(me?.phone)) return res.status(403).json({ error: 'The digital pet passport is currently available for US accounts only.' });
+
+    const { docKind = 'vaccination_card', ext = 'jpg' } = req.body;
+    const VALID_KINDS = ['vaccination_card', 'vet_report', 'other'];
+    if (!VALID_KINDS.includes(docKind)) return res.status(400).json({ error: 'Invalid document kind.' });
+    if (!['jpg', 'jpeg', 'png', 'webp'].includes(String(ext).toLowerCase()))
+      return res.status(400).json({ error: 'Invalid file type. Use jpg, png, or webp.' });
+
+    const path = `${req.params.petId}/${Date.now()}.${String(ext).toLowerCase()}`;
+    const { data: signed, error: signErr } = await supabase.storage
+      .from(PET_HEALTH_DOCS_BUCKET).createSignedUploadUrl(path);
+    if (signErr) return res.status(500).json({ error: 'Failed to generate upload URL' });
+
+    const { data: doc, error: insErr } = await supabase.from('pet_health_documents')
+      .insert({ pet_id: req.params.petId, uploaded_by: req.user.id, storage_path: path, doc_kind: docKind })
+      .select().single();
+    if (insErr) return dbError(res, insErr, 'Failed to start document upload.', 400);
+
+    res.json({ success: true, documentId: doc.id, uploadUrl: signed.signedUrl, token: signed.token, path });
+  } catch (err) {
+    logger.error('Pet health document presign error:', err.message);
+    res.status(500).json({ error: 'Failed to generate upload URL.' });
+  }
+});
+
+app.post('/api/pets/:petId/health-documents/:docId/extract', auth, petHealthExtractLimit, async (req, res) => {
+  try {
+    const denied = await assertPetOwnership(req.params.petId, req.user.id, req.user.role);
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+
+    const { data: doc, error: docErr } = await supabase.from('pet_health_documents')
+      .select('*').eq('id', req.params.docId).eq('pet_id', req.params.petId).single();
+    if (docErr || !doc) return res.status(404).json({ error: 'Document not found' });
+    if (doc.status !== 'uploaded') return res.status(400).json({ error: `Document already ${doc.status}.` });
+
+    if (!petHealthExtract.isConfigured())
+      return res.status(503).json({ error: 'Document scanning is temporarily unavailable.' });
+
+    // Signed GET so we never need the bucket to be public, and never proxy
+    // through base64 in a request body.
+    const { data: signed, error: signErr } = await supabase.storage
+      .from(PET_HEALTH_DOCS_BUCKET).createSignedUrl(doc.storage_path, 60);
+    if (signErr || !signed?.signedUrl) return res.status(400).json({ error: 'File not found in storage' });
+
+    const imgRes = await fetch(signed.signedUrl);
+    if (!imgRes.ok) return res.status(400).json({ error: 'File not found in storage' });
+    const buf = Buffer.from(await imgRes.arrayBuffer());
+    const ext = doc.storage_path.split('.').pop().toLowerCase();
+    const mimeType = ext === 'png' ? 'image/png' : ext === 'webp' ? 'image/webp' : 'image/jpeg';
+
+    let result;
+    try {
+      result = await petHealthExtract.extract(buf, mimeType);
+    } catch (e) {
+      await supabase.from('pet_health_documents')
+        .update({ status: 'failed', error: e.message }).eq('id', doc.id);
+      return res.status(422).json({ error: e.message });
+    }
+
+    const { data: updated, error: updErr } = await supabase.from('pet_health_documents')
+      .update({ status: 'extracted', extracted: result, extracted_at: new Date().toISOString() })
+      .eq('id', doc.id).select().single();
+    if (updErr) return dbError(res, updErr, 'Failed to save extraction result.', 400);
+
+    res.json({ success: true, document: updated });
+  } catch (err) {
+    logger.error('Pet health document extract error:', err.message);
+    res.status(500).json({ error: 'Failed to scan document.' });
+  }
+});
+
+app.get('/api/pets/:petId/health-documents', auth, async (req, res) => {
+  const denied = await assertPetOwnership(req.params.petId, req.user.id, req.user.role);
+  if (denied) return res.status(denied.status).json({ error: denied.error });
+  const { data, error } = await supabase.from('pet_health_documents')
+    .select('*').eq('pet_id', req.params.petId).order('created_at', { ascending: false });
+  if (error) return dbError(res, error, 'Failed to load documents.', 400);
+  res.json({ success: true, documents: data });
+});
+
+// Owner confirms — only user-reviewed records reach vet_records. `records`
+// is the client's edited copy of `extracted.records` (same shape); we
+// re-validate and allowlist fields exactly like the manual vet-record path
+// above, we just also stamp source_document_id for provenance.
+app.post('/api/pets/:petId/health-documents/:docId/confirm', auth, async (req, res) => {
+  try {
+    const denied = await assertPetOwnership(req.params.petId, req.user.id, req.user.role);
+    if (denied) return res.status(denied.status).json({ error: denied.error });
+
+    const { data: doc, error: docErr } = await supabase.from('pet_health_documents')
+      .select('id, status').eq('id', req.params.docId).eq('pet_id', req.params.petId).single();
+    if (docErr || !doc) return res.status(404).json({ error: 'Document not found' });
+    if (doc.status !== 'extracted') return res.status(400).json({ error: `Document is ${doc.status}, expected extracted.` });
+
+    const records = Array.isArray(req.body.records) ? req.body.records : [];
+    if (records.length === 0) return res.status(400).json({ error: 'No records to confirm.' });
+    if (records.length > 20) return res.status(400).json({ error: 'Too many records in one document.' });
+
+    const allowed = ['vtype', 'date', 'next_due', 'vet', 'clinic', 'batch_no', 'vet_licence', 'notes', 'cost'];
+    const rows = records.map(r => {
+      const safeRow = { pet_id: req.params.petId, source_document_id: doc.id };
+      for (const key of allowed) {
+        if (r[key] !== undefined && r[key] !== null && r[key] !== '') safeRow[key] = sanitize(String(r[key]));
+      }
+      return safeRow;
+    }).filter(r => r.vtype || r.notes); // skip fully-blank rows the owner didn't fill in
+
+    if (rows.length === 0) return res.status(400).json({ error: 'No records to confirm.' });
+
+    const { data: inserted, error: insErr } = await supabase.from('vet_records').insert(rows).select();
+    if (insErr) return dbError(res, insErr, 'Failed to save health records.', 400);
+
+    await supabase.from('pet_health_documents')
+      .update({ status: 'confirmed', confirmed_at: new Date().toISOString() }).eq('id', doc.id);
+
+    res.json({ success: true, records: inserted });
+  } catch (err) {
+    logger.error('Pet health document confirm error:', err.message);
+    res.status(500).json({ error: 'Failed to confirm records.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────
+//  SERVICE CATALOG — public pricing for customers
+// ─────────────────────────────────────────────────────────────
 // Returns the full service catalog with tiered prices.
 // Accessible to authenticated customers only (never to SPs).
 //  Service catalog route extracted to routes/services.js (router-factory pattern).
