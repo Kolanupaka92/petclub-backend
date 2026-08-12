@@ -1,3 +1,10 @@
+## [1.41.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.41.0...v1.41.1) (2026-08-12)
+
+
+### Bug Fixes
+
+* **cron:** wire up 3 cron routes that had no trigger at all ([d43ef3c](https://github.com/Kolanupaka92/petclub-backend/commit/d43ef3cfb77d92cb4994847d0af215473dc71313))
+
 # [1.41.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.40.0...v1.41.0) (2026-07-29)
 
 
