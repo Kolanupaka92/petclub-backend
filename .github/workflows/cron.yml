@@ -3,10 +3,19 @@
 #
 #  Schedules:
 #    Every hour  — booking reminders (24h + 5h + 2h + 1h windows)
-#    Daily 02:30 UTC — coupon expiry warnings (3 days out)
+#    Every 5 min — booking-offer timeout / reassignment
 #    Daily 02:00 UTC — loyalty leaderboard refresh
+#    Daily 02:30 UTC — coupon expiry warnings (3 days out)
 #    Daily 03:00 UTC — pet care reminders (vaccinations due in 7 days)
+#    Daily 04:00 UTC — auto-delete suspended users past grace period
+#    Daily 04:15 UTC — hard-purge soft-deleted records >90 days old
 #    Saturday 06:00 UTC — weekly payout summary email to admin
+#
+#  booking-offer-timeout runs every 5 min to match BOOKING_RESPONSE_TIMEOUT_MINS
+#  (default 5 min, server.js) — a professional who doesn't respond in time
+#  needs to be reassigned promptly, not once an hour. GitHub Actions'
+#  schedule can slip by several minutes under load; if reassignment latency
+#  ever matters more than this, move this one job to Cloud Scheduler instead.
 #
 #  All endpoints require X-Cron-Secret header.
 #  Add CRON_SECRET to GitHub Secrets (Settings → Secrets → Actions).
@@ -17,9 +26,12 @@ name: Scheduled Cron Jobs
 on:
   schedule:
     - cron: '0 * * * *'        # every hour  (booking reminders)
+    - cron: '*/5 * * * *'      # every 5 min  (booking-offer timeout)
     - cron: '0 2 * * *'        # 02:00 UTC daily  (leaderboard refresh)
     - cron: '30 2 * * *'       # 02:30 UTC daily  (coupon expiry)
     - cron: '0 3 * * *'        # 03:00 UTC daily  (pet care reminders)
+    - cron: '0 4 * * *'        # 04:00 UTC daily  (auto-delete suspended users)
+    - cron: '15 4 * * *'       # 04:15 UTC daily  (hard-purge soft-deleted records)
     - cron: '0 6 * * 6'        # 06:00 UTC Saturday  (payout summary)
   workflow_dispatch:             # allow manual trigger from GitHub UI
 
@@ -28,6 +40,10 @@ jobs:
     name: Booking Reminders (24h + 5h + 2h + 1h)
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # Only run on the hourly trigger and manual dispatch — previously had no
+    # gate at all, so it fired redundantly on every other job's trigger too
+    # (harmless, since it's dedup'd via booking_reminder_log, but wasteful).
+    if: github.event.schedule == '0 * * * *' || github.event_name == 'workflow_dispatch'
     steps:
       - name: Send booking reminders
         run: |
@@ -96,5 +112,57 @@ jobs:
             -X POST \
             -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
             https://api.mypetclub.app/api/cron/payout-summary)
+          cat /tmp/resp.json
+          [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
+
+  booking-offer-timeout:
+    name: Booking Offer Timeout / Reassignment
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Previously wired to Cloud Scheduler per a code comment, but Cloud
+    # Scheduler was never actually enabled on the GCP project — this route
+    # had NO trigger at all until now. Confirmed live impact: a booking sat
+    # stuck in 'offered' status for 2+ weeks past its scheduled date with no
+    # reassignment, because nothing ever called this endpoint.
+    if: github.event.schedule == '*/5 * * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Reassign timed-out booking offers
+        run: |
+          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+            -X POST \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            https://api.mypetclub.app/api/cron/booking-timeout)
+          cat /tmp/resp.json
+          [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
+
+  auto-delete-suspended:
+    name: Auto-Delete Suspended Users
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Same as booking-offer-timeout: comment said "via Cloud Scheduler" but
+    # nothing was ever actually scheduled to call this.
+    if: github.event.schedule == '0 4 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Auto-delete suspended users past grace period
+        run: |
+          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+            -X POST \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            https://api.mypetclub.app/api/cron/auto-delete)
+          cat /tmp/resp.json
+          [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
+
+  hard-purge:
+    name: Hard-Purge Soft-Deleted Records
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: github.event.schedule == '15 4 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Purge soft-deleted records older than 90 days
+        run: |
+          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+            -X POST \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            https://api.mypetclub.app/api/cron/hard-purge)
           cat /tmp/resp.json
           [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
