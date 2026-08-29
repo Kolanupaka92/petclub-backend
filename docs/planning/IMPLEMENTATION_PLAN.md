@@ -1,6 +1,6 @@
 # PETclub — Implementation Plan
 
-**Status:** as of 2026-07-27, post YC application submission.
+**Status:** as of 2026-07-27.
 **Companion docs:** `PRD.md`, `TRD.md`, `APP_FLOW.md`, `DATABASE_SCHEMA.md`.
 
 Sequencing principle carried through this whole plan: **liquidity and real
