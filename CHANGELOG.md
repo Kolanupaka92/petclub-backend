@@ -1,3 +1,10 @@
+# [1.42.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.41.1...v1.42.0) (2026-08-29)
+
+
+### Features
+
+* **cron:** add stale-booking review digest ([6487c5c](https://github.com/Kolanupaka92/petclub-backend/commit/6487c5c8e74108518c776e0e712c12b655dfd507))
+
 ## [1.41.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.41.0...v1.41.1) (2026-08-12)
 
 
