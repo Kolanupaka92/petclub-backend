@@ -5720,6 +5720,88 @@ app.post('/api/cron/payout-summary', async (req, res) => {
   }
 });
 
+// POST /api/cron/stale-bookings
+// Surfaces bookings that were confirmed but never closed out: the service
+// date has passed (plus a grace period) and the professional never marked
+// them completed or cancelled, so they sit as "upcoming" forever — a customer
+// can see an "upcoming" appointment months in the past.
+//
+// Deliberately REPORT-ONLY: it emails an admin digest and does not mutate
+// booking state. Auto-completing would award loyalty credits and flip
+// payout_status for a service that may never actually have happened, and
+// auto-cancelling would wrongly deny a professional payment for work done.
+// Only a human knows which of those it was, so this surfaces the list and
+// lets an admin resolve each one.
+app.post('/api/cron/stale-bookings', async (req, res) => {
+  if (!cronAuth(req, res)) return;
+  const graceHours = parseInt(process.env.STALE_BOOKING_GRACE_HOURS) || 24;
+  try {
+    const cutoff = new Date(Date.now() - graceHours * 3600 * 1000).toISOString();
+    const { data: stale, error } = await supabase
+      .from('bookings')
+      .select('id, service_type, service_name, scheduled_at, currency, total_amount, users!bookings_customer_id_fkey(name, phone), professional_profiles!bookings_professional_id_fkey(users(name, phone))')
+      .eq('status', 'upcoming')
+      .in('assignment_status', ['confirmed', 'in_progress'])
+      .lt('scheduled_at', cutoff)
+      .is('deleted_at', null)
+      .order('scheduled_at', { ascending: true });
+    if (error) throw error;
+
+    if (!stale?.length) {
+      logger.info('[Cron] stale-bookings: none');
+      return res.json({ success: true, stale_count: 0 });
+    }
+
+    logger.warn(`[Cron] stale-bookings: ${stale.length} booking(s) past service date still marked upcoming`);
+
+    const adminEmail = process.env.ADMIN_EMAIL;
+    if (!adminEmail) {
+      // Still report the count so the cron run is observable even without email.
+      return res.json({ success: true, stale_count: stale.length, emailed: false, reason: 'ADMIN_EMAIL not set' });
+    }
+
+    const rows = stale.map(b => {
+      const overdueH = Math.floor((Date.now() - new Date(b.scheduled_at)) / 3600000);
+      const overdue  = overdueH >= 48 ? `${Math.floor(overdueH / 24)} days` : `${overdueH} hrs`;
+      const cust = b.users;
+      const pro  = b.professional_profiles?.users;
+      const amt  = b.total_amount ? `${b.currency === 'USD' ? '$' : '₹'}${b.total_amount}` : '—';
+      return `<tr>
+        <td style="font-family:monospace;font-size:11px">${sanitize(b.id)}</td>
+        <td>${sanitize(b.service_name || b.service_type || '—')}</td>
+        <td>${new Date(b.scheduled_at).toISOString().slice(0, 16).replace('T', ' ')}</td>
+        <td><strong>${overdue}</strong></td>
+        <td>${sanitize(cust?.name || '—')}</td>
+        <td>${sanitize(pro?.name || 'unassigned')}</td>
+        <td>${amt}</td>
+      </tr>`;
+    }).join('');
+
+    await sendEmail(
+      adminEmail,
+      `⚠️ ${stale.length} stale booking(s) need review — PETclub`,
+      `<h2>Bookings past their service date, never closed out</h2>
+       <p>These were confirmed but the professional never marked them completed or
+          cancelled, so they still show as <strong>upcoming</strong> to the customer.
+          Grace period: ${graceHours}h past the scheduled time.</p>
+       <table border="1" cellpadding="6" cellspacing="0" style="border-collapse:collapse;font-family:sans-serif;font-size:13px;">
+         <thead style="background:#f1f5f9;">
+           <tr><th>Booking</th><th>Service</th><th>Scheduled (UTC)</th><th>Overdue</th><th>Customer</th><th>Professional</th><th>Amount</th></tr>
+         </thead>
+         <tbody>${rows}</tbody>
+       </table>
+       <p style="color:#64748b;font-size:12px;margin-top:16px;">
+         Resolve each in the admin dashboard — mark completed if the service happened,
+         or cancelled if it did not. This job only reports; it never changes booking
+         state, because completing wrongly would award credits and trigger a payout.</p>`
+    );
+    res.json({ success: true, stale_count: stale.length, emailed: true });
+  } catch (e) {
+    logger.error('[Cron] stale-bookings failed:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Cron: booking timeout (every 2 min via Cloud Scheduler)
 app.post('/api/cron/booking-timeout', async (req, res) => {
   if (!cronAuth(req, res)) return;

@@ -9,6 +9,7 @@
 #    Daily 03:00 UTC — pet care reminders (vaccinations due in 7 days)
 #    Daily 04:00 UTC — auto-delete suspended users past grace period
 #    Daily 04:15 UTC — hard-purge soft-deleted records >90 days old
+#    Daily 05:00 UTC — stale-booking review digest to admin
 #    Saturday 06:00 UTC — weekly payout summary email to admin
 #
 #  booking-offer-timeout runs every 5 min to match BOOKING_RESPONSE_TIMEOUT_MINS
@@ -32,6 +33,7 @@ on:
     - cron: '0 3 * * *'        # 03:00 UTC daily  (pet care reminders)
     - cron: '0 4 * * *'        # 04:00 UTC daily  (auto-delete suspended users)
     - cron: '15 4 * * *'       # 04:15 UTC daily  (hard-purge soft-deleted records)
+    - cron: '0 5 * * *'        # 05:00 UTC daily  (stale-booking review digest)
     - cron: '0 6 * * 6'        # 06:00 UTC Saturday  (payout summary)
   workflow_dispatch:             # allow manual trigger from GitHub UI
 
@@ -149,6 +151,23 @@ jobs:
             -X POST \
             -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
             https://api.mypetclub.app/api/cron/auto-delete)
+          cat /tmp/resp.json
+          [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
+
+  stale-bookings:
+    name: Stale Booking Review Digest
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    # Report-only: emails admin a list of bookings whose service date passed
+    # but were never marked completed/cancelled. Never mutates booking state.
+    if: github.event.schedule == '0 5 * * *' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Email stale-booking digest to admin
+        run: |
+          STATUS=$(curl -s -o /tmp/resp.json -w "%{http_code}" \
+            -X POST \
+            -H "X-Cron-Secret: ${{ secrets.CRON_SECRET }}" \
+            https://api.mypetclub.app/api/cron/stale-bookings)
           cat /tmp/resp.json
           [ "$STATUS" = "200" ] && echo "✅ Done" || { echo "❌ Failed: HTTP $STATUS"; exit 1; }
 
