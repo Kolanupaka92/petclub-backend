@@ -1,0 +1,198 @@
+# ══════════════════════════════════════════════════════════════════
+#  Cloud Run Service Health Monitor
+#
+#  Catches the failure class that health-monitor.yml CANNOT see:
+#  a Cloud Run service sitting in a broken state while the public
+#  endpoints stay perfectly healthy.
+#
+#  Real example this was written for: an orphaned `petclub-backend`
+#  service in us-central1 (a stale duplicate of the real one in
+#  us-west1) sat with Ready=False and zero successful revisions from
+#  2026-06-28 to 2026-09-14 — nearly three months. Nothing caught it,
+#  because api.mypetclub.app was up the whole time, so the endpoint
+#  probes never fired. It was only found by eyeballing the console.
+#
+#  This sweeps EVERY service in EVERY region and fails if any is not
+#  Ready, or is Ready but has never had a successful revision.
+#
+#  Deliberately separate from health-monitor.yml:
+#    health-monitor.yml  → "is the product up?"   (every 2h, SMS+rollback)
+#    this one            → "is the infra sane?"   (every 6h, issue only)
+#
+#  No SMS here on purpose — a stale service is not a 3am page. It opens
+#  a GitHub issue and comments on it, the same de-duped pattern
+#  health-monitor uses, so a persistent problem doesn't spam.
+#
+#  Auth: keyless Workload Identity Federation, matching deploy.yml.
+#  (health-monitor.yml's auto-recover job asks for a GCP_SA_KEY secret
+#  that was never created, so that job silently skips every run — see
+#  the note in the summary. WIF is the mechanism that actually works.)
+# ══════════════════════════════════════════════════════════════════
+
+name: Cloud Run Monitor
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # every 6 hours (UTC)
+  workflow_dispatch:
+
+env:
+  SERVICE_ACCOUNT: 1084002294076-compute@developer.gserviceaccount.com
+
+permissions:
+  contents: read
+  id-token: write          # required for WIF token exchange
+  issues: write            # required to open/comment the incident issue
+
+jobs:
+  sweep:
+    name: Sweep Cloud Run Services
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      unhealthy: ${{ steps.check.outputs.unhealthy }}
+      report:    ${{ steps.check.outputs.report }}
+
+    steps:
+      - name: Authenticate to GCP
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WORKLOAD_IDENTITY_PROVIDER }}
+          service_account:            ${{ env.SERVICE_ACCOUNT }}
+
+      - name: Set up gcloud CLI
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ secrets.GCP_PROJECT_ID }}
+
+      - name: Check every service in every region
+        id: check
+        run: |
+          set -uo pipefail
+
+          # One API call for all regions. Tab-separated so service names
+          # with spaces can't break the parse.
+          gcloud run services list \
+            --format="value[separator='|'](metadata.name, metadata.labels.'cloud.googleapis.com/location', status.conditions[0].status, status.latestReadyRevisionName, status.url)" \
+            > /tmp/services.txt 2>/tmp/err.txt || {
+              echo "::error::Failed to list Cloud Run services"
+              cat /tmp/err.txt
+              exit 1
+            }
+
+          if [ ! -s /tmp/services.txt ]; then
+            echo "::warning::No Cloud Run services returned — check permissions"
+            echo "unhealthy=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Services found:"
+          cat /tmp/services.txt
+          echo
+
+          BAD=0
+          REPORT=""
+          while IFS='|' read -r NAME REGION READY READY_REV URL; do
+            [ -z "${NAME:-}" ] && continue
+            PROBLEM=""
+            if [ "${READY:-}" != "True" ]; then
+              PROBLEM="not Ready (status=${READY:-unknown})"
+            elif [ -z "${READY_REV:-}" ]; then
+              # Ready=True but nothing ever served — a half-created service.
+              PROBLEM="Ready but has no successful revision"
+            fi
+
+            if [ -n "$PROBLEM" ]; then
+              BAD=$((BAD+1))
+              echo "::error::$NAME [$REGION] — $PROBLEM"
+              REPORT="${REPORT}- **${NAME}** \`${REGION}\` — ${PROBLEM}"$'\n'
+            else
+              echo "ok: $NAME [$REGION] rev=${READY_REV}"
+            fi
+          done < /tmp/services.txt
+
+          echo "unhealthy=$BAD" >> "$GITHUB_OUTPUT"
+          {
+            echo 'report<<REPORT_EOF'
+            printf '%s' "$REPORT"
+            echo
+            echo 'REPORT_EOF'
+          } >> "$GITHUB_OUTPUT"
+
+          if [ "$BAD" -gt 0 ]; then
+            echo "$BAD unhealthy service(s)"
+            exit 1
+          fi
+          echo "All Cloud Run services healthy."
+
+      - name: Open or update incident issue
+        if: failure() && steps.check.outputs.unhealthy != '0'
+        uses: actions/github-script@v7
+        env:
+          REPORT: ${{ steps.check.outputs.report }}
+          COUNT:  ${{ steps.check.outputs.unhealthy }}
+        with:
+          script: |
+            const title = '🔴 Cloud Run: unhealthy service(s) detected';
+            const body = [
+              `**${process.env.COUNT}** Cloud Run service(s) are in a bad state:`,
+              '',
+              process.env.REPORT || '_(no detail captured)_',
+              '',
+              'A service can sit broken here while `api.mypetclub.app` stays green,',
+              'so the 2-hourly endpoint monitor will not catch it.',
+              '',
+              '**Usual causes**',
+              '- Orphaned service in the wrong region (production is `us-west1`)',
+              '- Missing env vars — `server.js` calls `process.exit(1)` when any of',
+              '  `JWT_SECRET`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `CRON_SECRET`,',
+              '  `JWT_EXPIRES_IN` is unset, which Cloud Run reports as the misleading',
+              '  "failed to start and listen on PORT=8080".',
+              '',
+              'If the service is a leftover and not needed, delete it:',
+              '```bash',
+              'gcloud run services delete <NAME> --region=<REGION>',
+              '```',
+              '',
+              `_Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}_`,
+            ].join('\n');
+
+            const existing = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'cloud-run-health',
+            });
+
+            if (existing.data.length) {
+              // Comment rather than open a duplicate — keeps one thread per incident.
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: existing.data[0].number,
+                body: `Still unhealthy as of ${new Date().toISOString()}\n\n${body}`,
+              });
+            } else {
+              await github.rest.issues.create({
+                owner: context.repo.owner, repo: context.repo.repo,
+                title, body, labels: ['cloud-run-health'],
+              });
+            }
+
+      - name: Close incident issue on recovery
+        if: success()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const open = await github.rest.issues.listForRepo({
+              owner: context.repo.owner, repo: context.repo.repo,
+              state: 'open', labels: 'cloud-run-health',
+            });
+            for (const issue of open.data) {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number,
+                body: `✅ All Cloud Run services healthy as of ${new Date().toISOString()} — closing.`,
+              });
+              await github.rest.issues.update({
+                owner: context.repo.owner, repo: context.repo.repo,
+                issue_number: issue.number, state: 'closed',
+              });
+            }
