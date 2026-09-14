@@ -1,3 +1,10 @@
+## [1.42.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.42.0...v1.42.1) (2026-09-14)
+
+
+### Bug Fixes
+
+* **ci:** pin project explicitly in Cloud Run monitor ([9058c17](https://github.com/Kolanupaka92/petclub-backend/commit/9058c17a4c444b8b62a02daf9cb5064fa681ad9f))
+
 # [1.42.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.41.1...v1.42.0) (2026-08-29)
 
 
