@@ -38,6 +38,13 @@ on:
 
 env:
   SERVICE_ACCOUNT: 1084002294076-compute@developer.gserviceaccount.com
+  # Fallback only. google-github-actions/auth derives GOOGLE_CLOUD_PROJECT
+  # from the service-account email domain, which for a default compute SA
+  # (…@developer.gserviceaccount.com) resolves to the literal "developer" —
+  # a project that doesn't exist. Every gcloud call below passes --project
+  # explicitly so it can never inherit that wrong value.
+  # Not a secret: this ID is already in deploy.yml's header comment.
+  PROJECT_ID_FALLBACK: project-c736b433-1b47-40c0-a2c
 
 permissions:
   contents: read
@@ -67,15 +74,22 @@ jobs:
 
       - name: Check every service in every region
         id: check
+        env:
+          GCP_PROJECT_ID_SECRET: ${{ secrets.GCP_PROJECT_ID }}
         run: |
           set -uo pipefail
 
-          # One API call for all regions. Tab-separated so service names
+          PROJECT="${GCP_PROJECT_ID_SECRET:-}"
+          [ -z "$PROJECT" ] && PROJECT="$PROJECT_ID_FALLBACK"
+          echo "Using project: $PROJECT"
+
+          # One API call for all regions. '|' separator so service names
           # with spaces can't break the parse.
           gcloud run services list \
+            --project="$PROJECT" \
             --format="value[separator='|'](metadata.name, metadata.labels.'cloud.googleapis.com/location', status.conditions[0].status, status.latestReadyRevisionName, status.url)" \
             > /tmp/services.txt 2>/tmp/err.txt || {
-              echo "::error::Failed to list Cloud Run services"
+              echo "::error::Failed to list Cloud Run services in project $PROJECT"
               cat /tmp/err.txt
               exit 1
             }
