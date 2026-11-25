@@ -2272,34 +2272,43 @@ app.put('/api/professionals/me', auth, validate(schemas.updateProfessional), asy
   const needsEmailCheck = !!email && email !== normalizeEmail(cur?.email);
   if (name !== undefined) await supabase.from('users').update({ name }).eq('id', req.user.id);
   const pet_types = req.body.pet_types;
+  // Price columns are numeric: a blank field clears the price.
+  const price = (v) => (v === '' || v === null ? null : v === undefined ? undefined : Number(v));
   const updatePayload = {
     city, area, address, bio, experience,
     // services is text[] in Postgres  pass as native array, NOT JSON.stringify.
     // JSON.stringify caused a type error that silently failed the entire update.
     services:   Array.isArray(services)   ? services   : undefined,
     pet_types:  Array.isArray(pet_types)  ? pet_types  : undefined,
-    service_areas, langs, price_basic, price_full, price_custom,
+    service_areas, langs,
+    price_basic: price(price_basic), price_full: price(price_full), price_custom: price(price_custom),
     certification, license_number, clinic_name,
   };
   // Only store GPS if provided (graceful: column may not exist yet)
   if (addressLat && addressLng) {
     updatePayload.address_lat = addressLat;
     updatePayload.address_lng = addressLng;
+    updatePayload.address_postal_code = sanitize(req.body.address_postal_code) || null;
+    updatePayload.address_state       = sanitize(req.body.address_state)       || null;
+    updatePayload.address_city        = city || null;
   }
   // Only update sub_role if explicitly provided (prevents overwriting with undefined)
   if (sub_role && ['Groomer','Trainer','Vet','Walker','Boarding'].includes(sub_role)) {
     updatePayload.sub_role = sub_role;
   }
   // Fetch current profile BEFORE update to detect first-time profile completion
-  const { data: existingProf } = await supabase.from('professional_profiles').select('bio, experience, sub_role').eq('user_id', req.user.id).single();
+  const { data: existingProf } = await supabase.from('professional_profiles').select('bio, experience, sub_role, verification_status').eq('user_id', req.user.id).single();
+  // Verification is per role: an approved groomer must not become a vet unchecked.
+  if (updatePayload.sub_role && existingProf?.verification_status === 'approved' && updatePayload.sub_role !== existingProf.sub_role)
+    return res.status(403).json({ error: 'Your profile is already verified. Contact support to change your role.' });
   const wasIncomplete = !existingProf?.bio && !existingProf?.experience;
   const willBeComplete = !!(bio && experience);
 
   const { data, error: updateErr } = await supabase.from('professional_profiles').update(updatePayload)
     .eq('user_id', req.user.id).select().single();
   if (updateErr) {
-    logger.error('[ProProfile PUT] Supabase update error:', updateErr.message);
-    return res.status(500).json({ error: 'Failed to update profile: ' + updateErr.message });
+    logger.error(`[ProProfile PUT] update failed: ${updateErr.message}`);
+    return dbError(res, updateErr, 'Failed to update profile. Please try again.');
   }
 
   // Notify admin when professional completes their profile for the first time (in-review)
@@ -2405,13 +2414,14 @@ app.post('/api/professionals/upload-id', auth, async (req, res) => {
   const { data: prof } = await supabase.from('professional_profiles').select('id').eq('user_id', req.user.id).single();
   if (!prof) return res.status(404).json({ error: 'Apply as professional first' });
   const { doc_type, doc_number, cert_type, cert_number } = req.body;
-  const { data } = await supabase.from('id_documents').upsert({
+  const { data, error } = await supabase.from('id_documents').upsert({
     prof_id:     prof.id,
     doc_type:    sanitize(doc_type)    || null,
     doc_number:  sanitize(doc_number)  || null,
     cert_type:   sanitize(cert_type)   || null,
     cert_number: sanitize(cert_number) || null,
   }, { onConflict: 'prof_id' }).select().single();
+  if (error) return dbError(res, error, 'Failed to save your document details. Please try again.');
   res.json({ success: true, document: data });
 });
 
@@ -2431,12 +2441,13 @@ app.post('/api/professionals/upload-id-photo', auth, async (req, res) => {
     // Store ONLY metadata  never photo paths (photos go to admin email only)
     const docMeta = {
       prof_id: prof.id,
-      doc_type: docType,
-      doc_number: docNumber || null,
+      doc_type: sanitize(docType),
+      doc_number: sanitize(docNumber) || null,
       // photo_url intentionally OMITTED  photos are never stored
     };
-    if (certType) { docMeta.cert_type = certType; docMeta.cert_number = certNumber || null; }
-    await supabase.from('id_documents').upsert(docMeta, { onConflict: 'prof_id' });
+    if (certType) { docMeta.cert_type = sanitize(certType); docMeta.cert_number = sanitize(certNumber) || null; }
+    const { error: docErr } = await supabase.from('id_documents').upsert(docMeta, { onConflict: 'prof_id' });
+    if (docErr) return dbError(res, docErr, 'Failed to save your document details. Please try again.');
 
     //  Email photos directly to admin as attachments 
     const adminEmail = process.env.ADMIN_EMAIL;
@@ -2627,7 +2638,7 @@ app.post('/api/professionals/payout', auth, validate(schemas.payoutRequest), asy
   if (!prof) return res.status(404).json({ error: 'Professional profile not found' });
   // Allowlist payout fields  never accept prof_id or computed fields from client
   const { bank_name, account_number, account_holder, ifsc_code, upi_id, payment_type } = req.body;
-  const { data } = await supabase.from('payout_details').upsert({
+  const { data, error } = await supabase.from('payout_details').upsert({
     prof_id:        prof.id,
     bank_name:      sanitize(bank_name)       || null,
     account_number: sanitize(account_number)  || null,
@@ -2635,7 +2646,19 @@ app.post('/api/professionals/payout', auth, validate(schemas.payoutRequest), asy
     ifsc_code:      sanitize(ifsc_code)       || null,
     upi_id:         sanitize(upi_id)          || null,
     payment_type:   payment_type              || null,
+    updated_at:     new Date().toISOString(),
   }, { onConflict: 'prof_id' }).select().single();
+  if (error) return dbError(res, error, 'Failed to save your payout details. Please try again.');
+
+  // Payout details decide where money goes: always tell the account owner.
+  const { data: owner } = await supabase.from('users').select('email, name').eq('id', req.user.id).single();
+  if (owner?.email) {
+    Promise.resolve(sendEmail(owner.email, 'Your PETclub payout details were updated',
+      `<p>Hi ${sanitize(owner.name || 'there')},</p>
+       <p>The payout details on your PETclub account were just updated${account_number ? ` to the account ending <strong>${sanitize(account_number).slice(-4)}</strong>` : ''}.</p>
+       <p><strong>If this wasn't you, contact ${SUPPORT_EMAIL} right away.</strong></p>
+       <p>— PETclub Team</p>`)).catch(e => logger.error(`[Payout] notice email failed: ${e.message}`));
+  }
   res.json({ success: true, payout: data });
 });
 
@@ -3068,38 +3091,41 @@ app.put('/api/bookings/:id/status', auth, validate(schemas.updateBookingStatus),
         providerName = pProf?.users?.name || null;
       }
 
+      let recError = null;
       if (svcType === 'Trainer') {
-        await supabase.from('training_records').insert({
+        ({ error: recError } = await supabase.from('training_records').insert({
           pet_id:    booking.pet_id,
           date:      dateStr,
           session:   svcName,
           by:        providerName || '',
           notes:     `Completed via PETclub booking #${req.params.id}`,
           booking_id: req.params.id,
-        });
+        }));
       } else if (svcType === 'Vet') {
-        await supabase.from('vet_records').insert({
+        ({ error: recError } = await supabase.from('vet_records').insert({
           pet_id:     booking.pet_id,
           date:       dateStr,
           vtype:      svcName,
           vet:        providerName || '',
           notes:      `Completed via PETclub booking #${req.params.id}`,
           booking_id: req.params.id,
-        });
+        }));
       } else {
         // Groomer, Walker, Boarding  all go to grooming_records
-        await supabase.from('grooming_records').insert({
+        ({ error: recError } = await supabase.from('grooming_records').insert({
           pet_id:    booking.pet_id,
           date:      dateStr,
           service:   svcName,
           by:        providerName || '',
           notes:     `Completed via PETclub booking #${req.params.id}`,
           booking_id: req.params.id,
-        });
+        }));
       }
+      // 23505: this booking already has its record.
+      if (recError && recError.code !== '23505') throw new Error(recError.message);
     } catch (recErr) {
       // Non-fatal  log but don't fail the status update
-      logger.error('[PetRecord] Auto-create failed:', recErr.message);
+      logger.error(`[PetRecord] Auto-create failed for booking ${req.params.id}: ${recErr.message}`);
     }
   }
 
@@ -3913,10 +3939,11 @@ app.get('/api/admin/signed-url', auth, adminOnly, async (req, res) => {
 // Admin: list all pending payout requests with bank/UPI details
 app.get('/api/admin/payouts', auth, adminOnly, async (req, res) => {
   try {
-    const { data: payouts } = await supabase
+    const { data: payouts, error: payoutErr } = await supabase
       .from('payout_details')
       .select('*, professional_profiles(id, sub_role, users(name, phone, email))')
       .order('updated_at', { ascending: false });
+    if (payoutErr) throw payoutErr;
 
     const { data: pendingBookings } = await supabase
       .from('bookings')
@@ -5270,63 +5297,6 @@ app.delete('/api/admin/db-cleanup', auth, adminOnly, async (req, res) => {
 // NOTE: 404 and error handlers are registered AFTER all routes (including cron)
 // at the bottom of this file — do not add a catch-all here.;
 
-//  Startup migration: add live-tracking columns to bookings (safe, IF NOT EXISTS) 
-async function runStartupMigrations() {
-  const migrations = [
-    // Bookings: live tracking + GPS coords
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_lat                  DOUBLE PRECISION`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_lng                  DOUBLE PRECISION`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS pro_location_updated_at  TIMESTAMPTZ`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS ten_min_notified         BOOLEAN DEFAULT FALSE`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS address_lat              DOUBLE PRECISION`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS address_lng              DOUBLE PRECISION`,
-    // Professional profiles: GPS address for 70km radius dispatch + pet type specializations
-    `ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS address_lat DOUBLE PRECISION`,
-    `ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS address_lng DOUBLE PRECISION`,
-    `ALTER TABLE professional_profiles ADD COLUMN IF NOT EXISTS pet_types   JSONB`,
-    // Pets: health notes visible to assigned professionals
-    `ALTER TABLE pets ADD COLUMN IF NOT EXISTS health_notes TEXT`,
-    // Bookings: revenue split (30/70) + payment/payout tracking
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS total_amount      NUMERIC(10,2)`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS platform_fee      NUMERIC(10,2)`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS provider_earnings    NUMERIC(10,2)`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS gateway_fee          NUMERIC(10,2)`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS currency             TEXT DEFAULT 'INR'`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payout_status        TEXT DEFAULT 'pending'`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS payout_reference     TEXT`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS petclub_offer_amount NUMERIC(10,2)`,
-    `ALTER TABLE grooming_records  ADD COLUMN IF NOT EXISTS booking_id TEXT`,
-    `ALTER TABLE training_records  ADD COLUMN IF NOT EXISTS booking_id TEXT`,
-    `ALTER TABLE vet_records        ADD COLUMN IF NOT EXISTS booking_id TEXT`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancelled_by        TEXT`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancelled_at        TIMESTAMPTZ`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancellation_fee    NUMERIC(10,2) DEFAULT 0`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS refund_amount       NUMERIC(10,2)`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS refund_status       TEXT DEFAULT 'not_applicable'`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS cancellation_reason TEXT`,
-    `ALTER TABLE bookings ADD COLUMN IF NOT EXISTS service_notes       TEXT`,
-    `CREATE TABLE IF NOT EXISTS booking_messages (
-       id          UUID DEFAULT gen_random_uuid() PRIMARY KEY,
-       booking_id  TEXT NOT NULL,
-       sender_id   UUID NOT NULL,
-       sender_role TEXT NOT NULL,
-       sender_name TEXT,
-       content     TEXT NOT NULL,
-       created_at  TIMESTAMPTZ DEFAULT NOW(),
-       read_at     TIMESTAMPTZ
-     )`,
-    `CREATE INDEX IF NOT EXISTS booking_messages_booking_id_idx ON booking_messages (booking_id, created_at)`,
-  ];
-  for (const sql of migrations) {
-    // PostgREST can't run DDL, but Supabase service-role key can call
-    // the pg_query RPC if it's enabled  fallback: log and continue
-    const { error } = await Promise.resolve(supabase.rpc('pg_query', { query: sql })).catch(() => ({ error: { message: 'rpc_not_available' } }));
-    if (error && !error.message?.includes('already exists') && !error.message?.includes('rpc_not_available')) {
-      logger.warn('[migration] Could not run:', sql.slice(0, 60), error.message);
-    }
-  }
-}
-
 //  Startup: link ADMIN_EMAIL to the admin user record 
 // Ensures the admin can log in via email OTP by making sure the admin user's
 // email field in Supabase matches the ADMIN_EMAIL env var.
@@ -5813,8 +5783,6 @@ if (require.main !== module) {
 } else {
   const server = app.listen(PORT, async () => {
     logger.info(` PETclub API → http://localhost:${PORT}`);
-    // Run migrations in background — won't block startup
-    runStartupMigrations().catch(e => logger.warn('[startup migration]', e.message));
     // Link admin email so email OTP login finds the right account
     seedAdminEmail().catch(e => logger.warn('[adminSeed]', e.message));
   });

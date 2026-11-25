@@ -186,7 +186,26 @@ const applyProfessional = z.object({
   clinic_name:     z.string().max(200).optional(),
 });
 
-const updateProfessional = applyProfessional.partial();
+// Profile forms send every field, including blanks and numbers read back from
+// the database, so both must validate: a blank required field means "unchanged".
+const priceField = z.union([z.literal(''), z.coerce.number().min(0).max(1000000)]).nullable().optional();
+const updateProfessional = z.preprocess(
+  (b) => {
+    if (!b || typeof b !== 'object' || Array.isArray(b)) return b;
+    const out = { ...b };
+    for (const k of ['name', 'email', 'city', 'area', 'sub_role']) if (out[k] === '' || out[k] === null) delete out[k];
+    for (const k of ['address', 'bio', 'experience', 'service_areas', 'langs', 'certification', 'license_number', 'clinic_name']) if (out[k] === null) out[k] = '';
+    for (const k of ['services', 'pet_types']) if (out[k] === null) delete out[k];
+    return out;
+  },
+  applyProfessional.partial().extend({
+    price_basic: priceField, price_full: priceField, price_custom: priceField,
+    pet_types:   z.array(z.string().max(50)).max(20).optional(),
+    address_lat: z.number().min(-90).max(90).nullable().optional(),
+    address_lng: z.number().min(-180).max(180).nullable().optional(),
+    address_postal_code: z.string().max(10).nullable().optional(),
+    address_state:       z.string().max(100).nullable().optional(),
+  }));
 
 const setAvailability = z.object({
   is_available: z.boolean({ required_error: 'is_available (boolean) is required' }),
