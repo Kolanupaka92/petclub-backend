@@ -25,6 +25,8 @@ const { issueRefreshToken, rotateRefreshToken, revokeAllForUser, REFRESH_COOKIE,
 const { withRetry }     = require('./services/retry');
 const metrics           = require('./services/metrics');
 const { activeSelect }  = require('./services/db');
+const suspendedUserCleanup = require('./services/suspendedUserCleanup');
+const { isContactable } = suspendedUserCleanup;
 
 //  Structured logging 
 const pino = require('pino');
@@ -392,7 +394,7 @@ const sendPush = async (fcmToken, title, body, data = {}) => {
           });
         }).catch(() => {});
     } else if (userId) {
-      supabase.from('notifications').insert({ user_id: userId, title, body, data: JSON.stringify(data) }).catch(() => {});
+      supabase.from('notifications').insert({ user_id: userId, title, body, data: JSON.stringify(data) }).then(() => {}, () => {});
     }
   }
   if (!firebaseAdmin || !fcmToken) return;
@@ -508,120 +510,12 @@ const sendEmail = emailService.sendRawEmail;
 //
 
 // 
-//  SUSPENDED USER AUTO-DELETE CRON  runs every hour
-//  Deletes users suspended >24 hrs ago (no restore since).
-//  Sends admin an email summary before deletion.
-// 
-const autoDeleteSuspendedUsers = async () => {
-  try {
-    // Find the latest suspend_user log per user
-    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-    const { data: logs } = await supabase
-      .from('admin_logs')
-      .select('target_id, created_at')
-      .eq('action', 'suspend_user')
-      .lt('created_at', cutoff)
-      .order('created_at', { ascending: false });
-
-    if (!logs?.length) return;
-
-    // Unique user IDs with a suspension older than 24 hr
-    const candidateIds = [...new Set(logs.map(l => l.target_id))];
-
-    // Exclude any that have been restored after the suspension
-    const { data: restoreLogs } = await supabase
-      .from('admin_logs')
-      .select('target_id, created_at')
-      .eq('action', 'restore_user')
-      .in('target_id', candidateIds);
-
-    // Build map: userId ' latest restore timestamp
-    const latestRestore = {};
-    restoreLogs?.forEach(l => {
-      if (!latestRestore[l.target_id] || l.created_at > latestRestore[l.target_id])
-        latestRestore[l.target_id] = l.created_at;
-    });
-
-    // Build map: userId ' latest suspension timestamp
-    const latestSuspend = {};
-    logs.forEach(l => {
-      if (!latestSuspend[l.target_id] || l.created_at > latestSuspend[l.target_id])
-        latestSuspend[l.target_id] = l.created_at;
-    });
-
-    // Only delete if latest suspension > 24hr ago AND no restore after it
-    const toDeleteIds = candidateIds.filter(id => {
-      const suspended = latestSuspend[id];
-      const restored  = latestRestore[id];
-      if (!suspended) return false;
-      if (suspended >= cutoff) return false;        // suspended < 24hr ago
-      if (restored && restored > suspended) return false; // restored after suspension
-      return true;
-    });
-
-    if (!toDeleteIds.length) return;
-
-    // Fetch user details for the email
-    const { data: toDelete } = await supabase
-      .from('users')
-      .select('id, name, phone, email, role')
-      .in('id', toDeleteIds)
-      .eq('is_active', false);
-
-    if (!toDelete?.length) return;
-
-    // Send admin email BEFORE deletion
-    const adminEmail = process.env.ADMIN_EMAIL;
-    if (adminEmail) {
-      const rows = toDelete.map(u =>
-        `<tr style="border-bottom:1px solid #f1f5f9">
-          <td style="padding:8px 12px;font-size:13px">${sanitize(u.name || '')}</td>
-          <td style="padding:8px 12px;font-size:13px">${sanitize(u.phone || '')}</td>
-          <td style="padding:8px 12px;font-size:13px">${sanitize(u.email || '')}</td>
-          <td style="padding:8px 12px;font-size:13px;text-transform:capitalize">${sanitize(u.role || '')}</td>
-        </tr>`
-      ).join('');
-      await sendEmail(
-        adminEmail,
-        `--' PETclub  ${toDelete.length} Suspended User(s) Auto-Deleted`,
-        `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:560px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
-          <div style="font-size:40px;text-align:center;margin-bottom:12px">--'</div>
-          <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">Auto-Deletion Complete</h2>
-          <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 24px">The following user(s) were suspended &gt;24 hours ago and have been permanently deleted.</p>
-          <table style="width:100%;border-collapse:collapse;background:#f8fafc;border-radius:12px;overflow:hidden">
-            <thead><tr style="background:#fee2e2">
-              <th style="padding:10px 12px;font-size:12px;color:#991b1b;text-align:left">Name</th>
-              <th style="padding:10px 12px;font-size:12px;color:#991b1b;text-align:left">Phone</th>
-              <th style="padding:10px 12px;font-size:12px;color:#991b1b;text-align:left">Email</th>
-              <th style="padding:10px 12px;font-size:12px;color:#991b1b;text-align:left">Role</th>
-            </tr></thead>
-            <tbody>${rows}</tbody>
-          </table>
-          <hr style="border:none;border-top:1px solid #f1f5f9;margin:24px 0"/>
-          <p style="color:#94a3b8;font-size:12px;text-align:center">PETclub Admin  ${new Date().toLocaleString('en-IN')}  These accounts are permanently removed from the database.</p>
-        </div>`
-      ).catch(e => logger.error('[AutoDelete] Email failed:', e.message));
-    }
-
-    // Delete related records then soft-delete users
-    const idsToDelete = toDelete.map(u => u.id);
-    await supabase.from('professional_profiles').delete().in('user_id', idsToDelete);
-    await supabase.from('customer_profiles').delete().in('user_id', idsToDelete).catch(() => {});
-    await supabase.from('pets').update({ deleted_at: new Date().toISOString() }).in('owner_id', idsToDelete).catch(() => {});
-    await supabase.from('otp_tokens').delete().in('phone', toDelete.map(u => u.phone)).catch(() => {});
-    // Preserve audit logs for compliance — anonymize PII instead of deleting.
-    // admin_logs are the compliance audit trail and must not be hard-deleted.
-    await supabase.from('admin_logs')
-      .update({ notes: '[redacted — user auto-deleted]' })
-      .in('target_id', idsToDelete)
-      .catch(e => logger.warn('[AutoDelete] Audit log anonymization failed:', e.message));
-    await supabase.from('users').update({ deleted_at: new Date().toISOString() }).in('id', idsToDelete);
-
-    logger.info(`[AutoDelete] Deleted ${idsToDelete.length} suspended users: ${idsToDelete.join(', ')}`);
-  } catch (e) {
-    logger.error('[AutoDelete] Cron error:', e.message);
-  }
-};
+//  SUSPENDED USER AUTO-DELETE CRON  runs daily (.github/workflows/cron.yml)
+//  Logic lives in services/suspendedUserCleanup.js
+//
+const autoDeleteSuspendedUsers = () => suspendedUserCleanup.autoDeleteSuspendedUsers({
+  supabase, sendEmail, sanitize, logger, adminEmail: process.env.ADMIN_EMAIL,
+});
 
 //
 //  AUTO-DELETE, OTP CLEANUP, HARD-PURGE CRONS
@@ -655,7 +549,7 @@ const dispatchRadiusKm = (lng) => (lng != null && lng < 0 ? DISPATCH_RADIUS_KM_U
 const findNextPro = async (city, subRole, excludeProIds = [], bookingLat = null, bookingLng = null) => {
   let q = supabase
     .from('professional_profiles')
-    .select('id, user_id, last_assigned_at, address_lat, address_lng, users(name, phone, email)')
+    .select('id, user_id, last_assigned_at, address_lat, address_lng, users(name, phone, email, is_active, deleted_at)')
     .eq('verification_status', 'approved')
     .eq('is_available', true)
     .eq('sub_role', subRole);
@@ -672,8 +566,11 @@ const findNextPro = async (city, subRole, excludeProIds = [], bookingLat = null,
   for (const xid of excludeProIds) q = q.neq('id', xid);
   // Cap at 100: we only need the rotation pool, not every pro in the DB
   q = q.limit(100);
-  const { data: allPros } = await q;
-  if (!allPros || allPros.length === 0) return null;
+  const { data: approvedPros } = await q;
+  // Never offer bookings to suspended or deleted professionals: suspension only
+  // flips users.is_active, and a profile with past bookings outlives its user.
+  const allPros = (approvedPros || []).filter(p => isContactable(p.users));
+  if (allPros.length === 0) return null;
 
   let pros = allPros;
   // GPS radius filter: keep pros within the regional dispatch radius (70 km IN / 30 mi US)
@@ -4120,7 +4017,7 @@ app.patch('/api/admin/users/:id',      auth, adminOnly, validate(schemas.adminEd
 app.post('/api/admin/users/:id/edit',  auth, adminOnly, validate(schemas.adminEditUser), adminEditUser);
 
 app.put('/api/admin/users/:id/suspend', auth, adminOnly, validate(schemas.suspendUser), async (req, res) => {
-  const { data: u } = await supabase.from('users').select('id, name, phone, email, role, is_active').eq('id', req.params.id).single();
+  const { data: u } = await activeSelect(supabase, 'users', 'id, name, phone, email, role, is_active').eq('id', req.params.id).single();
   if (!u) return res.status(404).json({ error: 'User not found' });
 
   const nowSuspending = u.is_active; // true ' we're suspending; false ' we're restoring
@@ -4202,13 +4099,11 @@ app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, 
   // Require explicit ?confirm=yes to prevent fat-finger wipes
   if (req.query.confirm !== 'yes') {
     // Dry-run: return who would be deleted without touching the DB
-    const { data: preview } = await supabase.from('users').select('id, name, phone, role').eq('is_active', false).neq('role', 'admin');
+    const { data: preview } = await activeSelect(supabase, 'users', 'id, name, phone, role').eq('is_active', false).neq('role', 'admin');
     return res.status(400).json({ error: 'Add ?confirm=yes to proceed. This will permanently delete all suspended users.', preview: preview || [], count: preview?.length || 0 });
   }
   try {
-    const { data: suspended } = await supabase
-      .from('users')
-      .select('id, name, phone, email, role')
+    const { data: suspended } = await activeSelect(supabase, 'users', 'id, name, phone, email, role')
       .eq('is_active', false)
       .neq('role', 'admin');
 
@@ -4268,7 +4163,7 @@ app.delete('/api/admin/users/suspended/purge-all', auth, adminOnly, async (req, 
 // 
 app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
   try {
-    const { data: u } = await supabase.from('users').select('id, name, phone, email, role').eq('id', req.params.id).single();
+    const { data: u } = await activeSelect(supabase, 'users', 'id, name, phone, email, role').eq('id', req.params.id).single();
     if (!u) return res.status(404).json({ error: 'User not found' });
 
     // Cascade: resolve professional_profile FK children first
@@ -4304,9 +4199,9 @@ app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
     // Notify admin email about manual deletion
     const adminEmail = process.env.ADMIN_EMAIL;
     if (adminEmail) {
-      sendEmail(adminEmail, `--' PETclub  User Manually Deleted: ${u.name || u.phone}`,
+      sendEmail(adminEmail, `🗑️ PETclub — User Manually Deleted: ${u.name || u.phone}`,
         `<div style="font-family:'Helvetica Neue',Arial,sans-serif;max-width:480px;margin:0 auto;padding:28px 20px;background:#fff;border-radius:16px">
-          <div style="font-size:40px;text-align:center;margin-bottom:12px">--'</div>
+          <div style="font-size:40px;text-align:center;margin-bottom:12px">🗑️</div>
           <h2 style="color:#1e293b;font-size:20px;text-align:center;margin:0 0 6px">User Permanently Deleted</h2>
           <p style="color:#64748b;font-size:13px;text-align:center;margin:0 0 20px">This account was manually deleted from the Admin Dashboard.</p>
           <div style="background:#fef2f2;border:1.5px solid #fecaca;border-radius:14px;padding:20px">
@@ -5506,7 +5401,7 @@ app.post('/api/cron/booking-reminders', async (req, res) => {
     for (const w of windows) {
       const { data: bookings } = await supabase
         .from('bookings')
-        .select('id, service_name, scheduled_at, address, users!bookings_customer_id_fkey(name, email, fcm_token), professional_profiles!bookings_professional_id_fkey(users(name, email))')
+        .select('id, service_name, scheduled_at, address, users!bookings_customer_id_fkey(name, email, fcm_token, is_active, deleted_at), professional_profiles!bookings_professional_id_fkey(users(name, email, is_active, deleted_at))')
         .eq('status', 'upcoming')
         .eq('assignment_status', 'confirmed')
         .gt('scheduled_at', new Date(w.lo).toISOString())
@@ -5519,10 +5414,12 @@ app.post('/api/cron/booking-reminders', async (req, res) => {
         const addr    = b.address || 'your location';
         const whenTxt = REMINDER_LABELS[w.label];
 
-        const customerEmail = b.users?.email;
-        const customerFcm   = b.users?.fcm_token;
+        // Suspended/deleted accounts get no reminders; the other party still does.
+        const proUser       = b.professional_profiles?.users;
+        const customerEmail = isContactable(b.users) ? b.users.email : null;
+        const customerFcm   = isContactable(b.users) ? b.users.fcm_token : null;
         const customerName  = b.users?.name || 'there';
-        const proEmail      = b.professional_profiles?.users?.email;
+        const proEmail      = isContactable(proUser) ? proUser.email : null;
         const proName       = b.professional_profiles?.users?.name || 'your provider';
 
         // Customer — push AND email, whichever channels are on file
@@ -5588,10 +5485,10 @@ app.post('/api/cron/care-reminders', async (req, res) => {
       if (!pet?.owner_id) continue;
       const { data: owner } = await supabase
         .from('users')
-        .select('name, email')
+        .select('name, email, is_active, deleted_at')
         .eq('id', pet.owner_id)
         .single();
-      if (!owner?.email) continue;
+      if (!owner?.email || !isContactable(owner)) continue;
 
       const what = r.vtype || r.detail || 'checkup';
       const due  = new Date(r.next_due).toLocaleDateString('en-US', { weekday: 'long', day: 'numeric', month: 'long' });
@@ -5625,7 +5522,7 @@ app.post('/api/cron/coupon-expiry', async (req, res) => {
     const hi = new Date(Date.now() + 3.5 * 86_400_000).toISOString();
     const { data: coupons } = await supabase
       .from('loyalty_coupons')
-      .select('code, service_name, discount_pct, expires_at, users(name, email)')
+      .select('code, service_name, discount_pct, expires_at, users(name, email, is_active, deleted_at)')
       .eq('is_used', false)
       .gt('expires_at', lo)
       .lt('expires_at', hi);
@@ -5634,7 +5531,7 @@ app.post('/api/cron/coupon-expiry', async (req, res) => {
     for (const c of coupons || []) {
       const email = c.users?.email;
       const name  = c.users?.name || 'there';
-      if (!email) continue;
+      if (!email || !isContactable(c.users)) continue;
       const expiry = new Date(c.expires_at).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' });
       await sendEmail(
         email,
@@ -5818,8 +5715,8 @@ app.post('/api/cron/booking-timeout', async (req, res) => {
 app.post('/api/cron/auto-delete', async (req, res) => {
   if (!cronAuth(req, res)) return;
   try {
-    await autoDeleteSuspendedUsers();
-    res.json({ success: true });
+    const result = await autoDeleteSuspendedUsers();
+    res.json({ success: true, ...result });
   } catch (e) {
     logger.error('[Cron] auto-delete failed:', e.message);
     res.status(500).json({ error: e.message });
