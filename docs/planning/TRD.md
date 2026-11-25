@@ -231,8 +231,7 @@ catalogue table.
 - DB migrations: Supabase CLI, `supabase/migrations/` — **never hand-paste
   SQL into the Supabase dashboard again**; this was a real risk closed
   earlier (see `supabase/README.md` + `HISTORY.md` for the pre-CLI history).
-- Cron: GitHub Actions (`.github/workflows/cron.yml`), hourly + daily +
-  weekly jobs hitting `/api/cron/*` endpoints, each gated by
-  `X-Cron-Secret`.
+- Cron: Cloud Scheduler (`scripts/setup-scheduler.sh`), authenticated with a
+  Google-signed OIDC token (`services/cronAuth.js`).
 - Region: `us-west1` (Cloud Run), co-located with Supabase (AWS us-west-2)
   to minimize DB round-trip latency.

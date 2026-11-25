@@ -12,7 +12,7 @@ and `TRD.md`.
 | **Customer** | `app.mypetclub.app` (React PWA) | Phone/email OTP → JWT (httpOnly cookie) |
 | **Professional** | Same PWA, role-gated views | Same, `role = 'professional'` |
 | **Admin** | Same PWA, admin views | Same, `role = 'admin'` (E2E test-OTP bypass explicitly excluded) |
-| **System / Cron** | GitHub Actions → `/api/cron/*` | `X-Cron-Secret` header |
+| **System / Cron** | Cloud Scheduler → `/api/cron/*` (`scripts/setup-scheduler.sh`) | Google-signed OIDC token (`services/cronAuth.js`) |
 | **Twilio** | `/api/whatsapp/inbound` webhook | Twilio request-signature verification |
 
 ## 2. Customer Flow — Signup to Completed Booking

@@ -30,6 +30,7 @@ const { isContactable } = suspendedUserCleanup;
 const { testOtpFor } = require('./services/testIdentities');
 const { secretEquals, normalizeEmail, emailTakenByOther, identityKey } = require('./services/accountSecurity');
 const { requestEmailChange, confirmEmailChange } = require('./services/emailChange');
+const { makeCronAuth } = require('./services/cronAuth');
 
 //  Structured logging 
 const pino = require('pino');
@@ -75,7 +76,7 @@ if (process.env.SENTRY_DSN) {
 }
 
 //  Startup secret guard  refuse to boot without critical secrets 
-const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'CRON_SECRET', 'JWT_EXPIRES_IN'];
+const REQUIRED_ENV = ['JWT_SECRET', 'SUPABASE_URL', 'SUPABASE_SERVICE_KEY', 'JWT_EXPIRES_IN'];
 // SMTP is optional — server boots without it, emails are silently skipped (emailService handles gracefully)
 if (!process.env.ZOHO_SMTP_USER || !process.env.ZOHO_SMTP_PASS)
   logger.warn('[Config] ZOHO_SMTP_USER / ZOHO_SMTP_PASS not set — outgoing emails will be skipped');
@@ -521,10 +522,9 @@ const sendEmail = emailService.sendRawEmail;
 
 //
 //  BOOKING TIMEOUT CRON
-//  Driven by Cloud Scheduler → POST /api/cron/booking-timeout (every 2 min)
+//  Driven by Cloud Scheduler → POST /api/cron/booking-timeout (every 5 min)
 //  The setInterval below is intentionally removed to avoid duplicate execution
-//  on multi-instance Cloud Run deployments. The lazy safety-net call on booking
-//  API routes (processTimedOutAssignments()) is still in place.
+//  on multi-instance Cloud Run deployments. This job is the only trigger.
 //
 
 // 
@@ -747,31 +747,38 @@ const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
 
 // Process timed-out offers (lazy eval  called on booking endpoints)
 const processTimedOutAssignments = async () => {
-  const { data: timedOut } = await supabase
+  const { data: expired, error: readErr } = await supabase
     .from('booking_assignments')
     .select('*, bookings(*)')
     .eq('status', 'offered')
     .lt('response_deadline', new Date().toISOString());
-  if (!timedOut?.length) return;
+  if (readErr) throw new Error(`load timed-out offers: ${readErr.message}`);
+  if (!expired?.length) return 0;
 
   const now = new Date().toISOString();
+  // Claim first: only rows still 'offered' flip to 'timed_out', and only those
+  // are processed. Overlapping runs can't offer the same booking twice, and a
+  // professional who accepted a moment ago keeps the booking.
+  const { data: claimedRows, error: claimErr } = await supabase.from('booking_assignments')
+    .update({ status: 'timed_out', responded_at: now })
+    .in('id', expired.map(a => a.id)).eq('status', 'offered')
+    .select('id');
+  if (claimErr) throw new Error(`claim timed-out offers: ${claimErr.message}`);
+  const claimedIds = new Set((claimedRows || []).map(r => r.id));
+  const timedOut = expired.filter(a => claimedIds.has(a.id));
+  if (!timedOut.length) return 0;
+
   const bookingIds   = timedOut.map(a => a.booking_id);
-  const assignmentIds = timedOut.map(a => a.id);
   const petIds = [...new Set(timedOut.map(a => a.bookings?.pet_id).filter(Boolean))];
 
   // Batch all read queries in parallel
   const [{ data: triedAll }, { data: petsAll }] = await Promise.all([
     supabase.from('booking_assignments').select('booking_id, professional_id')
-      .in('booking_id', bookingIds).in('status', ['rejected', 'timed_out', 'accepted']),
+      .in('booking_id', bookingIds).in('status', ['rejected', 'timed_out', 'accepted', 'cancelled']),
     petIds.length
       ? supabase.from('pets').select('id, name, health_notes').in('id', petIds)
       : Promise.resolve({ data: [] }),
   ]);
-
-  // Mark all timed-out assignments in one update
-  await supabase.from('booking_assignments')
-    .update({ status: 'timed_out', responded_at: now })
-    .in('id', assignmentIds);
 
   // Build lookup maps
   const triedByBooking = {};
@@ -782,11 +789,16 @@ const processTimedOutAssignments = async () => {
   for (const p of petsAll || []) petsById[p.id] = p;
 
   // Process each assignment concurrently
-  await Promise.allSettled(timedOut.map(async (assignment) => {
+  const results = await Promise.allSettled(timedOut.map(async (assignment) => {
     const bk = assignment.bookings;
-    if (!bk || bk.assignment_status === 'confirmed') return;
+    // Only bookings still waiting on this offer: never revive one that was
+    // cancelled, deleted, confirmed or reassigned in the meantime.
+    if (!bk || bk.deleted_at || bk.status !== 'upcoming' || bk.assignment_status !== 'offered'
+        || bk.professional_id !== assignment.professional_id) return;
 
-    const excludeIds = triedByBooking[assignment.booking_id] || [];
+    // Everyone who already had this booking, including the pro who just timed
+    // out — otherwise they are offered it again on every run, forever.
+    const excludeIds = [...new Set([...(triedByBooking[assignment.booking_id] || []), assignment.professional_id])].filter(Boolean);
     const pet = bk.pet_id ? petsById[bk.pet_id] : null;
 
     const nextPro = await findNextPro(bk.city || '', bk.service_type || '', excludeIds, bk.address_lat, bk.address_lng);
@@ -802,6 +814,9 @@ const processTimedOutAssignments = async () => {
         .eq('id', assignment.booking_id);
     }
   }));
+  const failed = results.filter(r => r.status === 'rejected');
+  failed.forEach(f => logger.error(`[Timeout] reassignment failed: ${f.reason?.message}`));
+  return timedOut.length;
 };
 
 // 
@@ -5377,22 +5392,16 @@ async function seedAdminEmail() {
 
 // ─────────────────────────────────────────────────────────────────────────────
 //  CRON ENDPOINTS  — called by GitHub Actions (.github/workflows/cron.yml)
-//  Secured with X-Cron-Secret header (must match CRON_SECRET env var).
+//  Called by Cloud Scheduler (scripts/setup-scheduler.sh). Auth: services/cronAuth.js.
 //  Never expose these without the secret check — they send bulk emails.
 // ─────────────────────────────────────────────────────────────────────────────
-function cronAuth(req, res) {
-  const secret = process.env.CRON_SECRET;
-  if (!secretEquals(req.headers['x-cron-secret'], secret)) {
-    res.status(401).json({ error: 'Unauthorized' });
-    return false;
-  }
-  return true;
-}
+// Cloud Scheduler OIDC identity, or X-Cron-Secret while CRON_SECRET is set.
+const cronAuth = makeCronAuth({ logger });
 
 // POST /api/cron/refresh-leaderboard
 // Refreshes the loyalty_leaderboard materialized view via Supabase RPC.
 app.post('/api/cron/refresh-leaderboard', async (req, res) => {
-  if (!cronAuth(req, res)) return;
+  if (!(await cronAuth(req, res))) return;
   try {
     const { error } = await supabase.rpc('refresh_loyalty_leaderboard');
     // PostgREST schema cache miss — function exists in DB but PostgREST hasn't
@@ -5432,7 +5441,7 @@ const REMINDER_LABELS = { '24h': 'tomorrow', '5h': 'in 5 hours', '2h': 'in 2 hou
 // each window is wide enough that a booking is never missed by cron timing
 // drift, and claimReminder() makes re-matching on a later run a no-op.
 app.post('/api/cron/booking-reminders', async (req, res) => {
-  if (!cronAuth(req, res)) return;
+  if (!(await cronAuth(req, res))) return;
   try {
     const now = Date.now();
     // ±35 min (70 min) bands — comfortably wider than the 60 min cron interval
@@ -5515,7 +5524,7 @@ app.post('/api/cron/booking-reminders', async (req, res) => {
 // Safe to call daily — the window is [now+6d, now+7d] so each record
 // triggers exactly one email.
 app.post('/api/cron/care-reminders', async (req, res) => {
-  if (!cronAuth(req, res)) return;
+  if (!(await cronAuth(req, res))) return;
   try {
     const lo = new Date(Date.now() + 6 * 86_400_000).toISOString().slice(0, 10);
     const hi = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
@@ -5564,7 +5573,7 @@ app.post('/api/cron/care-reminders', async (req, res) => {
 // POST /api/cron/coupon-expiry
 // Warns customers whose loyalty coupons expire within 3 days.
 app.post('/api/cron/coupon-expiry', async (req, res) => {
-  if (!cronAuth(req, res)) return;
+  if (!(await cronAuth(req, res))) return;
   try {
     const lo = new Date(Date.now() + 2.5 * 86_400_000).toISOString();
     const hi = new Date(Date.now() + 3.5 * 86_400_000).toISOString();
@@ -5603,7 +5612,7 @@ app.post('/api/cron/coupon-expiry', async (req, res) => {
 // POST /api/cron/payout-summary
 // Emails admin a weekly summary of provider earnings pending payout.
 app.post('/api/cron/payout-summary', async (req, res) => {
-  if (!cronAuth(req, res)) return;
+  if (!(await cronAuth(req, res))) return;
   const adminEmail = process.env.ADMIN_EMAIL;
   if (!adminEmail) return res.json({ success: false, reason: 'ADMIN_EMAIL not set' });
   try {
@@ -5678,7 +5687,7 @@ app.post('/api/cron/payout-summary', async (req, res) => {
 // Only a human knows which of those it was, so this surfaces the list and
 // lets an admin resolve each one.
 app.post('/api/cron/stale-bookings', async (req, res) => {
-  if (!cronAuth(req, res)) return;
+  if (!(await cronAuth(req, res))) return;
   const graceHours = parseInt(process.env.STALE_BOOKING_GRACE_HOURS) || 24;
   try {
     const cutoff = new Date(Date.now() - graceHours * 3600 * 1000).toISOString();
@@ -5747,12 +5756,12 @@ app.post('/api/cron/stale-bookings', async (req, res) => {
   }
 });
 
-// Cron: booking timeout (every 2 min via Cloud Scheduler)
+// Cron: booking timeout (every 5 min via Cloud Scheduler)
 app.post('/api/cron/booking-timeout', async (req, res) => {
-  if (!cronAuth(req, res)) return;
+  if (!(await cronAuth(req, res))) return;
   try {
-    await processTimedOutAssignments();
-    res.json({ success: true });
+    const reassigned = await processTimedOutAssignments();
+    res.json({ success: true, timed_out: reassigned });
   } catch (e) {
     logger.error('[Cron] booking-timeout failed:', e.message);
     res.status(500).json({ error: e.message });
@@ -5761,7 +5770,7 @@ app.post('/api/cron/booking-timeout', async (req, res) => {
 
 // Cron: auto-delete suspended users (daily via Cloud Scheduler)
 app.post('/api/cron/auto-delete', async (req, res) => {
-  if (!cronAuth(req, res)) return;
+  if (!(await cronAuth(req, res))) return;
   try {
     const result = await autoDeleteSuspendedUsers();
     res.json({ success: true, ...result });
@@ -5773,7 +5782,7 @@ app.post('/api/cron/auto-delete', async (req, res) => {
 
 // Cron: hard-purge soft-deleted records >90 days old (daily via Cloud Scheduler)
 app.post('/api/cron/hard-purge', async (req, res) => {
-  if (!cronAuth(req, res)) return;
+  if (!(await cronAuth(req, res))) return;
   try {
     const counts = await hardPurgeDeletedRecords();
     const total = counts.users + counts.bookings + counts.pets;

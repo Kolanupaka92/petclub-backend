@@ -40,7 +40,7 @@ steps:
       - '--timeout=3600'          # 60 min — required for long-lived SSE tracking connections
       # Never set E2E_* here: this repo is public, so a fixed OTP in production is
       # a public login. The code refuses it too (services/testIdentities.js).
-      - '--update-env-vars=JWT_EXPIRES_IN=15m,REFRESH_TOKEN_TTL_DAYS=30'
+      - '--update-env-vars=JWT_EXPIRES_IN=15m,REFRESH_TOKEN_TTL_DAYS=30,CRON_OIDC_SERVICE_ACCOUNT=petclub-scheduler@project-c736b433-1b47-40c0-a2c.iam.gserviceaccount.com,CRON_OIDC_AUDIENCE=https://api.mypetclub.app'
       - '--quiet'
 
 images:

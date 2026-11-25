@@ -61,6 +61,9 @@ jobs:
       report:    ${{ steps.check.outputs.report }}
 
     steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
       - name: Authenticate to GCP
         uses: google-github-actions/auth@v2
         with:
@@ -139,11 +142,24 @@ jobs:
           fi
           echo "All Cloud Run services healthy."
 
+      # Needs roles/cloudscheduler.viewer on the service account above.
+      - name: Check scheduled jobs are running
+        id: jobs
+        if: always() && steps.check.outcome != 'skipped'
+        run: |
+          set +e
+          PROJECT="${{ secrets.GCP_PROJECT_ID }}"; export PROJECT="${PROJECT:-$PROJECT_ID_FALLBACK}"
+          OUT=$(bash scripts/setup-scheduler.sh check 2>&1); RC=$?
+          echo "$OUT"
+          { echo 'report<<JOBS_EOF'; echo "$OUT" | grep -v '^ok' | sed 's/^/- /'; echo 'JOBS_EOF'; } >> "$GITHUB_OUTPUT"
+          exit $RC
+
       - name: Open or update incident issue
-        if: failure() && steps.check.outputs.unhealthy != '0'
+        if: failure() && (steps.check.outputs.unhealthy != '0' || steps.jobs.outcome == 'failure')
         uses: actions/github-script@v7
         env:
           REPORT: ${{ steps.check.outputs.report }}
+          JOBS_REPORT: ${{ steps.jobs.outputs.report }}
           COUNT:  ${{ steps.check.outputs.unhealthy }}
         with:
           script: |
@@ -153,13 +169,16 @@ jobs:
               '',
               process.env.REPORT || '_(no detail captured)_',
               '',
+              '**Scheduled jobs**',
+              process.env.JOBS_REPORT || '_(all running)_',
+              '',
               'A service can sit broken here while `api.mypetclub.app` stays green,',
               'so the 2-hourly endpoint monitor will not catch it.',
               '',
               '**Usual causes**',
               '- Orphaned service in the wrong region (production is `us-west1`)',
               '- Missing env vars — `server.js` calls `process.exit(1)` when any of',
-              '  `JWT_SECRET`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`, `CRON_SECRET`,',
+              '  `JWT_SECRET`, `SUPABASE_URL`, `SUPABASE_SERVICE_KEY`,',
               '  `JWT_EXPIRES_IN` is unset, which Cloud Run reports as the misleading',
               '  "failed to start and listen on PORT=8080".',
               '',
