@@ -1,3 +1,10 @@
+## [1.42.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.42.2...v1.42.3) (2026-11-25)
+
+
+### Bug Fixes
+
+* **auth:** refuse fixed-OTP test logins in production ([7cb08eb](https://github.com/Kolanupaka92/petclub-backend/commit/7cb08ebd5b41d9a8c73e8fec17c87b8df009ac11))
+
 ## [1.42.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.42.1...v1.42.2) (2026-11-25)
 
 
