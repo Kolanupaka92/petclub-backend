@@ -1,3 +1,10 @@
+## [1.42.2](https://github.com/Kolanupaka92/petclub-backend/compare/v1.42.1...v1.42.2) (2026-11-25)
+
+
+### Bug Fixes
+
+* **users:** stop repeat emails for suspended and deleted users ([67ee004](https://github.com/Kolanupaka92/petclub-backend/commit/67ee0048c3af12ecb12f1a5ce0f59e7a80ecbb57))
+
 ## [1.42.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.42.0...v1.42.1) (2026-09-14)
 
 
