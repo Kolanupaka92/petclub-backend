@@ -103,7 +103,9 @@ cd petclub-app && npm run dev
 |----------|-----------|
 | `NODE_ENV` | Set to `production` in Cloud Run — controls IS_PROD flag |
 | `ALLOW_DEV_TOOLS` | Set in local `.env` to enable dev endpoints and localhost CORS |
-| `E2E_TEST_EMAIL_DOMAIN` | e.g. `mailinator.com` — returns fixed OTP `123456`, **non-production only** |
+| `E2E_FIXED_OTP` | 6-digit OTP for test identities. **Local `.env` only**; ignored in production |
+| `E2E_TEST_EMAIL_DOMAIN` | e.g. `mailinator.com` — extra domain that accepts `E2E_FIXED_OTP`, **non-production only** |
+| `E2E_TEST_PHONES` | `;`-separated E.164 numbers that accept `E2E_FIXED_OTP`, **non-production only** |
 | `ADMIN_SECRET` | One-time secret to bootstrap the first admin user |
 | `HEALTH_SECRET` | Required to see full detail in `GET /api/health` |
 

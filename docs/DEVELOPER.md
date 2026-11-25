@@ -324,7 +324,7 @@ All cron jobs run in-process via `setInterval` in `server.js`.
 | Using `select('*')` on a table then returning the response directly | PII / internal fields leak to client | Always select only needed columns, or run through `stripFinancials` |
 | Adding a new financial column without updating `stripFinancials` | SPs see customer pricing | Update `stripFinancials` for every new financial field |
 | Returning customer phone to professional before booking is accepted | RBAC violation, enables off-platform contact | See `offerBookingToPro` — phone only shared post-acceptance |
-| Setting `E2E_TEST_EMAIL_DOMAIN` in production Cloud Run | Anyone can login with `123456` OTP | Guarded by `IS_PROD` but still — never set it in prod |
+| Setting any `E2E_*` variable in production Cloud Run or `cloudbuild.yaml` | A fixed OTP in a public repo is a public login | Refused in code by `services/testIdentities.js` — still, never set it in prod |
 | Using `innerHTML` with any server-supplied value | XSS | Use `textContent` or DOM API — see `TrackingMapMapbox.jsx` for the pattern |
 | Hard-coding UUIDs, phone numbers, or emails in source | Real data in public repo | Use env vars for all test credentials |
 | Calling admin endpoints without `adminOnly` middleware | Any logged-in user can reach admin data | Every `/api/admin/*` route must have `auth, adminOnly` |

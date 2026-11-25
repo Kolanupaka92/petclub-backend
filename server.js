@@ -27,6 +27,7 @@ const metrics           = require('./services/metrics');
 const { activeSelect }  = require('./services/db');
 const suspendedUserCleanup = require('./services/suspendedUserCleanup');
 const { isContactable } = suspendedUserCleanup;
+const { testOtpFor } = require('./services/testIdentities');
 
 //  Structured logging 
 const pino = require('pino');
@@ -238,23 +239,8 @@ const otpLimit = rateLimit({
   windowMs: 5 * 60 * 1000, max: 50,
   standardHeaders: true, legacyHeaders: false,
   store: new PgRateLimitStore('rl:otp'),
-  // Skip rate limiting for E2E test emails (e.g. @mailinator.com) so the
-  // bypass handler in the route can return the fixed OTP without being blocked.
-  skip: (req) => {
-    const email = (req.body?.email || '').toLowerCase();
-    // Prod-safe test identities: fixed-OTP addresses/numbers never send real
-    // email/SMS, so exempting them from the send limit costs nothing.
-    if (process.env.E2E_FIXED_OTP) {
-      if (email.endsWith('@e2e.mypetclub.app')) return true;
-      const e2ePhones = (process.env.E2E_TEST_PHONES || '').split(/[;,]/).map(s => s.trim()).filter(Boolean);
-      if (req.body?.phone && e2ePhones.includes(req.body.phone)) return true;
-    }
-    // Mailinator bypass stays non-production only
-    if (IS_PROD) return false;
-    const testDomain = process.env.E2E_TEST_EMAIL_DOMAIN;
-    const [, domain] = email.split('@');
-    return !!(testDomain && domain === testDomain);
-  },
+  // Test identities never send real email/SMS. Always false in production.
+  skip: (req) => !!testOtpFor(req.body, { isProd: IS_PROD }),
   handler: (req, res) => res.status(429).json({ error: 'Too many OTP requests. Please wait a few minutes and try again.' }),
 });
 // Per-user booking rate limit — max 5 bookings per 10 min per user (prevents notification/DB abuse)
@@ -897,39 +883,20 @@ app.post('/api/auth/send-email-otp', otpLimit, validate(schemas.sendEmailOtp), a
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
       return res.status(400).json({ error: 'Valid email address required' });
 
-    //  E2E test bypass
-    // Two tiers:
-    //  1. PROD-SAFE (works everywhere): when E2E_FIXED_OTP is set, addresses
-    //     @e2e.mypetclub.app get that fixed OTP without any email being sent.
-    //     The subdomain has no MX record and belongs to us, so nobody can
-    //     receive real mail there. Admin accounts are explicitly excluded so
-    //     a leaked fixed OTP can never unlock privileged access.
-    //  2. NON-PROD ONLY: E2E_TEST_EMAIL_DOMAIN (e.g. "mailinator.com") for
-    //     the Playwright CI suite — unchanged behaviour.
-    const fixedOtpEnv = process.env.E2E_FIXED_OTP;
-    if (fixedOtpEnv && email.toLowerCase().endsWith('@e2e.mypetclub.app')) {
+    //  E2E test bypass — non-production only (see services/testIdentities.js)
+    const testOtp = testOtpFor({ email }, { isProd: IS_PROD });
+    if (testOtp) {
       const { data: existing } = await supabase.from('users').select('role').eq('email', email.toLowerCase()).single();
       if (existing?.role === 'admin') {
-        logger.warn(`[EmailOTP][E2E] Refused fixed OTP for admin account ${email}`);
+        logger.warn('[EmailOTP][E2E] Refused fixed OTP for an admin account');
         return res.status(403).json({ error: 'Test OTP is not available for admin accounts.' });
       }
       const expires = new Date(Date.now() + 10 * 60000).toISOString();
       await supabase.from('otp_tokens').upsert(
-        { phone: email.toLowerCase(), otp: hashOTP(fixedOtpEnv), expires_at: expires, verified: false },
+        { phone: email.toLowerCase(), otp: hashOTP(testOtp), expires_at: expires, verified: false },
         { onConflict: 'phone' }
       );
-      logger.info(`[EmailOTP][E2E] Fixed-OTP test identity ${email}`);
-      return res.json({ success: true, message: `OTP sent to ${email}` });
-    }
-    const testDomain = process.env.E2E_TEST_EMAIL_DOMAIN;
-    if (!IS_PROD && testDomain && email.toLowerCase().endsWith(`@${testDomain}`)) {
-      const fixedOtp = '123456';
-      const expires = new Date(Date.now() + 10 * 60000).toISOString();
-      await supabase.from('otp_tokens').upsert(
-        { phone: email.toLowerCase(), otp: hashOTP(fixedOtp), expires_at: expires, verified: false },
-        { onConflict: 'phone' }
-      );
-      logger.info(`[EmailOTP][E2E] Test bypass for ${email}  OTP: ${fixedOtp}`);
+      logger.info('[EmailOTP][E2E] Fixed-OTP test identity');
       return res.json({ success: true, message: `OTP sent to ${email}` });
     }
     //
@@ -1093,18 +1060,13 @@ app.post('/api/auth/refresh', async (req, res) => {
 // 
 app.post('/api/auth/send-phone-otp', otpLimit, validate(schemas.sendPhoneOtp), async (req, res) => {
   try {
-    const { phone, email: fallbackEmail } = req.body;
+    const { phone } = req.body;
     if (!phone || !/^\+[1-9]\d{6,14}$/.test(phone))
       return res.status(400).json({ error: 'Valid E.164 phone number required (e.g. +14155552671)' });
 
-    //  E2E test bypass (prod-safe)
-    // Exact-match whitelist of fake test numbers (E2E_TEST_PHONES, ';'-separated
-    // E.164). We use +1999… numbers — 999 is not a valid NANP area code, so
-    // these can never be real subscribers. Fixed OTP from E2E_FIXED_OTP, no SMS
-    // sent, admin accounts excluded. Runs before the Twilio-configured check so
-    // it also works in environments without Twilio.
-    const e2ePhones = (process.env.E2E_TEST_PHONES || '').split(/[;,]/).map(s => s.trim()).filter(Boolean);
-    if (process.env.E2E_FIXED_OTP && e2ePhones.includes(phone)) {
+    //  E2E test bypass — non-production only (see services/testIdentities.js)
+    const testOtp = testOtpFor({ phone }, { isProd: IS_PROD });
+    if (testOtp) {
       const { data: existing } = await supabase.from('users').select('role').eq('phone', phone).single();
       if (existing?.role === 'admin') {
         logger.warn(`[PhoneOTP][E2E] Refused fixed OTP for admin account ${maskPhone(phone)}`);
@@ -1112,7 +1074,7 @@ app.post('/api/auth/send-phone-otp', otpLimit, validate(schemas.sendPhoneOtp), a
       }
       const expires = new Date(Date.now() + 10 * 60000).toISOString();
       await supabase.from('otp_tokens').upsert(
-        { phone, otp: hashOTP(process.env.E2E_FIXED_OTP), expires_at: expires, verified: false },
+        { phone, otp: hashOTP(testOtp), expires_at: expires, verified: false },
         { onConflict: 'phone' }
       );
       logger.info(`[PhoneOTP][E2E] Fixed-OTP test number ${maskPhone(phone)}`);
@@ -1138,12 +1100,10 @@ app.post('/api/auth/send-phone-otp', otpLimit, validate(schemas.sendPhoneOtp), a
     } catch (smsErr) {
       logger.warn(`[PhoneOTP] SMS failed (${smsErr.code || smsErr.message})  trying email fallback`);
 
-      // Resolve email: use request-provided email, or look up from existing user record
-      let deliveryEmail = fallbackEmail;
-      if (!deliveryEmail) {
-        const { data: existing } = await supabase.from('users').select('email').eq('phone', phone).maybeSingle();
-        deliveryEmail = existing?.email || null;
-      }
+      // Only ever fall back to the email already on file for this phone number.
+      // A caller-supplied address would let anyone receive someone else's OTP.
+      const { data: existing } = await supabase.from('users').select('email').eq('phone', phone).maybeSingle();
+      const deliveryEmail = existing?.email || null;
 
       if (deliveryEmail && /^[^\s@]+@[^\s@]+\.[a-zA-Z]{2,}$/.test(deliveryEmail)) {
         try {
