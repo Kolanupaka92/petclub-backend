@@ -1,3 +1,10 @@
+## [1.42.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.42.3...v1.42.4) (2026-11-25)
+
+
+### Bug Fixes
+
+* **security:** harden accounts, sign-in codes, bookings and database access ([016c896](https://github.com/Kolanupaka92/petclub-backend/commit/016c896b993880baba21a18e354cdd6be5ff91f4))
+
 ## [1.42.3](https://github.com/Kolanupaka92/petclub-backend/compare/v1.42.2...v1.42.3) (2026-11-25)
 
 
