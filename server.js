@@ -28,6 +28,7 @@ const { activeSelect }  = require('./services/db');
 const suspendedUserCleanup = require('./services/suspendedUserCleanup');
 const { isContactable } = suspendedUserCleanup;
 const { testOtpFor } = require('./services/testIdentities');
+const { secretEquals, normalizeEmail, emailTakenByOther, identityKey } = require('./services/accountSecurity');
 
 //  Structured logging 
 const pino = require('pino');
@@ -233,10 +234,8 @@ app.use(rateLimit({
   handler: (req, res) => res.status(429).json({ error: 'Too many requests. Please slow down.' }),
 }));
 // OTP send rate limit  max 10 sends per 5 minutes per IP
-// TEMP: raised from 10→50 for active manual QA testing across multiple roles
-// from one IP (2026-07-02). Revert to 10 once testing wraps.
 const otpLimit = rateLimit({
-  windowMs: 5 * 60 * 1000, max: 50,
+  windowMs: 5 * 60 * 1000, max: 10,
   standardHeaders: true, legacyHeaders: false,
   store: new PgRateLimitStore('rl:otp'),
   // Test identities never send real email/SMS. Always false in production.
@@ -265,6 +264,23 @@ const authLimit = rateLimit({
   standardHeaders: true, legacyHeaders: false,
   store: new PgRateLimitStore('rl:auth'),
   handler: (req, res) => res.status(429).json({ error: 'Too many login attempts. Please wait 15 minutes.' }),
+});
+// Per-identity limits. The limits above are per IP, so on their own an attacker
+// with many IPs could guess one person's 6-digit OTP or flood their phone.
+const otpIdentityLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 6,
+  standardHeaders: true, legacyHeaders: false,
+  store: new PgRateLimitStore('rl:otp-id'),
+  keyGenerator: identityKey,
+  skip: (req) => !!testOtpFor(req.body, { isProd: IS_PROD }),
+  handler: (req, res) => res.status(429).json({ error: 'Too many codes requested for this account. Please wait 15 minutes.' }),
+});
+const verifyIdentityLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 8,
+  standardHeaders: true, legacyHeaders: false,
+  store: new PgRateLimitStore('rl:verify-id'),
+  keyGenerator: identityKey,
+  handler: (req, res) => res.status(429).json({ error: 'Too many attempts for this account. Please wait 15 minutes.' }),
 });
 // WhatsApp AI concierge rate limit — max 20 messages per hour per WhatsApp number.
 // This is a Twilio webhook: every request arrives from Twilio's own IPs, not
@@ -877,7 +893,7 @@ app.post('/api/auth/firebase-verify', authLimit, validate(schemas.firebaseVerify
 // 
 //  AUTH: EMAIL OTP  send (for users without phone access)
 // 
-app.post('/api/auth/send-email-otp', otpLimit, validate(schemas.sendEmailOtp), async (req, res) => {
+app.post('/api/auth/send-email-otp', otpLimit, validate(schemas.sendEmailOtp), otpIdentityLimit, async (req, res) => {
   try {
     const { email } = req.body;
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))
@@ -922,7 +938,7 @@ app.post('/api/auth/send-email-otp', otpLimit, validate(schemas.sendEmailOtp), a
 // 
 //  AUTH: EMAIL OTP  verify ' issue JWT
 // 
-app.post('/api/auth/verify-email-otp', authLimit, validate(schemas.verifyEmailOtp), async (req, res) => {
+app.post('/api/auth/verify-email-otp', authLimit, validate(schemas.verifyEmailOtp), verifyIdentityLimit, async (req, res) => {
   try {
     const { email, otp } = req.body;
     if (!email || !otp) return res.status(400).json({ error: 'Email and OTP required' });
@@ -1058,7 +1074,7 @@ app.post('/api/auth/refresh', async (req, res) => {
 });
 
 // 
-app.post('/api/auth/send-phone-otp', otpLimit, validate(schemas.sendPhoneOtp), async (req, res) => {
+app.post('/api/auth/send-phone-otp', otpLimit, validate(schemas.sendPhoneOtp), otpIdentityLimit, async (req, res) => {
   try {
     const { phone } = req.body;
     if (!phone || !/^\+[1-9]\d{6,14}$/.test(phone))
@@ -1142,7 +1158,7 @@ app.post('/api/auth/send-phone-otp', otpLimit, validate(schemas.sendPhoneOtp), a
   }
 });
 
-app.post('/api/auth/verify-phone-otp', authLimit, validate(schemas.verifyPhoneOtp), async (req, res) => {
+app.post('/api/auth/verify-phone-otp', authLimit, validate(schemas.verifyPhoneOtp), verifyIdentityLimit, async (req, res) => {
   try {
     const { phone, otp } = req.body;
     if (!phone || !otp) return res.status(400).json({ error: 'Phone and OTP required' });
@@ -1210,7 +1226,7 @@ app.post('/api/users/set-role', auth, validate(schemas.setRole), async (req, res
     const { role, subRole } = req.body;
     // Sanitize all text inputs to strip HTML and limit length
     const name    = sanitize(req.body.name);
-    const email   = sanitize(req.body.email);
+    const email   = normalizeEmail(sanitize(req.body.email)) || undefined;
     const city    = sanitize(req.body.city);
     const address = sanitize(req.body.address);
     const pet     = req.body.pet ? { ...req.body.pet, name: sanitize(req.body.pet.name), breed: sanitize(req.body.pet.breed) } : undefined;
@@ -1222,13 +1238,22 @@ app.post('/api/users/set-role', auth, validate(schemas.setRole), async (req, res
     const addressState      = sanitize(req.body.addressState)      || null;
     const validRoles = ['customer', 'professional'];
     if (!validRoles.includes(role)) return res.status(400).json({ error: 'Role must be customer or professional' });
+    if (email && await emailTakenByOther(supabase, email, req.user.id))
+      return res.status(409).json({ error: 'That email is already used by another account.' });
+
+    // Current state from the DB, never the token: decides referral eligibility below.
+    const { data: current, error: currentErr } = await supabase.from('users').select('role, referred_by_code').eq('id', req.user.id).single();
+    if (currentErr || !current) return res.status(404).json({ error: 'Account not found.' });
+    if (current.role === 'admin') return res.status(403).json({ error: 'Admin accounts cannot change role here.' });
+    const firstSignup = current.role === 'pending_role' && !current.referred_by_code;
 
     // Referral / Partner source (optional, customer sign-up only)
     // Sanitize and uppercase so matching is case-insensitive ("PCR-..." codes are uppercase)
     const referralInput = sanitize(req.body.referral_input)?.trim().toUpperCase() || null;
     let referredByCode = null;
     let partnerSource  = null;
-    if (referralInput && role === 'customer') {
+    // First sign-up only: repeat calls must not award the referrer again.
+    if (referralInput && role === 'customer' && firstSignup) {
       // Check if the input matches an existing PETclub referral_code
       const { data: referrer } = await supabase
         .from('users')
@@ -1258,7 +1283,8 @@ app.post('/api/users/set-role', auth, validate(schemas.setRole), async (req, res
       : req.user.phone?.startsWith('+91') ? 'India' : null;
 
     // Update user record (include referral/partner if resolved)
-    const userUpdate = { role, name: name || null, email: email || null };
+    // Keep the email already on file (verified at email sign-in) when none is sent.
+    const userUpdate = { role, name: name || null, ...(email ? { email } : {}) };
     if (referredByCode) userUpdate.referred_by_code = referredByCode;
     if (partnerSource)  userUpdate.partner_source   = partnerSource;
     await supabase.from('users').update(userUpdate).eq('id', req.user.id);
@@ -1512,7 +1538,7 @@ app.get('/api/users/me', auth, async (req, res) => {
 });
 
 app.put('/api/users/me', auth, validate(schemas.updateMe), async (req, res) => {
-  const name = sanitize(req.body.name), email = sanitize(req.body.email);
+  const name = sanitize(req.body.name), email = normalizeEmail(sanitize(req.body.email)) || undefined;
   const city = sanitize(req.body.city), area = sanitize(req.body.area);
   const address = sanitize(req.body.address), pincode = sanitize(req.body.pincode);
   const country = sanitize(req.body.country);
@@ -1532,6 +1558,10 @@ app.put('/api/users/me', auth, validate(schemas.updateMe), async (req, res) => {
       return res.status(400).json({ error: `"${domain}" looks like a typo  did you mean .com?` });
   }
 
+  try {
+    if (email && await emailTakenByOther(supabase, email, req.user.id))
+      return res.status(409).json({ error: 'That email is already used by another account.' });
+  } catch (err) { return dbError(res, err, 'Failed to update profile.'); }
   await supabase.from('users').update({ name, email }).eq('id', req.user.id);
   // Only write address fields to customer_profiles for customers (not professionals)
   if (req.user.role === 'customer') {
@@ -1883,13 +1913,14 @@ app.post('/api/admin/loyalty/award', auth, adminOnly, validate(schemas.awardLoya
   const result = await loyalty.awardPoints(supabase, userId, points, type, description || 'Admin award');
   if (!result.success) return res.status(500).json({ error: result.error });
   // Audit every manual credit change  financial operations must be traceable
-  await supabase.from('admin_logs').insert({
+  const { error: auditErr } = await supabase.from('admin_logs').insert({
     admin_id:    req.user.id,
     action:      points > 0 ? 'award_loyalty' : 'deduct_loyalty',
     target_id:   userId,
     target_type: 'user',
     notes:       `${points > 0 ? '+' : ''}${points} pts  ${description || 'Admin award'} (new balance: ${result.newBalance})`,
-  }).catch(e => logger.error('[AdminLoyalty] audit log failed:', e.message));
+  });
+  if (auditErr) logger.error(`[AdminLoyalty] audit log failed: ${auditErr.message}`);
   res.json({ success: true, newBalance: result.newBalance, awarded: result.awarded });
 });
 
@@ -2155,7 +2186,11 @@ app.put('/api/professionals/me', auth, validate(schemas.updateProfessional), asy
   if (req.user.role !== 'professional' && req.user.role !== 'admin') {
     return res.status(403).json({ error: 'Access restricted to professionals.' });
   }
-  const name = sanitize(req.body.name), email = sanitize(req.body.email);
+  const name = sanitize(req.body.name), email = normalizeEmail(sanitize(req.body.email)) || undefined;
+  try {
+    if (email && await emailTakenByOther(supabase, email, req.user.id))
+      return res.status(409).json({ error: 'That email is already used by another account.' });
+  } catch (err) { return dbError(res, err, 'Failed to update profile.'); }
   const city = sanitize(req.body.city), area = sanitize(req.body.area);
   const address = sanitize(req.body.address), bio = sanitize(req.body.bio);
   const experience = sanitize(req.body.experience), service_areas = sanitize(req.body.service_areas);
@@ -2786,6 +2821,11 @@ app.put('/api/bookings/:id/status', auth, validate(schemas.updateBookingStatus),
   if (!VALID_BOOKING_STATUSES.includes(newStatus))
     return res.status(400).json({ error: `Invalid status. Allowed: ${VALID_BOOKING_STATUSES.join(', ')}` });
 
+  // Customers may only cancel. Starting or completing a service is the
+  // professional's call: it drives payouts, records and loyalty credits.
+  if (req.user.role === 'customer' && !['cancelled', 'no_show'].includes(newStatus))
+    return res.status(403).json({ error: 'Only the professional can update the service status.' });
+
   // State machine: enforce valid transitions  prevents rollback fraud
   const ALLOWED_TRANSITIONS = {
     upcoming:    ['in_progress', 'cancelled', 'no_show'],
@@ -3333,13 +3373,8 @@ app.put('/api/bookings/:id/assign', auth, adminOnly, validate(schemas.assignBook
 // Web: EventSource sends httpOnly cookie automatically (withCredentials:true).
 // Mobile: pass JWT in Authorization: Bearer <token> header.
 // NOTE: query-string token was removed — tokens in URLs appear in server logs.
-app.get('/api/bookings/:id/track', async (req, res) => {
-  const token = req.cookies?.[AUTH_COOKIE] || req.headers.authorization?.split(' ')[1];
-  if (!token) return res.status(401).json({ error: 'token required' });
-
-  let userId;
-  try { userId = jwt.verify(token, JWT_SECRET).id; }
-  catch { return res.status(401).json({ error: 'Invalid token' }); }
+app.get('/api/bookings/:id/track', auth, async (req, res) => {
+  const userId = req.user.id;
 
   const bookingId = req.params.id;
 
@@ -4342,7 +4377,7 @@ async function finalisePayment({ bookingId, userId, razorpay_order_id, razorpay_
     status:             'success',
     amount:             confirmedAmount,
     currency:           currency || bk.currency || 'INR',
-  }).catch(() => {}); // table may not exist yet  non-fatal
+  }).then(({ error }) => { if (error) logger.error(`[Payment] payment_logs insert failed: ${error.message}`); });
 
   //  Award loyalty credits (non-blocking  never delay the payment response) 
   const loyaltyUserId = userId || bk.customer_id;
@@ -4535,7 +4570,7 @@ app.post('/api/payments/webhook',
         razorpay_order_id: orderId   || null,
         razorpay_payment_id: payment?.id || null,
         status:           'failed',
-      }).catch(() => {});
+      }).then(({ error }) => { if (error) logger.error(`[Stripe] payment_logs insert failed: ${error.message}`); });
     }
 
     // Always return 200 to acknowledge receipt  Razorpay will retry on non-200
@@ -4831,15 +4866,14 @@ app.use('/api', createGeoRouter({ supabase, logger, auth, supportEmail: SUPPORT_
 //  notification delivery). Durable source of truth is Cloud Logging log-based
 //  metrics; this endpoint is a quick at-a-glance snapshot. See docs/OBSERVABILITY.md.
 app.get('/api/metrics', (req, res) => {
-  if (!process.env.HEALTH_SECRET || req.headers['x-health-secret'] !== process.env.HEALTH_SECRET) {
+  if (!secretEquals(req.headers['x-health-secret'], process.env.HEALTH_SECRET)) {
     return res.status(403).json({ error: 'Forbidden' });
   }
   return res.json(metrics.snapshot());
 });
 
 app.get('/api/health', async (req, res) => {
-  const authenticated = process.env.HEALTH_SECRET
-    && req.headers['x-health-secret'] === process.env.HEALTH_SECRET;
+  const authenticated = secretEquals(req.headers['x-health-secret'], process.env.HEALTH_SECRET);
 
   // Always ping Supabase with a lightweight query  keeps the free-tier project
   // from auto-pausing (Supabase pauses after 7 days of no DB activity).
@@ -5294,7 +5328,7 @@ async function seedAdminEmail() {
 // ─────────────────────────────────────────────────────────────────────────────
 function cronAuth(req, res) {
   const secret = process.env.CRON_SECRET;
-  if (!secret || req.headers['x-cron-secret'] !== secret) {
+  if (!secretEquals(req.headers['x-cron-secret'], secret)) {
     res.status(401).json({ error: 'Unauthorized' });
     return false;
   }

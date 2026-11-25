@@ -29,6 +29,8 @@ function makeFakeSupabase(tables = {}, failing = {}) {
       gt:  (c, v) => { filters.push(r => r[c] > v); return b; },
       gte: (c, v) => { filters.push(r => r[c] >= v); return b; },
       lt:  (c, v) => { filters.push(r => r[c] < v); return b; },
+      ilike: (c, v) => { const t = v.replace(/\\(.)/g, '$1').toLowerCase(); filters.push(r => String(r[c] || '').toLowerCase() === t); return b; },
+      upsert: (row) => { (tables[name] = tables[name] || []).push(row); return b; },
       order: () => b, limit: () => b, range: () => b,
       single: () => { single = true; return b; },
       maybeSingle: () => { single = true; return b; },
