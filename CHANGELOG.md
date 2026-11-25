@@ -1,3 +1,10 @@
+# [1.44.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.43.0...v1.44.0) (2026-11-25)
+
+
+### Features
+
+* **cron:** run scheduled jobs from Cloud Scheduler with Google-signed auth ([054f3e9](https://github.com/Kolanupaka92/petclub-backend/commit/054f3e9d64eca72ab8bdd5c4bfa1115f020721cf))
+
 # [1.43.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.42.4...v1.43.0) (2026-11-25)
 
 
