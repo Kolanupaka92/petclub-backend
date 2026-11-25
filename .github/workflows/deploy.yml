@@ -80,6 +80,15 @@ jobs:
       - name: Syntax check
         run: find . -name "*.js" -not -path "./node_modules/*" | xargs node --check
 
+      # ── 5b. Tests — a failing test, or code using a column the database
+      #        doesn't have (tests/schema.test.js), must never deploy ──
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Run tests
+        run: npm ci && npx jest --forceExit --silent
+
       # ── 6. Build Docker image ────────────────────────────────
       - name: Build image
         run: |

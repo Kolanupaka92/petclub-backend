@@ -1,4 +1,10 @@
 steps:
+  # Tests first: nothing is built or deployed when they fail.
+  - name: 'node:22'
+    entrypoint: bash
+    env: ['CI=true']
+    args: ['-c', 'npm ci && npx jest --forceExit --silent']
+
   # Build the Docker image
   # Region: us-west1 (GCP Oregon) — co-located with Supabase (AWS us-west-2 / Oregon).
   # This minimises DB round-trip latency (~5ms intra-region vs ~60ms cross-coast).

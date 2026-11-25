@@ -8,6 +8,7 @@ module.exports = {
   verbose:         true,
   // Inject required env vars before any test module loads
   setupFiles:      ['./tests/helpers/setupEnv.js'],
+  setupFilesAfterEnv: ['./tests/helpers/retry.js'],
   // Don't transform node_modules
   transformIgnorePatterns: ['/node_modules/'],
   // Coverage (run with --coverage flag)
