@@ -1,3 +1,4 @@
+# Author: Sai Kolanupaka
 # ══════════════════════════════════════════════════════════════════
 #  PETclub — Migrate sensitive env vars → Google Secret Manager
 #  Run once from PowerShell after setting the VALUES below.

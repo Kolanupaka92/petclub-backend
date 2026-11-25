@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 'use strict';
 // Regression tests for the 2026-11 security review.
 jest.mock('dotenv', () => ({ config: jest.fn() }));

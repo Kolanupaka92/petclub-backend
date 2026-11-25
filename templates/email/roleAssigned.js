@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 'use strict';
 /**
  * Role-assignment email — sent to a professional when their sub-role

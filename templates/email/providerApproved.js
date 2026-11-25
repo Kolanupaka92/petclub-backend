@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 'use strict';
 /**
  * Provider verification result email — handles both approval and rejection.

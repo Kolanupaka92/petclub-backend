@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 'use strict';
 const { activeSelect, SOFT_DELETE_TABLES } = require('../services/db');
 

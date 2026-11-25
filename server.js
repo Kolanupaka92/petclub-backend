@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 // 
 //  PETclub India  Complete Backend API v1.0
 //  Stack: Node.js + Express + Firebase Auth + Nodemailer (Zoho SMTP) + Supabase + JWT

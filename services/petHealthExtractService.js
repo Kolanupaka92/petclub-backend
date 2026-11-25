@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 'use strict';
 /**
  * Pet health document extraction — turns a photo of a paper vaccination

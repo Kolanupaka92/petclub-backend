@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 require('dotenv').config();
 const { Client } = require('pg');
 const fs = require('fs');

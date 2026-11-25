@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 'use strict';
 // Fixed-OTP test logins must be impossible in production.
 jest.mock('dotenv', () => ({ config: jest.fn() }));

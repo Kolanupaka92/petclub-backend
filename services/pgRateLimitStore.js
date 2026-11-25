@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 'use strict';
 /**
  * PETclub — Supabase REST-backed express-rate-limit store

@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 /** @type {import('jest').Config} */
 module.exports = {
   testEnvironment: 'node',

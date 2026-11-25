@@ -1,4 +1,5 @@
-﻿const { Client } = require('pg');
+﻿// Author: Sai Kolanupaka
+const { Client } = require('pg');
 const ref = 'zjrgbsrsthtmxkislgcm';
 const passwords = ['Petclub@2026','Petclub2026','petclub@2026'];
 const regions = ['ap-south-1','us-east-1','us-west-2','ap-southeast-1'];

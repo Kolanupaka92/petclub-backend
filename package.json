@@ -1,6 +1,7 @@
 {
   "name": "petclub-backend",
   "version": "1.44.0",
+  "author": "Sai Kolanupaka",
   "description": "PETclub India Backend API",
   "main": "server.js",
   "scripts": {

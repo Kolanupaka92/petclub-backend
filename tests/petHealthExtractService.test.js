@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 'use strict';
 /**
  * petHealthExtractService: without ANTHROPIC_API_KEY the module must fail

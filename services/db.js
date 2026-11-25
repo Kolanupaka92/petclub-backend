@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 // ══════════════════════════════════════════════════════════════════
 //  DB helpers — soft-delete-safe reads
 //

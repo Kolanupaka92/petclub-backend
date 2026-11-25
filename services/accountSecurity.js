@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 'use strict';
 const crypto = require('crypto');
 

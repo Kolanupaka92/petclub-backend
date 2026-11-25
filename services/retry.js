@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 // ══════════════════════════════════════════════════════════════════
 //  Retry helper — exponential backoff for transient network failures
 //

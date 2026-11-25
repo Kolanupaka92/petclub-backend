@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 'use strict';
 /**
  * Customer welcome email — sent after a new user completes their profile (set-role → customer).

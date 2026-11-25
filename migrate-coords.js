@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 /**
  * One-time migration: add GPS coordinate columns
  * Run: node migrate-coords.js

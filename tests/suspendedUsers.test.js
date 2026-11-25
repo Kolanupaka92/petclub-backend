@@ -1,3 +1,4 @@
+// Author: Sai Kolanupaka
 'use strict';
 // Suspended / deleted users: auto-delete job, admin actions, outgoing email.
 jest.mock('dotenv', () => ({ config: jest.fn() }));

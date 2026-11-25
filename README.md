@@ -178,3 +178,7 @@ petclub-backend/
 6. **Cron jobs run in-process** — no external queue. They run on a setInterval inside `server.js`. Cloud Run keeps one instance warm; jobs may fire multiple times if Cloud Run scales up.
 
 7. **JWT contains only `{ id, role }`** — no phone number or PII. The `auth` middleware attaches `req.user = { id, role }` to every request.
+
+## Author
+
+Sai Kolanupaka
