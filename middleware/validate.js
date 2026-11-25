@@ -46,6 +46,15 @@ const verifyPhoneOtp = z.object({
 });
 
 // ── User schemas ───────────────────────────────────────────────────────────────
+const emailChange = z.object({
+  email: z.string().trim().max(254).pipe(email),
+});
+
+const emailChangeVerify = z.object({
+  email: z.string().trim().max(254).pipe(email),
+  otp:   z.string().regex(/^\d{6}$/, 'Code must be 6 digits'),
+});
+
 const setRole = z.object({
   role:    z.enum(['customer', 'professional'], { errorMap: () => ({ message: 'Role must be customer or professional' }) }),
   subRole: z.string().max(50).optional(),
@@ -303,6 +312,8 @@ module.exports = {
     verifyPhoneOtp,
     // Users
     setRole,
+    emailChange,
+    emailChangeVerify,
     updateMe,
     fcmToken,
     // Pets

@@ -94,16 +94,20 @@ if (!SMTP_READY) {
  * @param {Array}    [attachments]
  * @returns {Promise<object|null>}
  */
+// Logs must never hold a sign-in code or a full address.
+const _redact = (s) => String(s).replace(/\d{4,}/g, '******');
+const _maskTo = (to) => String(to).replace(/^(.{2})[^@]*@/, '$1***@');
+
 const _send = async (to, subject, html, { replyTo, attachments = [] } = {}) => {
   if (!SMTP_READY) {
-    console.warn(`[EmailService] Skipped (SMTP not configured) | to="${to}" | subject="${subject}"`);
+    console.warn(`[EmailService] Skipped (SMTP not configured) | to="${_maskTo(to)}" | subject="${_redact(subject)}"`);
     return null;
   }
   const opts = { from: FROM, to, subject, html };
   if (replyTo)           opts.replyTo     = replyTo;
   if (attachments.length) opts.attachments = attachments;
   const result = await transporter.sendMail(opts);
-  console.log(`[EmailService] Sent | replyTo="${replyTo || ''}" | to="${to}" | subject="${subject}" | msgId=${result.messageId}`);
+  console.log(`[EmailService] Sent | replyTo="${replyTo || ''}" | to="${_maskTo(to)}" | subject="${_redact(subject)}" | msgId=${result.messageId}`);
   return result;
 };
 

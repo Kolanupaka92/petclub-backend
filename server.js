@@ -29,6 +29,7 @@ const suspendedUserCleanup = require('./services/suspendedUserCleanup');
 const { isContactable } = suspendedUserCleanup;
 const { testOtpFor } = require('./services/testIdentities');
 const { secretEquals, normalizeEmail, emailTakenByOther, identityKey } = require('./services/accountSecurity');
+const { requestEmailChange, confirmEmailChange } = require('./services/emailChange');
 
 //  Structured logging 
 const pino = require('pino');
@@ -281,6 +282,21 @@ const verifyIdentityLimit = rateLimit({
   store: new PgRateLimitStore('rl:verify-id'),
   keyGenerator: identityKey,
   handler: (req, res) => res.status(429).json({ error: 'Too many attempts for this account. Please wait 15 minutes.' }),
+});
+// Verified email change: per user, on top of the per-address limits above.
+const emailChangeLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 5,
+  standardHeaders: true, legacyHeaders: false,
+  store: new PgRateLimitStore('rl:email-change'),
+  keyGenerator: (req) => req.user.id,
+  handler: (req, res) => res.status(429).json({ error: 'Too many codes requested. Please wait 15 minutes.' }),
+});
+const emailVerifyLimit = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 8,
+  standardHeaders: true, legacyHeaders: false,
+  store: new PgRateLimitStore('rl:email-verify'),
+  keyGenerator: (req) => req.user.id,
+  handler: (req, res) => res.status(429).json({ error: 'Too many attempts. Please wait 15 minutes.' }),
 });
 // WhatsApp AI concierge rate limit — max 20 messages per hour per WhatsApp number.
 // This is a Twilio webhook: every request arrives from Twilio's own IPs, not
@@ -927,7 +943,7 @@ app.post('/api/auth/send-email-otp', otpLimit, validate(schemas.sendEmailOtp), o
     );
 
     await emailService.sendOtpEmail(email, { otp, expiresMinutes: 10 });
-    logger.info(`[EmailOTP] Sent to ${email}`);
+    logger.info(`[EmailOTP] Sent to ${maskEmail(email)}`);
     res.json({ success: true, message: `OTP sent to ${email}` });
   } catch (err) {
     logger.error('[EmailOTP] Send error:', err.message);
@@ -1138,7 +1154,7 @@ app.post('/api/auth/send-phone-otp', otpLimit, validate(schemas.sendPhoneOtp), o
               <p style="color:#94a3b8;font-size:11px;text-align:center">PETclub  ${new Date().toLocaleString('en-IN')}</p>
             </div>`
           );
-          logger.info(`[PhoneOTP] Email fallback sent to ${deliveryEmail} for ${maskPhone(phone)}`);
+          logger.info(`[PhoneOTP] Email fallback sent to ${maskEmail(deliveryEmail)} for ${maskPhone(phone)}`);
           return res.json({ success: true, via: 'email', email: deliveryEmail, message: `SMS unavailable  OTP sent to ${deliveryEmail}` });
         } catch (emailErr) {
           logger.error('[PhoneOTP] Email fallback also failed:', emailErr.message);
@@ -1238,19 +1254,18 @@ app.post('/api/users/set-role', auth, validate(schemas.setRole), async (req, res
     const addressState      = sanitize(req.body.addressState)      || null;
     const validRoles = ['customer', 'professional'];
     if (!validRoles.includes(role)) return res.status(400).json({ error: 'Role must be customer or professional' });
-    if (email && await emailTakenByOther(supabase, email, req.user.id))
-      return res.status(409).json({ error: 'That email is already used by another account.' });
 
     // Current state from the DB, never the token: decides referral eligibility below.
-    const { data: current, error: currentErr } = await supabase.from('users').select('role, referred_by_code').eq('id', req.user.id).single();
+    const { data: current, error: currentErr } = await supabase.from('users').select('role, email, referred_by_code').eq('id', req.user.id).single();
     if (currentErr || !current) return res.status(404).json({ error: 'Account not found.' });
     if (current.role === 'admin') return res.status(403).json({ error: 'Admin accounts cannot change role here.' });
-    const firstSignup = current.role === 'pending_role' && !current.referred_by_code;
+    const firstSignup = current.role === 'pending_role';
 
     // Referral / Partner source (optional, customer sign-up only)
     // Sanitize and uppercase so matching is case-insensitive ("PCR-..." codes are uppercase)
     const referralInput = sanitize(req.body.referral_input)?.trim().toUpperCase() || null;
     let referredByCode = null;
+    let referrerId     = null;
     let partnerSource  = null;
     // First sign-up only: repeat calls must not award the referrer again.
     if (referralInput && role === 'customer' && firstSignup) {
@@ -1264,13 +1279,7 @@ app.post('/api/users/set-role', auth, validate(schemas.setRole), async (req, res
       if (referrer) {
         // It's a valid customer referral  record it and credit the referrer
         referredByCode = referralInput;
-        // Award referral bonus to the referrer (non-blocking; fail silently)
-        loyalty.awardPoints(
-          supabase, referrer.id, loyalty.REFERRAL_BONUS,
-          'referral_bonus',
-          `Referral bonus  friend signed up (user ${req.user.id})`,
-          null
-        ).catch(e => logger.error('[Referral] award bonus error:', e.message));
+        referrerId = referrer.id;   // awarded below, once this sign-up is claimed
       } else {
         // Not a known referral code  treat as a free-text partner/clinic name
         // Store original casing from the user's input (before toUpperCase())
@@ -1283,11 +1292,27 @@ app.post('/api/users/set-role', auth, validate(schemas.setRole), async (req, res
       : req.user.phone?.startsWith('+91') ? 'India' : null;
 
     // Update user record (include referral/partner if resolved)
-    // Keep the email already on file (verified at email sign-in) when none is sent.
-    const userUpdate = { role, name: name || null, ...(email ? { email } : {}) };
+    // Email is never written here: a new address must be verified first
+    // (services/emailChange.js). Email sign-ups already have theirs on file.
+    const verifiedEmail = normalizeEmail(current.email);
+    const needsEmailCheck = !!email && email !== verifiedEmail;
+    const userUpdate = { role, name: name || null };
     if (referredByCode) userUpdate.referred_by_code = referredByCode;
     if (partnerSource)  userUpdate.partner_source   = partnerSource;
-    await supabase.from('users').update(userUpdate).eq('id', req.user.id);
+    let claimQ = supabase.from('users').update(userUpdate).eq('id', req.user.id);
+    // Claim the sign-up atomically so parallel calls can't each earn the bonus.
+    if (firstSignup) claimQ = claimQ.eq('role', 'pending_role');
+    const { data: claimed, error: claimErr } = await claimQ.select('id');
+    if (claimErr) return dbError(res, claimErr, 'Failed to set role.');
+    if (!claimed?.length) return res.status(409).json({ error: 'Sign-up already completed. Please sign in again.' });
+    if (referrerId) {
+      loyalty.awardPoints(
+        supabase, referrerId, loyalty.REFERRAL_BONUS,
+        'referral_bonus',
+        `Referral bonus  friend signed up (user ${req.user.id})`,
+        null
+      ).catch(e => logger.error(`[Referral] award bonus error: ${e.message}`));
+    }
 
     if (role === 'professional') {
       if (!['Groomer', 'Trainer', 'Vet', 'Walker', 'Boarding'].includes(subRole))
@@ -1353,20 +1378,20 @@ app.post('/api/users/set-role', auth, validate(schemas.setRole), async (req, res
 
     // Send welcome email (non-blocking)
     const fn = (name || 'there').split(' ')[0];
-    if (email) {
+    if (verifiedEmail && firstSignup) {
       const isPro = role === 'professional';
       if (isPro) {
         // Professional: role-assignment email (under-review messaging)
-        emailService.sendRoleAssignedEmail(email, { name, role, subRole })
+        emailService.sendRoleAssignedEmail(verifiedEmail, { name, role, subRole })
           .catch(e => logger.error('[Email] Role-assigned email failed:', e.message));
       } else {
         // Customer: welcome email with optional pet card
-        emailService.sendWelcomeEmail(email, { name, pet })
+        emailService.sendWelcomeEmail(verifiedEmail, { name, pet })
           .catch(e => logger.error('[Email] Welcome email failed:', e.message));
       }
     }
 
-    res.json({ success: true, token, refreshToken: isMobile ? refreshRaw : undefined, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
+    res.json({ success: true, email_verification_required: needsEmailCheck, token, refreshToken: isMobile ? refreshRaw : undefined, user: { id: user.id, name: user.name, phone: user.phone, email: user.email, role: user.role, verificationStatus, subRole: role === 'professional' ? subRole : null } });
   } catch (err) {
     logger.error('Set role error:', err.message);
     res.status(500).json({ error: 'Failed to set role.' });
@@ -1558,11 +1583,10 @@ app.put('/api/users/me', auth, validate(schemas.updateMe), async (req, res) => {
       return res.status(400).json({ error: `"${domain}" looks like a typo  did you mean .com?` });
   }
 
-  try {
-    if (email && await emailTakenByOther(supabase, email, req.user.id))
-      return res.status(409).json({ error: 'That email is already used by another account.' });
-  } catch (err) { return dbError(res, err, 'Failed to update profile.'); }
-  await supabase.from('users').update({ name, email }).eq('id', req.user.id);
+  // Email is not written here; a new address must be verified first.
+  const { data: cur } = await supabase.from('users').select('email').eq('id', req.user.id).single();
+  const needsEmailCheck = !!email && email !== normalizeEmail(cur?.email);
+  if (name !== undefined) await supabase.from('users').update({ name }).eq('id', req.user.id);
   // Only write address fields to customer_profiles for customers (not professionals)
   if (req.user.role === 'customer') {
     await supabase.from('customer_profiles').upsert({ user_id: req.user.id, city, area, address, pincode, country }, { onConflict: 'user_id' });
@@ -1577,7 +1601,36 @@ app.put('/api/users/me', auth, validate(schemas.updateMe), async (req, res) => {
       });
     }
   }
-  res.json({ success: true, message: 'Profile updated' });
+  res.json({ success: true, message: 'Profile updated', email_verification_required: needsEmailCheck });
+});
+
+// Change email, step 1: send a code to the new address.
+app.post('/api/users/me/email', auth, validate(schemas.emailChange), emailChangeLimit, otpIdentityLimit, async (req, res) => {
+  try {
+    const domain = normalizeEmail(req.body.email).split('@')[1] || '';
+    if (['con','conm','cmo','ocm','cim','cpm','copm'].includes(domain.split('.').pop()))
+      return res.status(400).json({ error: `"${domain}" looks like a typo. Did you mean .com?` });
+    const { email } = await requestEmailChange({ supabase, sendEmail }, { userId: req.user.id, email: req.body.email });
+    res.json({ success: true, email });
+  } catch (err) {
+    if (err.expose) return res.status(err.status).json({ error: err.message });
+    logger.error(`[EmailChange] request failed: ${err.message}`);
+    res.status(500).json({ error: 'Could not send the code. Please try again.' });
+  }
+});
+
+// Change email, step 2: check the code and switch.
+app.post('/api/users/me/email/verify', auth, validate(schemas.emailChangeVerify), emailVerifyLimit, async (req, res) => {
+  try {
+    const r = await confirmEmailChange({ supabase, sendEmail, logger, supportEmail: SUPPORT_EMAIL }, { userId: req.user.id, email: req.body.email, code: req.body.otp });
+    if (r.first && r.role === 'customer')
+      emailService.sendWelcomeEmail(r.email, { name: r.name }).catch(e => logger.error(`[Email] Welcome email failed: ${e.message}`));
+    res.json({ success: true, email: r.email });
+  } catch (err) {
+    if (err.expose) return res.status(err.status).json({ error: err.message });
+    logger.error(`[EmailChange] verify failed: ${err.message}`);
+    res.status(500).json({ error: 'Could not verify the code. Please try again.' });
+  }
 });
 
 // 
@@ -2187,10 +2240,6 @@ app.put('/api/professionals/me', auth, validate(schemas.updateProfessional), asy
     return res.status(403).json({ error: 'Access restricted to professionals.' });
   }
   const name = sanitize(req.body.name), email = normalizeEmail(sanitize(req.body.email)) || undefined;
-  try {
-    if (email && await emailTakenByOther(supabase, email, req.user.id))
-      return res.status(409).json({ error: 'That email is already used by another account.' });
-  } catch (err) { return dbError(res, err, 'Failed to update profile.'); }
   const city = sanitize(req.body.city), area = sanitize(req.body.area);
   const address = sanitize(req.body.address), bio = sanitize(req.body.bio);
   const experience = sanitize(req.body.experience), service_areas = sanitize(req.body.service_areas);
@@ -2202,8 +2251,10 @@ app.put('/api/professionals/me', auth, validate(schemas.updateProfessional), asy
   // GPS address metadata from AddressPicker  used for 70km radius dispatch
   const addressLat = typeof req.body.address_lat === 'number' ? req.body.address_lat : null;
   const addressLng = typeof req.body.address_lng === 'number' ? req.body.address_lng : null;
-  if (name !== undefined || email !== undefined)
-    await supabase.from('users').update({ name, email }).eq('id', req.user.id);
+  // Email is not written here; a new address must be verified first.
+  const { data: cur } = await supabase.from('users').select('email').eq('id', req.user.id).single();
+  const needsEmailCheck = !!email && email !== normalizeEmail(cur?.email);
+  if (name !== undefined) await supabase.from('users').update({ name }).eq('id', req.user.id);
   const pet_types = req.body.pet_types;
   const updatePayload = {
     city, area, address, bio, experience,
@@ -2263,7 +2314,7 @@ app.put('/api/professionals/me', auth, validate(schemas.updateProfessional), asy
     }
   }
 
-  res.json({ success: true, profile: data });
+  res.json({ email_verification_required: needsEmailCheck, success: true, profile: data });
 });
 
 // Toggle online/offline availability  with admin email notification
@@ -3983,8 +4034,11 @@ const adminEditUser = async (req, res) => {
     const userUpdate = {};
     if (name !== undefined) userUpdate.name = sanitize(name) || null;
     if (email !== undefined) userUpdate.email = email ? email.toLowerCase().trim() : null;
+    if (userUpdate.email && await emailTakenByOther(supabase, userUpdate.email, req.params.id))
+      return res.status(409).json({ error: 'That email is already used by another account.' });
     if (Object.keys(userUpdate).length) {
-      await supabase.from('users').update(userUpdate).eq('id', req.params.id);
+      const { error: updErr } = await supabase.from('users').update(userUpdate).eq('id', req.params.id);
+      if (updErr) return dbError(res, updErr, 'Failed to update user.');
     }
 
     // Update address in the right profile table
@@ -4189,7 +4243,7 @@ app.delete('/api/admin/users/:id', auth, adminOnly, async (req, res) => {
     await supabase.from('users').update({ deleted_at: _delAt }).eq('id', u.id);
 
     await supabase.from('admin_logs').insert({ admin_id: req.user.id, action: 'delete_user', target_id: u.id, target_type: 'user', notes: `Manual delete: ${u.name || u.phone}` });
-    logger.info(`[AdminDelete] User ${u.id} (${u.phone}) deleted by admin ${req.user.id}`);
+    logger.info(`[AdminDelete] User ${u.id} deleted by admin ${req.user.id}`);
 
     // Notify admin email about manual deletion
     const adminEmail = process.env.ADMIN_EMAIL;

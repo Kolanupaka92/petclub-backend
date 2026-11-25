@@ -30,7 +30,15 @@ function makeFakeSupabase(tables = {}, failing = {}) {
       gte: (c, v) => { filters.push(r => r[c] >= v); return b; },
       lt:  (c, v) => { filters.push(r => r[c] < v); return b; },
       ilike: (c, v) => { const t = v.replace(/\\(.)/g, '$1').toLowerCase(); filters.push(r => String(r[c] || '').toLowerCase() === t); return b; },
-      upsert: (row) => { (tables[name] = tables[name] || []).push(row); return b; },
+      upsert: (row, o = {}) => {
+        op = 'upsert';
+        if (failing[`${name}.upsert`]) return b;
+        const rows = (tables[name] = tables[name] || []);
+        const keys = (o.onConflict || '').split(',').map(k => k.trim()).filter(Boolean);
+        const i = keys.length ? rows.findIndex(r => keys.every(k => r[k] === row[k])) : -1;
+        if (i >= 0) Object.assign(rows[i], row); else rows.push({ ...row });
+        return b;
+      },
       order: () => b, limit: () => b, range: () => b,
       single: () => { single = true; return b; },
       maybeSingle: () => { single = true; return b; },
