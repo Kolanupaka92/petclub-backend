@@ -1,3 +1,10 @@
+# [1.43.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.42.4...v1.43.0) (2026-11-25)
+
+
+### Features
+
+* **auth:** require a code to change or add an email ([830f9e4](https://github.com/Kolanupaka92/petclub-backend/commit/830f9e4242c215bb39f1e9a56b11045ca958d3b3))
+
 ## [1.42.4](https://github.com/Kolanupaka92/petclub-backend/compare/v1.42.3...v1.42.4) (2026-11-25)
 
 
