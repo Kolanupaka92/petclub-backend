@@ -1,3 +1,10 @@
+## [1.44.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.44.0...v1.44.1) (2026-11-25)
+
+
+### Bug Fixes
+
+* **saves:** make professional, payout, ID and service-record saves work ([1861878](https://github.com/Kolanupaka92/petclub-backend/commit/1861878560f58de89b4206afaf4ffe3e8b75b087))
+
 # [1.44.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.43.0...v1.44.0) (2026-11-25)
 
 
