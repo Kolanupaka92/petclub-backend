@@ -32,6 +32,7 @@ const { testOtpFor } = require('./services/testIdentities');
 const { secretEquals, normalizeEmail, emailTakenByOther, identityKey } = require('./services/accountSecurity');
 const { requestEmailChange, confirmEmailChange } = require('./services/emailChange');
 const { makeCronAuth } = require('./services/cronAuth');
+const { markNoProsAvailable: markNoPros } = require('./services/noProAlert');
 
 //  Structured logging 
 const pino = require('pino');
@@ -632,6 +633,12 @@ const findNextPro = async (city, subRole, excludeProIds = [], bookingLat = null,
   return null; // every candidate was claimed by a concurrent dispatch in the same instant
 };
 
+// Nobody left to offer this booking to: mark it once and alert admin + customer.
+const markNoProsAvailable = (bookingId, reason) => markNoPros({
+  supabase, logger, sendEmail, sendPush,
+  adminEmail: process.env.ADMIN_EMAIL, appUrl: WEB_APP_URL, supportEmail: SUPPORT_EMAIL,
+}, bookingId, reason);
+
 // Offer a booking to a specific professional + send email/SMS notification
 const offerBookingToPro = async (bookingId, pro, bookingDetails) => {
   const deadline = new Date(Date.now() + RESPONSE_TIMEOUT_MINS * 60 * 1000).toISOString();
@@ -810,9 +817,7 @@ const processTimedOutAssignments = async () => {
         pet_health_notes: pet?.health_notes || null,
       });
     } else {
-      await supabase.from('bookings')
-        .update({ assignment_status: 'no_pros_available', professional_id: null })
-        .eq('id', assignment.booking_id);
+      await markNoProsAvailable(assignment.booking_id, 'offer timed out');
     }
   }));
   const failed = results.filter(r => r.status === 'rejected');
@@ -2871,7 +2876,8 @@ app.post('/api/bookings', auth, bookingLimit, validate(schemas.createBooking), a
         // Pass pet context as extra fields alongside booking — never mutate the RPC result object
         await offerBookingToPro(booking.id, nextPro, { ...booking, pet_name: petName, pet_health_notes: petHealthNotes });
       } else {
-        await supabase.from('bookings').update({ assignment_status: 'no_pros_available' }).eq('id', booking.id);
+        await markNoProsAvailable(booking.id, 'new booking')
+          .catch(e => logger.error(`[Dispatch] no-pro alert failed: ${e.message}`));
         if (process.env.SENTRY_DSN) Sentry.captureEvent({ level: 'warning', message: 'no_pros_available on booking creation', extra: { bookingId: booking.id, city, service_type } });
       }
     }
@@ -2935,6 +2941,7 @@ app.put('/api/bookings/:id/status', auth, validate(schemas.updateBookingStatus),
 
   //  Cancellation / No-show  calculate refund 
   const updatePayload = { status: newStatus === 'no_show' ? 'cancelled' : newStatus };
+  let redispatchAfterSave = null;
   const assignmentStatusMap = { in_progress: 'in_progress', completed: 'completed', cancelled: 'cancelled' };
   if (assignmentStatusMap[newStatus]) updatePayload.assignment_status = assignmentStatusMap[newStatus];
   if (newStatus === 'no_show') updatePayload.assignment_status = 'cancelled';
@@ -3028,9 +3035,11 @@ app.put('/api/bookings/:id/status', auth, validate(schemas.updateBookingStatus),
       updatePayload.cancellation_fee  = null;
       updatePayload.refund_amount     = null;
       updatePayload.refund_status     = null;
-      // Mark the old assignment as cancelled so this pro won't be offered again
+      // Mark the old assignment as cancelled so this pro won't be offered again.
+      // Runs only after the booking update below is saved, which would
+      // otherwise overwrite the new offer or the no-professional state.
       if (booking.professional_id) {
-        supabase.from('booking_assignments')
+        redispatchAfterSave = () => supabase.from('booking_assignments')
           .update({ status: 'cancelled', responded_at: new Date().toISOString() })
           .eq('booking_id', req.params.id)
           .eq('professional_id', booking.professional_id)
@@ -3040,8 +3049,7 @@ app.put('/api/bookings/:id/status', auth, validate(schemas.updateBookingStatus),
               .from('booking_assignments')
               .select('professional_id')
               .eq('booking_id', req.params.id)
-              .in('status', ['rejected', 'timed_out', 'accepted', 'cancelled'])
-              .catch(() => ({ data: [] }));
+              .in('status', ['rejected', 'timed_out', 'accepted', 'cancelled']);
             const excludeIds = (tried || []).map(t => t.professional_id).filter(Boolean);
 
             findNextPro(booking.city || '', booking.service_type || '',
@@ -3054,12 +3062,10 @@ app.put('/api/bookings/:id/status', auth, validate(schemas.updateBookingStatus),
                   pet_health_notes: booking.pets?.health_notes || null,
                 });
               } else {
-                await supabase.from('bookings')
-                  .update({ assignment_status: 'no_pros_available' })
-                  .eq('id', req.params.id);
+                await markNoProsAvailable(req.params.id, 'professional cancelled');
                 if (process.env.SENTRY_DSN) Sentry.captureEvent({ level: 'warning', message: 'no_pros_available on redispatch', extra: { bookingId: req.params.id } });
               }
-            }).catch(e => logger.error('[Redispatch] failed:', e.message));
+            }).catch(e => logger.error(`[Redispatch] failed: ${e.message}`));
           }).catch(() => {});
       }
     }
@@ -3071,6 +3077,7 @@ app.put('/api/bookings/:id/status', auth, validate(schemas.updateBookingStatus),
   }
 
   const { data } = await supabase.from('bookings').update(updatePayload).eq('id', req.params.id).select().single();
+  if (redispatchAfterSave) redispatchAfterSave();
 
   //  Auto-create pet service record when booking is completed 
   // Writes to the correct records table based on service_type so the history
@@ -3201,7 +3208,8 @@ app.post('/api/bookings/:id/respond', auth, validate(schemas.respondBooking), as
       await offerBookingToPro(req.params.id, nextPro, { ...bk, pet_name: petName });
       return res.json({ success: true, message: 'Passed to next available professional' });
     }
-    await supabase.from('bookings').update({ assignment_status: 'no_pros_available', professional_id: null }).eq('id', req.params.id);
+    await markNoProsAvailable(req.params.id, 'professional declined')
+      .catch(e => logger.error(`[Dispatch] no-pro alert failed: ${e.message}`));
     res.json({ success: true, message: 'No other professionals available right now' });
   } catch (err) {
     logger.error('Respond booking error:', err.message);
