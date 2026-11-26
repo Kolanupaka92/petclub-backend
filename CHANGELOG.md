@@ -1,3 +1,10 @@
+# [1.45.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.44.1...v1.45.0) (2026-11-26)
+
+
+### Features
+
+* **dispatch:** alert admin and customer when no professional is found ([764c39e](https://github.com/Kolanupaka92/petclub-backend/commit/764c39e1a94cc6c9d76e0333228a1759914b3024))
+
 ## [1.44.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.44.0...v1.44.1) (2026-11-25)
 
 
