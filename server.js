@@ -35,17 +35,18 @@ const { makeCronAuth } = require('./services/cronAuth');
 const { markNoProsAvailable: markNoPros } = require('./services/noProAlert');
 
 //  Structured logging 
-const pino = require('pino');
 const pinoHttp = require('pino-http');
-const logger = pino({
-  level: process.env.LOG_LEVEL || 'info',
-  ...(process.env.NODE_ENV === 'development' && { transport: { target: 'pino-pretty' } }),
-});
+const { createLogger } = require('./services/logger');
+// Keeps error details passed as extra arguments and masks credentials and
+// contact details; see services/logger.js.
+const logger = createLogger(
+  process.env.NODE_ENV === 'development' ? { transport: { target: 'pino-pretty' } } : {},
+);
 
 // Logs the real error server-side but returns a generic message to the client —
 // raw Supabase/Postgres error text can leak column/constraint/schema names.
 function dbError(res, err, publicMessage = 'Something went wrong. Please try again.', status = 500) {
-  logger.error(`[${publicMessage}]`, err?.message || err);
+  logger.error(`[${publicMessage}]`, err);
   return res.status(status).json({ error: publicMessage });
 }
 
