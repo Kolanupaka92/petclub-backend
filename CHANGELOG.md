@@ -1,3 +1,10 @@
+## [1.45.1](https://github.com/Kolanupaka92/petclub-backend/compare/v1.45.0...v1.45.1) (2026-11-28)
+
+
+### Bug Fixes
+
+* **logging:** keep error details and redact credentials in logs ([d50ef85](https://github.com/Kolanupaka92/petclub-backend/commit/d50ef8583609514b690c259f9303ecfcc7e12898))
+
 # [1.45.0](https://github.com/Kolanupaka92/petclub-backend/compare/v1.44.1...v1.45.0) (2026-11-26)
 
 
